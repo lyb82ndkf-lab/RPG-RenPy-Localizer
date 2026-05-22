@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
@@ -370,9 +371,11 @@ class RPGMakerService:
     def apply_translations(self, translations: dict[str, TranslationEntry]) -> int:
         self._backup_tree()
         updated = 0
-        for json_path in sorted(self.data_dir.glob("*.json")):
+        for index, json_path in enumerate(sorted(self.data_dir.glob("*.json"))):
             if json_path.name not in TEXT_FILES and not json_path.stem.startswith("Map"):
                 continue
+            if index % 5 == 0:
+                time.sleep(0)
             data = load_json(json_path)
             changed = self._apply_to_json(json_path.name, data, translations)
             if changed:

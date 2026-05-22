@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import concurrent.futures
 import ctypes
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
+import urllib.parse
+import webbrowser
+from json import JSONDecodeError
 from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
@@ -33,24 +39,39 @@ ACCENT = "#0f6ad9"
 SUCCESS = "#1f9d68"
 WARN = "#b7791f"
 BORDER = "#d6dfeb"
+TREE_RENDER_LIMIT = 1200
+AI_PROVIDER_URLS = {
+    "OpenAI": "https://platform.openai.com/api-keys",
+    "DeepSeek": "https://platform.deepseek.com/api_keys",
+    "Doubao": "https://console.volcengine.com/ark/region:ark+cn-beijing/model/detail?Id=doubao-seed-2-0-mini",
+    "GLM": "https://z.ai/manage-apikey/apikey-list",
+    "NVIDIA": "https://build.nvidia.com/",
+    "百度翻译": "https://fanyi-api.baidu.com/manage/apiKey",
+}
 
 
 class ToolkitApp:
     def __init__(self, root: tk.Tk, initial_path: str | Path | None = None) -> None:
         self.root = root
-        self.root.title("RPG Maker / Ren'Py 本地化工作台")
-        self.root.geometry("1500x940")
-        self.root.minsize(1280, 780)
+        self.root.title("RPGRenPyLocalizer")
+        try:
+            self.root.tk.call("tk", "scaling", 1.08)
+        except tk.TclError:
+            pass
+        self.root.geometry("1360x860")
+        self.root.minsize(1180, 740)
         self.root.configure(bg=APP_BG)
 
         self.workspace = Workspace(self._project_root())
         self.library_entries: list[LibraryEntry] = self.workspace.load_library()
         self.recent_tasks: list[RecentTask] = self.workspace.load_recent_tasks()
+        self.translation_memory: dict[str, str] = self.workspace.load_translation_memory()
 
         self.project: ProjectInfo | None = None
         self.game_process: subprocess.Popen[bytes] | None = None
         self.translation_entries: list[TranslationEntry] = []
         self.translation_map: dict[str, TranslationEntry] = {}
+        self.translation_view_id_map: dict[str, str] = {}
         self.data_records: list[DataRecord] = []
         self.data_record_map: dict[str, DataRecord] = {}
         self.data_object_map: dict[str, list[DataRecord]] = {}
@@ -70,11 +91,12 @@ class ToolkitApp:
         self.run_status_var = tk.StringVar(value="未启动")
         self.translation_status_var = tk.StringVar(value="0 条")
         self.data_status_var = tk.StringVar(value="0 条")
-        self.env_status_var = tk.StringVar(value="工具已就绪。选择或拖入 Game.exe 后开始。")
+        self.env_status_var = tk.StringVar(value="工具已就绪。选择或拖入游戏 exe 后开始。")
         self.project_name_var = tk.StringVar(value="选择游戏")
-        self.project_path_var = tk.StringVar(value="请选择游戏的 Game.exe，或把 Game.exe 拖入窗口。")
+        self.project_path_var = tk.StringVar(value="请选择游戏的 exe，或把 exe 拖入窗口。")
         self.filter_var = tk.StringVar()
         self.translation_scope_var = tk.StringVar(value="全部文本")
+        self.translation_file_filter_var = tk.StringVar(value="全部文件")
         self.data_filter_var = tk.StringVar()
         self.save_slot_var = tk.StringVar()
         self.save_gold_var = tk.StringVar(value="0")
@@ -92,11 +114,20 @@ class ToolkitApp:
         self.library_note_var = tk.StringVar()
         self.library_tags_var = tk.StringVar()
         settings = self.workspace.load_settings()
+        saved_provider = settings.get("ai_provider", "OpenAI")
+        self.translation_channel_var = tk.StringVar(value="百度 API 翻译" if saved_provider == "百度翻译" else "AI 翻译")
         self.ai_provider_var = tk.StringVar(value=settings.get("ai_provider", "OpenAI"))
         self.ai_api_key_var = tk.StringVar(value=settings.get("ai_api_keys", {}).get(settings.get("ai_provider", "OpenAI"), settings.get("openai_api_key", "")))
-        self.ai_model_var = tk.StringVar(value=settings.get("ai_model", "gpt-5.5"))
+        self.ai_base_url_var = tk.StringVar(value=settings.get("ai_base_urls", {}).get(settings.get("ai_provider", "OpenAI"), settings.get("ai_base_url", "")))
+        saved_model = settings.get("ai_model", self._default_ai_model(saved_provider))
+        if saved_provider != "百度翻译" and saved_model not in self._ai_model_options(saved_provider):
+            saved_model = self._default_ai_model(saved_provider)
+        self.ai_model_var = tk.StringVar(value=saved_model)
+        self.ai_parallel_provider_vars: dict[str, tk.BooleanVar] = {}
         self.ai_status_var = tk.StringVar(value="AI 翻译未开始")
         self.ai_progress_var = tk.DoubleVar(value=0)
+        self.baidu_appid_var = tk.StringVar(value=settings.get("baidu_appid", ""))
+        self.baidu_secret_var = tk.StringVar(value=settings.get("baidu_secret", ""))
         self.player_through_var = tk.BooleanVar(value=False)
         self.lock_hp_var = tk.BooleanVar(value=False)
         self.lock_mp_var = tk.BooleanVar(value=False)
@@ -108,11 +139,19 @@ class ToolkitApp:
         self.nav_buttons: dict[str, tk.Button] = {}
         self._drop_callback = None
         self._old_wndproc = None
+        self._pending_drop_path: str | None = None
+        self._filter_after_ids: dict[str, str] = {}
+        self._renpy_extract_poll_count = 0
+        self._renpy_extracting = False
+        self._renpy_extract_process: subprocess.Popen[bytes] | None = None
+        self._renpy_extract_pid: int | None = None
+        self._project_load_token = 0
 
         self._configure_style()
         self._build_ui()
         self._enable_windows_file_drop()
-        self._refresh_library()
+        self.root.after(100, self._flush_pending_drop)
+        self.root.after(80, self._refresh_library)
         self._refresh_recent_tasks()
         self._show_section("dashboard")
 
@@ -161,11 +200,19 @@ class ToolkitApp:
         self.save_view = self._build_save_view(self.content)
         self.map_view = self._build_map_view(self.content)
         self.tools_view = self._build_tools_view(self.content)
+        self._section_views = {
+            "dashboard": self.dashboard_view,
+            "translation": self.translation_view,
+            "data": self.data_view,
+            "save": self.save_view,
+            "maps": self.map_view,
+            "tools": self.tools_view,
+        }
 
     def _build_nav(self, parent: tk.Frame) -> None:
         top = tk.Frame(parent, bg=NAV_BG, padx=18, pady=20)
         top.pack(fill="x")
-        tk.Label(top, text="本地化工作台", bg=NAV_BG, fg="white", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        tk.Label(top, text="RPGRenPyLocalizer", bg=NAV_BG, fg="white", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
         tk.Label(top, text="管理单机游戏项目、翻译文本、编辑数据并保存备份。", bg=NAV_BG, fg="#b4c5df", justify="left", wraplength=200).pack(anchor="w", pady=(8, 0))
 
         menu = tk.Frame(parent, bg=NAV_BG, padx=12, pady=10)
@@ -202,27 +249,28 @@ class ToolkitApp:
         tk.Label(bottom, text="RPG Maker MV/MZ\nRen'Py\nRPG Maker XP/VX/VX Ace", bg=NAV_BG, fg="#d7e2f1", justify="left").pack(anchor="w", pady=(8, 0))
 
     def _build_header(self, parent: tk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_columnconfigure(1, weight=0)
         left = tk.Frame(parent, bg=APP_BG)
-        left.pack(side="left", fill="x", expand=True)
+        left.grid(row=0, column=0, sticky="ew")
+        left.grid_columnconfigure(0, weight=1)
         tk.Label(left, textvariable=self.project_name_var, bg=APP_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 24, "bold")).pack(anchor="w")
         tk.Label(left, textvariable=self.project_path_var, bg=APP_BG, fg=TEXT_MUTED, justify="left", wraplength=920).pack(anchor="w", pady=(6, 0))
 
         path_row = tk.Frame(left, bg=APP_BG)
         path_row.pack(fill="x", pady=(10, 0))
+        path_row.grid_columnconfigure(1, weight=1)
         tk.Label(path_row, text="入口路径", bg=APP_BG, fg=TEXT_MUTED).pack(side="left")
         ttk.Entry(path_row, textvariable=self.path_var).pack(side="left", fill="x", expand=True, padx=(8, 8))
-        ttk.Button(path_row, text="选择 Game.exe", command=self.select_project).pack(side="left")
+        ttk.Button(path_row, text="选择 exe", command=self.select_project).pack(side="left")
         ttk.Button(path_row, text="载入", command=self.load_project).pack(side="left", padx=(8, 0))
+        ttk.Button(path_row, text="启动游戏", command=self.launch_current_game, style="Primary.TButton").pack(side="left", padx=(8, 0))
 
         badges = tk.Frame(left, bg=APP_BG)
         badges.pack(anchor="w", pady=(10, 0))
         self._metric_badge(badges, "引擎", self.engine_var).pack(side="left")
         self._metric_badge(badges, "支持", self.support_var).pack(side="left", padx=8)
         self._metric_badge(badges, "运行", self.run_status_var).pack(side="left")
-
-        right = tk.Frame(parent, bg=APP_BG)
-        right.pack(side="right")
-        ttk.Button(right, text="启动游戏", command=self.launch_current_game).pack(side="left", padx=(8, 0))
 
     def _metric_badge(self, parent: tk.Misc, title: str, variable: tk.StringVar) -> tk.Frame:
         frame = tk.Frame(parent, bg="#dbeafe", padx=10, pady=6)
@@ -232,7 +280,6 @@ class ToolkitApp:
 
     def _build_dashboard_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
         frame.grid_columnconfigure(1, weight=1)
         frame.grid_rowconfigure(0, weight=1)
 
@@ -292,25 +339,28 @@ class ToolkitApp:
         self._overview_metric(cards, 1, "翻译条目", self.translation_status_var, "#dbf5e8", SUCCESS)
         self._overview_metric(cards, 2, "数据条目", self.data_status_var, "#fff1d6", WARN)
 
-        quick = tk.Frame(content, bg=PANEL_BG)
+        quick = tk.LabelFrame(content, text="主要操作", bg=PANEL_BG, fg=TEXT_MAIN, padx=12, pady=10)
         quick.pack(fill="x")
-        ttk.Button(quick, text="提取文本", command=self.extract_texts).pack(side="left")
-        ttk.Button(quick, text="刷新数据", command=self.load_data_records).pack(side="left", padx=8)
-        ttk.Button(quick, text="连接实时游戏", command=self.refresh_runtime_state).pack(side="left")
-        ttk.Button(quick, text="全物品 99", command=self.quick_max_items).pack(side="left")
-        ttk.Button(quick, text="启动游戏", command=self.launch_current_game).pack(side="left", padx=8)
+        quick.grid_columnconfigure((0, 1, 2), weight=1)
+        ttk.Button(quick, text="翻译工作台", command=lambda: self._show_section("translation"), style="Primary.TButton").grid(row=0, column=0, sticky="ew")
+        ttk.Button(quick, text="数据编辑器", command=lambda: self._show_section("data")).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(quick, text="连接实时游戏", command=self.refresh_runtime_state).grid(row=0, column=2, sticky="ew")
 
         realtime = tk.LabelFrame(content, text="实时控制", bg=PANEL_BG, fg=TEXT_MAIN, padx=12, pady=10)
         realtime.pack(fill="x", pady=(14, 0))
+        realtime.grid_columnconfigure(1, weight=1)
+        realtime.grid_columnconfigure(3, weight=1)
+        realtime.grid_columnconfigure(5, weight=1)
         tk.Label(realtime, text="金币", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        ttk.Entry(realtime, textvariable=self.save_gold_var, width=12).grid(row=0, column=1, sticky="w", padx=(8, 8))
-        ttk.Button(realtime, text="应用金币", command=self.apply_save_gold).grid(row=0, column=2, sticky="w")
+        ttk.Entry(realtime, textvariable=self.save_gold_var, width=12).grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        ttk.Button(realtime, text="应用金币", command=self.apply_save_gold).grid(row=0, column=2, sticky="ew")
         ttk.Checkbutton(realtime, text="穿墙", variable=self.player_through_var, command=self.apply_player_through).grid(row=0, column=3, sticky="w", padx=(16, 0))
-        ttk.Button(realtime, text="战斗胜利", command=lambda: self.runtime_battle_result("win")).grid(row=0, column=4, sticky="w", padx=(12, 0))
-        ttk.Button(realtime, text="战斗失败", command=lambda: self.runtime_battle_result("lose")).grid(row=0, column=5, sticky="w", padx=(8, 0))
+        ttk.Button(realtime, text="全物品/装备 99", command=self.quick_max_items).grid(row=0, column=4, sticky="ew", padx=(8, 0))
+        ttk.Button(realtime, text="战斗胜利", command=lambda: self.runtime_battle_result("win")).grid(row=3, column=4, sticky="ew", padx=(8, 0), pady=(10, 0))
+        ttk.Button(realtime, text="战斗失败", command=lambda: self.runtime_battle_result("lose")).grid(row=3, column=5, sticky="ew", padx=(8, 0), pady=(10, 0))
         for column, label, var, lock in ((0, "HP", self.hp_value_var, self.lock_hp_var), (2, "MP", self.mp_value_var, self.lock_mp_var), (4, "TP", self.tp_value_var, self.lock_tp_var)):
             tk.Label(realtime, text=label, bg=PANEL_BG, fg=TEXT_MUTED).grid(row=1, column=column, sticky="w", pady=(10, 0))
-            ttk.Entry(realtime, textvariable=var, width=10).grid(row=1, column=column + 1, sticky="w", pady=(10, 0), padx=(8, 0))
+            ttk.Entry(realtime, textvariable=var, width=10).grid(row=1, column=column + 1, sticky="ew", pady=(10, 0), padx=(8, 0))
             ttk.Checkbutton(realtime, text=f"锁定{label}", variable=lock, command=self.apply_actor_gauge_locks).grid(row=2, column=column, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Button(realtime, text="应用 HP/MP/TP 到当前角色", command=self.apply_actor_gauges).grid(row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
@@ -328,7 +378,7 @@ class ToolkitApp:
 
         self.status_text = tk.Text(recent_wrap, relief="flat", wrap="word", bg=PANEL_BG, fg=TEXT_MAIN)
         self.status_text.grid(row=1, column=1, sticky="nsew", padx=(16, 0))
-        self._set_status_text("请选择 Game.exe 或将 Game.exe 拖入窗口。")
+        self._set_status_text("请选择 exe 或将 exe 拖入窗口。")
 
     def _overview_metric(self, parent: tk.Frame, column: int, title: str, variable: tk.StringVar, bg: str, fg: str) -> None:
         card = tk.Frame(parent, bg=bg, padx=14, pady=14)
@@ -338,8 +388,7 @@ class ToolkitApp:
 
     def _build_translation_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
-        frame.grid_columnconfigure(0, weight=3)
+        frame.grid_columnconfigure(0, weight=6)
         frame.grid_columnconfigure(1, weight=5)
         frame.grid_rowconfigure(0, weight=1)
         left = self._create_panel(frame)
@@ -373,49 +422,88 @@ class ToolkitApp:
         scope_box = ttk.Combobox(scope_row, textvariable=self.translation_scope_var, values=("仅对白/选项", "数据库名称/说明", "系统/插件文本", "全部文本"), state="readonly")
         scope_box.pack(side="left", padx=(8, 0))
         scope_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_translation_tree())
+        tk.Label(scope_row, text="文件", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(18, 0))
+        self.translation_file_box = ttk.Combobox(scope_row, textvariable=self.translation_file_filter_var, values=("全部文件",), state="readonly", width=24)
+        self.translation_file_box.pack(side="left", padx=(8, 0))
+        self.translation_file_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_translation_tree())
+        ttk.Button(scope_row, text="全选当前筛选", command=self.select_visible_translations).pack(side="left", padx=(10, 0))
 
         columns = ("category", "file", "context", "source", "target")
         self.translation_tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="extended")
-        for key, label, width in (("category", "类型", 90), ("file", "文件", 140), ("context", "上下文", 150), ("source", "原文", 320), ("target", "译文", 320)):
+        for key, label, width in (("category", "类型", 78), ("file", "文件", 120), ("context", "上下文", 135), ("source", "原文", 360), ("target", "译文", 360)):
             self.translation_tree.heading(key, text=label)
             self.translation_tree.column(key, width=width, stretch=True)
         self._attach_tree_scrollbars(wrap, self.translation_tree)
         self.translation_tree.bind("<<TreeviewSelect>>", self._on_translation_select)
-        self._set_translation_notice("请先选择或拖入 Game.exe。")
+        self._set_translation_notice("请先选择或拖入游戏 exe。")
 
     def _build_translation_editor(self, parent: tk.Frame) -> None:
         content = tk.Frame(parent, bg=PANEL_BG, padx=16, pady=16)
         content.pack(fill="both", expand=True)
         tk.Label(content, text="译文编辑", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(content, textvariable=self.translation_detail_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=360).pack(fill="x", pady=(10, 14))
-        ttk.Entry(content, textvariable=self.target_var).pack(fill="x")
+        tk.Label(content, textvariable=self.translation_detail_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=480).pack(fill="x", pady=(10, 14))
+        tk.Label(content, text="当前译文", bg=PANEL_BG, fg=TEXT_MUTED).pack(anchor="w")
+        self.target_text = tk.Text(content, height=8, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 11), undo=True)
+        self.target_text.pack(fill="x", pady=(4, 0))
         buttons = tk.Frame(content, bg=PANEL_BG)
         buttons.pack(fill="x", pady=(12, 0))
         ttk.Button(buttons, text="更新当前条目", command=self.update_translation_target, style="Primary.TButton").pack(side="left")
         ttk.Button(buttons, text="复制原文", command=self.copy_source_to_target).pack(side="left", padx=8)
-        ttk.Button(buttons, text="清空", command=lambda: self.target_var.set("")).pack(side="left")
+        ttk.Button(buttons, text="清空", command=self._clear_target_editor).pack(side="left")
 
-        ai = tk.LabelFrame(content, text="AI 翻译设置", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
+        ai = tk.LabelFrame(content, text="翻译服务", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
         ai.pack(fill="x", pady=(18, 0))
-        tk.Label(ai, text="供应商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        provider_box = ttk.Combobox(ai, textvariable=self.ai_provider_var, values=("OpenAI", "DeepSeek"), state="readonly")
+        tk.Label(ai, text="翻译渠道", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        channel_box = ttk.Combobox(ai, textvariable=self.translation_channel_var, values=("AI 翻译", "百度 API 翻译"), state="readonly")
+        channel_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        channel_box.bind("<<ComboboxSelected>>", self._on_translation_channel_change)
+
+        self.ai_settings_frame = tk.Frame(ai, bg=PANEL_BG)
+        self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.ai_settings_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(self.ai_settings_frame, text="AI 厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "DeepSeek", "Doubao", "GLM", "NVIDIA"), state="readonly")
         provider_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         provider_box.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
-        tk.Label(ai, text="API Key", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(ai, textvariable=self.ai_api_key_var, show="*").grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        tk.Label(ai, text="模型", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.ai_model_box = ttk.Combobox(ai, textvariable=self.ai_model_var, values=self._ai_model_options(), state="normal")
-        self.ai_model_box.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Button(ai, text="保存设置", command=self.save_ai_settings).grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton").grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        self.ai_base_url_label = tk.Label(self.ai_settings_frame, text="Base URL", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_base_url_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.ai_base_url_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_base_url_var)
+        self.ai_base_url_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_api_key_label = tk.Label(self.ai_settings_frame, text="API Key", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_api_key_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*").grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_model_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_model_var, values=self._ai_model_options(), state="normal")
+        self.ai_model_label = tk.Label(self.ai_settings_frame, text="模型", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_model_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.ai_model_box.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        tk.Label(self.ai_settings_frame, text="并行厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=4, column=0, sticky="nw", pady=(8, 0))
+        self.ai_parallel_frame = tk.Frame(self.ai_settings_frame, bg=PANEL_BG)
+        self.ai_parallel_frame.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_parallel_hint_var = tk.StringVar(value="")
+        self.ai_parallel_hint = tk.Label(self.ai_settings_frame, textvariable=self.ai_parallel_hint_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=360)
+        self.ai_parallel_hint.grid(row=5, column=1, sticky="ew", padx=(8, 0))
+        self._refresh_parallel_provider_checks()
+
+        self.baidu_settings_frame = tk.Frame(ai, bg=PANEL_BG)
+        self.baidu_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.baidu_settings_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(self.baidu_settings_frame, text="百度 AppID", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.baidu_settings_frame, textvariable=self.baidu_appid_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        tk.Label(self.baidu_settings_frame, text="百度 Secret", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(self.baidu_settings_frame, textvariable=self.baidu_secret_var, show="*").grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_provider_link = ttk.Button(ai, text="打开官网 API 页面", command=self.open_ai_provider_page)
+        self.ai_provider_link.grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(ai, text="保存设置", command=self.save_ai_settings).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton").grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.ai_progress = ttk.Progressbar(ai, variable=self.ai_progress_var, maximum=100)
         self.ai_progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         tk.Label(ai, textvariable=self.ai_status_var, bg=PANEL_BG, fg=TEXT_MUTED, wraplength=340, justify="left").grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ai.grid_columnconfigure(1, weight=1)
+        self._refresh_translation_channel_ui()
+        self._refresh_ai_base_url_visibility(self.ai_provider_var.get().strip() or "OpenAI")
 
     def _build_data_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
         frame.grid_columnconfigure(0, weight=2)
         frame.grid_columnconfigure(1, weight=5)
         frame.grid_rowconfigure(0, weight=1)
@@ -454,7 +542,7 @@ class ToolkitApp:
             self.data_tree.column(key, width=width, stretch=True)
         self._attach_tree_scrollbars(wrap, self.data_tree)
         self.data_tree.bind("<<TreeviewSelect>>", self._on_data_select)
-        self._set_data_notice("请先选择或拖入 Game.exe。")
+        self._set_data_notice("请先选择或拖入游戏 exe。")
 
     def _build_data_editor(self, parent: tk.Frame) -> None:
         content = tk.Frame(parent, bg=PANEL_BG, padx=16, pady=16)
@@ -479,7 +567,6 @@ class ToolkitApp:
 
     def _build_save_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
         frame.grid_columnconfigure(0, weight=2)
         frame.grid_columnconfigure(1, weight=5)
         frame.grid_rowconfigure(0, weight=1)
@@ -542,7 +629,6 @@ class ToolkitApp:
 
     def _build_map_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(1, weight=1)
         head = self._create_panel(frame)
@@ -571,8 +657,18 @@ class ToolkitApp:
         row = tk.Frame(parent, bg=PANEL_BG)
         row.pack(fill="x", pady=(14, 10))
         ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
-        variable.trace_add("write", lambda *_: callback())
+        variable.trace_add("write", lambda *_: self._debounced_filter(variable, callback))
         ttk.Button(row, text="清空筛选", command=lambda: variable.set("")).pack(side="left", padx=(8, 0))
+
+    def _debounced_filter(self, variable: tk.StringVar, callback) -> None:
+        key = str(variable)
+        after_id = self._filter_after_ids.get(key)
+        if after_id:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._filter_after_ids[key] = self.root.after(180, callback)
 
     def _attach_tree_scrollbars(self, parent: tk.Frame, tree: ttk.Treeview) -> None:
         y = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
@@ -586,7 +682,6 @@ class ToolkitApp:
 
     def _build_tools_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid(row=0, column=0, sticky="nsew")
         frame.grid_columnconfigure(0, weight=3)
         frame.grid_columnconfigure(1, weight=2)
         frame.grid_rowconfigure(0, weight=1)
@@ -630,21 +725,16 @@ class ToolkitApp:
     def _show_section(self, section: str) -> None:
         for key, btn in self.nav_buttons.items():
             btn.configure(bg=NAV_ACTIVE if key == section else NAV_BG)
-        active_view = {
-            "dashboard": self.dashboard_view,
-            "translation": self.translation_view,
-            "data": self.data_view,
-            "save": self.save_view,
-            "maps": self.map_view,
-            "tools": self.tools_view,
-        }[section]
-        active_view.tkraise()
-        self.content.update_idletasks()
+        for key, view in self._section_views.items():
+            if key == section:
+                view.grid(row=0, column=0, sticky="nsew")
+            else:
+                view.grid_remove()
         if section == "dashboard":
             if self.project:
                 self._set_status_text(f"当前项目：{self.project.root}\n可直接切换到翻译工作台或数据编辑器。")
             else:
-                self._set_status_text("请先选择 Game.exe，加载后会自动加入游戏库。")
+                self._set_status_text("请先选择游戏 exe，加载后会自动加入游戏库。")
         elif section == "translation":
             if not self.project:
                 self._set_status_text("请先加载项目，再进入翻译工作台。")
@@ -681,10 +771,9 @@ class ToolkitApp:
     def select_project(self) -> None:
         initial_dir = str(self._initial_game_picker_dir())
         path = filedialog.askopenfilename(
-            title="选择或载入游戏 Game.exe",
+            title="选择或载入游戏 exe",
             initialdir=initial_dir,
-            initialfile="Game.exe",
-            filetypes=[("游戏启动程序", "Game.exe"), ("可执行文件", "*.exe"), ("所有文件", "*.*")],
+            filetypes=[("可执行文件", "*.exe"), ("Game.exe", "Game.exe"), ("所有文件", "*.*")],
         )
         if path:
             self.path_var.set(path)
@@ -709,16 +798,39 @@ class ToolkitApp:
     def load_project(self) -> None:
         raw_path = self.path_var.get().strip()
         if not raw_path:
-            messagebox.showerror("错误", "请先选择 Game.exe。")
+            messagebox.showerror("错误", "请先选择 exe。")
             return
         self.load_path(Path(raw_path))
 
     def load_path(self, path: Path) -> None:
+        self._project_load_token += 1
+        token = self._project_load_token
+        self.project = None
+        self.env_status_var.set("正在识别游戏项目...")
+        self.run_status_var.set("识别中")
+        self._set_status_text(f"正在识别项目：{path}")
+        threading.Thread(target=self._detect_project_worker, args=(path, token), daemon=True).start()
+
+    def _detect_project_worker(self, path: Path, token: int) -> None:
         try:
-            self.project = detect_project(path)
+            project = detect_project(path)
         except Exception as exc:
-            messagebox.showerror("无法加载", str(exc))
+            self.root.after(0, lambda err=exc, t=token: self._handle_project_load_error(err, t))
             return
+        self.root.after(0, lambda p=project, t=token: self._apply_detected_project(p, t))
+
+    def _handle_project_load_error(self, exc: Exception, token: int) -> None:
+        if token != self._project_load_token:
+            return
+        self.env_status_var.set("项目加载失败")
+        self.run_status_var.set("未启动")
+        messagebox.showerror("无法加载", str(exc))
+        self._set_status_text(f"项目识别失败：{exc}")
+
+    def _apply_detected_project(self, project: ProjectInfo, token: int) -> None:
+        if token != self._project_load_token:
+            return
+        self.project = project
         if self.project.launcher_path:
             self.path_var.set(str(self.project.launcher_path))
         else:
@@ -735,13 +847,17 @@ class ToolkitApp:
         self.support_var.set(self._support_status_for(self.project))
         self.run_status_var.set("未启动")
         if self._supports_full_editing(self.project):
-            self.extract_texts(silent=True)
-            self.load_data_records(silent=True)
-            self.refresh_save_slots(silent=True)
-            self.load_maps(silent=True)
+            self.translation_status_var.set("待加载")
+            self.data_status_var.set("待加载")
+            self.save_status_var.set("待刷新")
+            self.map_status_var.set("待刷新")
+            self.root.after(120, lambda: self._prepare_and_extract_texts())
+            self.root.after(260, lambda: self.load_data_records(silent=True))
+            self.root.after(420, lambda: self.refresh_save_slots(silent=True))
         else:
             self.translation_entries = []
             self.translation_map = {}
+            self.translation_view_id_map = {}
             self.data_records = []
             self.data_record_map = {}
             self.data_object_map = {}
@@ -758,12 +874,49 @@ class ToolkitApp:
         self._touch_library_entry(self.project)
         self._append_recent_task("载入项目", self.project.root, self.project.engine)
         self.env_status_var.set(f"项目已加载：{self.project.root}")
+        if not self._renpy_extracting:
+            self.ai_progress_var.set(0)
+            self.ai_status_var.set("AI 翻译未开始")
 
-    def extract_texts(self, silent: bool = False) -> None:
+    def _prepare_and_extract_texts(self) -> None:
+        if not self.project or self.project.engine != "Ren'Py":
+            self.extract_texts(silent=True)
+            return
+        service = self._get_service()
+        if hasattr(service, "prepare_source_tree"):
+            self.ai_progress_var.set(8)
+            self.ai_status_var.set("Ren'Py 正在准备资源树：解包/反编译游戏脚本……")
+            self._set_status_text("Ren'Py 正在准备资源树：会先尝试解包 RPA、反编译 RPYC，再提取文本。")
+            threading.Thread(target=self._run_prepare_and_extract, args=(service,), daemon=True).start()
+            return
+        self.extract_texts(silent=True)
+
+    def _run_prepare_and_extract(self, service: RenPyService) -> None:
+        try:
+            stats = service.prepare_source_tree()
+        except Exception as exc:
+            self.root.after(0, lambda err=exc: self._finish_prepare_and_extract(None, err))
+            return
+        self.root.after(0, lambda s=stats: self._finish_prepare_and_extract(s, None))
+
+    def _finish_prepare_and_extract(self, stats: dict | None, error: Exception | None) -> None:
+        if error is not None:
+            self._set_status_text(f"Ren'Py 资源准备失败：{error}")
+            self.extract_texts(silent=True)
+            return
+        stats = stats or {}
+        self._set_status_text(
+            f"Ren'Py 资源准备完成：rpy={stats.get('rpy', 0)}，rpyc={stats.get('rpyc', 0)}，rpa={stats.get('rpa', 0)}。\n"
+            "正在继续提取文本……"
+        )
+        self.ai_status_var.set("Ren'Py 资源准备完成，正在提取文本……")
+        self.extract_texts(silent=True)
+
+    def extract_texts(self, silent: bool = False, allow_runtime_extract: bool = True) -> None:
         if not self.project:
             if not silent:
                 messagebox.showerror("错误", "请先加载项目。")
-            self._set_translation_notice("请先选择或拖入 Game.exe。")
+            self._set_translation_notice("请先选择或拖入游戏 exe。")
             return
         if not self._supports_full_editing(self.project):
             self.translation_status_var.set("暂不支持")
@@ -772,32 +925,304 @@ class ToolkitApp:
             if not silent:
                 messagebox.showinfo("提示", f"{self.project.engine} 当前仅支持识别、入库和启动。")
             return
+        project = self.project
+        self.translation_status_var.set("提取中...")
+        self._set_status_text("正在后台提取文本，界面可继续操作。")
+        threading.Thread(target=self._extract_texts_worker, args=(project, silent, allow_runtime_extract), daemon=True).start()
+
+    def _extract_texts_worker(self, project: ProjectInfo, silent: bool, allow_runtime_extract: bool) -> None:
         try:
-            service = self._get_service()
-            self.translation_entries = service.extract_translations()
+            service = self._service_for_project(project)
+            entries = service.extract_translations()
         except Exception as exc:
-            self.translation_entries = []
-            self.translation_map = {}
-            self.translation_status_var.set("提取失败")
-            self._set_translation_notice(f"文本提取失败：{exc}")
-            if not silent:
-                messagebox.showerror("提取失败", str(exc))
+            self.root.after(0, lambda err=exc, s=silent: self._handle_extract_texts_error(err, s))
             return
+        self.root.after(0, lambda e=entries, svc=service, s=silent, a=allow_runtime_extract: self._finish_extract_texts(e, svc, s, a))
+
+    def _handle_extract_texts_error(self, exc: Exception, silent: bool) -> None:
+        self.translation_entries = []
+        self.translation_map = {}
+        self.translation_view_id_map = {}
+        self.translation_status_var.set("提取失败")
+        self._set_translation_notice(f"文本提取失败：{exc}")
+        if not silent:
+            messagebox.showerror("提取失败", str(exc))
+
+    def _finish_extract_texts(self, entries: list[TranslationEntry], service: object, silent: bool, allow_runtime_extract: bool) -> None:
+        if not self.project:
+            return
+        self.translation_entries = entries
         self.translation_map = {entry.entry_id: entry for entry in self.translation_entries}
         self._load_project_translation_cache(silent=True)
         self.translation_status_var.set(f"{len(self.translation_entries)} 条")
+        if self.project.engine == "Ren'Py":
+            self.translation_scope_var.set("全部文本")
+        self._refresh_translation_file_filter()
         self._refresh_translation_tree()
+        should_runtime_extract = (
+            allow_runtime_extract
+            and self.project.engine == "Ren'Py"
+            and hasattr(service, "can_runtime_extract")
+            and service.can_runtime_extract()
+            and hasattr(service, "runtime_export_path")
+            and not service.runtime_export_path().exists()
+        )
+        if should_runtime_extract:
+            self._start_renpy_runtime_extraction(service, auto_trigger=True)
+            return
         has_suspicious_text = self._has_suspicious_dialogue_text(self.translation_entries)
         if not self.translation_entries:
             self._set_translation_notice("没有提取到文本。可能是加密封包、非标准结构，或当前项目没有可识别文本。")
         elif has_suspicious_text:
             warning = "检测到部分对白疑似乱码。建议先从原版游戏或备份恢复 data 文件，再进行 AI 翻译，避免花费在错误源文本上。"
-            self._set_translation_notice(warning)
+            self.translation_detail_var.set(warning)
             self._set_status_text(warning)
         self._append_recent_task("提取文本", self.project.root, self.project.engine)
         if not has_suspicious_text:
             self._set_status_text(f"已提取 {len(self.translation_entries)} 条文本。")
         self._save_project_translation_cache()
+
+    def _start_renpy_runtime_extraction(self, service: RenPyService, auto_trigger: bool = False) -> None:
+        if self._renpy_extracting:
+            self._set_status_text("Ren'Py 深度提取已经在进行中，请在窗口选择器中刷新并确认真正的游戏窗口。")
+            return
+        try:
+            extractor = service.install_runtime_extractor(clear_cache=True)
+        except Exception as exc:
+            self._set_status_text(f"Ren'Py 深度提取脚本安装失败：{exc}")
+            return
+        notice = (
+            "当前 Ren'Py 游戏将自动执行深度提取：已安装脚本并启动一次游戏，让引擎导出编译脚本文本。"
+            if auto_trigger
+            else "已安装 Ren'Py 深度提取脚本，正在启动游戏一次让引擎导出编译脚本文本。"
+        )
+        self._set_translation_notice(notice)
+        self._renpy_extracting = True
+        self.ai_progress_var.set(5)
+        self.ai_status_var.set("Ren'Py 深度提取准备中：正在启动游戏，请在窗口选择器中确认真正的游戏窗口。")
+        self._set_status_text(
+            f"已安装 Ren'Py 深度提取脚本：{extractor.name}\n"
+            "正在启动游戏并打开窗口选择器。请等游戏真正进入主窗口后，点击刷新并确认选择。"
+        )
+        if not self._choose_or_start_renpy_extract_target():
+            self._renpy_extracting = False
+            return
+
+    def _choose_or_start_renpy_extract_target(self) -> bool:
+        launcher = self._resolve_current_launcher()
+        if launcher:
+            try:
+                self._renpy_extract_process = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
+                self._renpy_extract_pid = self._renpy_extract_process.pid
+                self.run_status_var.set("已启动")
+                self._set_status_text(
+                    f"已启动游戏用于文本提取：{launcher.name}\n"
+                    "窗口选择器已经打开。等加载动画结束、真正游戏窗口出现后，点击刷新并确认选择。"
+                )
+            except Exception as exc:
+                self._set_status_text(f"Ren'Py 深度提取需要启动游戏，但启动失败：{exc}")
+                return False
+        else:
+            self._set_status_text("未找到可启动的游戏 exe。请先手动打开游戏，再在窗口选择器中刷新并选择真正游戏窗口。")
+        selected = self._ask_window_selection()
+        if selected:
+            self._renpy_extract_pid = selected.get("pid")
+            self._set_status_text(f"已选择游戏窗口：{selected.get('title', '')}\n现在开始等待 Ren'Py 导出游戏文本。")
+            self._begin_renpy_extract_wait()
+            return True
+        self._renpy_extracting = False
+        self._close_renpy_extract_process()
+        self._set_status_text("已取消窗口选择，暂不开始深度提取。可在翻译工作台点击“提取文本”重新开始。")
+        return False
+
+    def _begin_renpy_extract_wait(self) -> None:
+        self._renpy_extracting = True
+        self._renpy_extract_poll_count = 0
+        self.ai_progress_var.set(12)
+        self.ai_status_var.set("Ren'Py 深度提取中：已确认游戏窗口，正在等待引擎导出文本……")
+        self.root.after(300, self._renpy_extract_pulse)
+        self.root.after(500, self._poll_renpy_runtime_extraction)
+
+    def _renpy_extract_pulse(self) -> None:
+        if not self._renpy_extracting:
+            return
+        current = float(self.ai_progress_var.get() or 0)
+        if current < 92:
+            self.ai_progress_var.set(min(92, current + 3))
+        if self._renpy_extracting:
+            self.root.after(300, self._renpy_extract_pulse)
+
+    def _poll_renpy_runtime_extraction(self) -> None:
+        if not self.project or self.project.engine != "Ren'Py":
+            return
+        service = RenPyService(self.project)
+        output = service.runtime_export_path()
+        if output.exists():
+            self._renpy_extracting = False
+            self.ai_progress_var.set(100)
+            self.ai_status_var.set("Ren'Py 深度提取完成，正在刷新列表……")
+            self._set_status_text("Ren'Py 深度提取完成，正在刷新文本列表。")
+            self._close_renpy_extract_process()
+            self.extract_texts(silent=True, allow_runtime_extract=False)
+            self.ai_progress_var.set(0)
+            self.ai_status_var.set("AI 翻译未开始")
+            return
+        self._renpy_extract_poll_count += 1
+        if self._renpy_extract_poll_count <= 60:
+            self.root.after(1000, self._poll_renpy_runtime_extraction)
+            return
+        self._renpy_extracting = False
+        self._close_renpy_extract_process()
+        self.ai_progress_var.set(0)
+        self.ai_status_var.set("AI 翻译未开始")
+        self._set_status_text(
+            "Ren'Py 深度提取暂未检测到导出结果。请确认游戏是否成功启动到标题画面；"
+            "之后可回到翻译工作台点击“提取文本”重试。"
+        )
+
+    def _resolve_current_launcher(self) -> Path | None:
+        if self.project and self.project.launcher_path and self.project.launcher_path.exists():
+            return self.project.launcher_path
+        raw_path = self.path_var.get().strip()
+        if raw_path:
+            path = Path(raw_path)
+            if path.is_file() and path.suffix.lower() == ".exe":
+                return path
+        if self.project and self.project.root.exists():
+            game_exe = self.project.root / "Game.exe"
+            if game_exe.exists():
+                return game_exe
+            for candidate in sorted(self.project.root.glob("*.exe")):
+                if candidate.name.lower() != "rpgrenpylocalizer.exe":
+                    return candidate
+        return None
+
+    def _close_renpy_extract_process(self) -> None:
+        proc = self._renpy_extract_process
+        selected_pid = self._renpy_extract_pid
+        self._renpy_extract_process = None
+        self._renpy_extract_pid = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                self.root.after(1500, lambda p=proc: p.kill() if p.poll() is None else None)
+            except Exception:
+                pass
+        if selected_pid and (not proc or selected_pid != proc.pid):
+            try:
+                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                subprocess.run(
+                    ["taskkill", "/PID", str(selected_pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=flags,
+                    check=False,
+                )
+            except Exception:
+                pass
+
+    def _list_candidate_game_windows(self) -> list[dict]:
+        if os.name != "nt" or not self.project:
+            return []
+        user32 = ctypes.windll.user32
+        items: list[dict] = []
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def callback(hwnd: int, _lparam: int) -> bool:
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.strip()
+            if not title or "RPGRenPyLocalizer" in title:
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            path = self._process_path(int(pid.value))
+            process_name = Path(path).name.lower() if path else ""
+            if process_name in {"cmd.exe", "powershell.exe", "windowsterminal.exe", "conhost.exe"}:
+                return True
+            items.append({"hwnd": hwnd, "pid": int(pid.value), "title": title, "path": path})
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(callback), 0)
+        return items
+
+    @staticmethod
+    def _process_path(pid: int) -> str:
+        try:
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return ""
+            try:
+                buffer = ctypes.create_unicode_buffer(260)
+                size = wintypes.DWORD(len(buffer))
+                if psapi.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                    return buffer.value
+                return ""
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return ""
+
+    def _ask_window_selection(self) -> dict | None:
+        windows = self._list_candidate_game_windows()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择 Ren'Py 游戏窗口")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=PANEL_BG)
+        dialog.geometry("620x320")
+        tk.Label(
+            dialog,
+            text="游戏正在启动。等真正的游戏窗口出现后点“刷新窗口”，选中它，再确认开始提取文本。",
+            bg=PANEL_BG,
+            fg=TEXT_MAIN,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            wraplength=580,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(14, 8))
+        listbox = tk.Listbox(dialog, height=9)
+        listbox.pack(fill="both", expand=True, padx=14)
+        result: dict | None = {}
+
+        def refresh() -> None:
+            listbox.delete(0, "end")
+            current = self._list_candidate_game_windows()
+            windows[:] = current
+            for item in current:
+                display = f"{item.get('title', '')}  | PID {item.get('pid', '')}  | {Path(item.get('path', '')).name}"
+                listbox.insert("end", display)
+            if current:
+                listbox.selection_clear(0, "end")
+                listbox.selection_set(0)
+
+        def choose() -> None:
+            nonlocal result
+            selection = listbox.curselection()
+            result = windows[selection[0]] if selection else None
+            dialog.destroy()
+
+        def skip() -> None:
+            nonlocal result
+            result = None
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", skip)
+        buttons = tk.Frame(dialog, bg=PANEL_BG)
+        buttons.pack(fill="x", padx=14, pady=12)
+        ttk.Button(buttons, text="确认选择并开始提取", command=choose, style="Primary.TButton").pack(side="left")
+        ttk.Button(buttons, text="刷新窗口", command=refresh).pack(side="left", padx=8)
+        ttk.Button(buttons, text="取消", command=skip).pack(side="left", padx=8)
+        refresh()
+        self.root.wait_window(dialog)
+        return result
 
     @staticmethod
     def _has_suspicious_dialogue_text(entries: list[TranslationEntry]) -> bool:
@@ -841,6 +1266,7 @@ class ToolkitApp:
                 self.translation_map[entry_id] = imported
         self.translation_entries = list(self.translation_map.values())
         self.translation_status_var.set(f"{len(self.translation_entries)} 条")
+        self._refresh_translation_file_filter()
         self._refresh_translation_tree()
         self._save_project_translation_cache()
         if self.project:
@@ -854,20 +1280,43 @@ class ToolkitApp:
         if not self.project:
             messagebox.showerror("错误", "请先加载项目。")
             return
-        targets = [entry for entry in self.translation_map.values() if entry.target.strip()]
-        if not targets:
-            messagebox.showinfo("提示", "当前没有填写译文。请先手动编辑、导入翻译包，或使用 AI 一键翻译。")
-            return
-        service = self._get_service()
-        if hasattr(service, "apply_translations"):
-            try:
-                updated = service.apply_translations(self.translation_map)
-            except Exception as exc:
-                messagebox.showerror("嵌入失败", str(exc))
+        project = self.project
+        self.ai_progress_var.set(5)
+        self.ai_status_var.set("正在准备后台嵌入翻译，请稍候...")
+        self._set_status_text("正在后台准备翻译快照并写入游戏，界面可继续操作。")
+        threading.Thread(target=self._embed_translation_worker, args=(project,), daemon=True).start()
+        return
+
+    def _embed_translation_worker(self, project: ProjectInfo) -> None:
+        try:
+            service = self._service_for_project(project)
+            if not hasattr(service, "apply_translations"):
+                self.root.after(0, lambda: messagebox.showinfo("提示", "当前引擎暂不支持嵌入翻译。"))
+                self.root.after(0, lambda: self.ai_progress_var.set(0))
                 return
-        else:
-            messagebox.showinfo("提示", "当前引擎暂不支持嵌入翻译。")
+            translations = {entry_id: entry for entry_id, entry in self.translation_map.items() if entry.target.strip()}
+            if not translations:
+                self.root.after(0, lambda: messagebox.showinfo("提示", "当前没有填写译文。请先手动编辑、导入翻译包，或使用 AI 一键翻译。"))
+                self.root.after(0, lambda: self.ai_progress_var.set(0))
+                return
+            self.root.after(0, lambda count=len(translations): self.ai_status_var.set(f"正在后台嵌入翻译：{count} 条，请稍候..."))
+            time.sleep(0)
+            updated = service.apply_translations(translations)
+        except Exception as exc:
+            self.root.after(0, lambda err=exc: self._handle_embed_translation_error(err))
             return
+        self.root.after(0, lambda count=updated, p=project: self._finish_embed_translation(count, p))
+
+    def _handle_embed_translation_error(self, exc: Exception) -> None:
+        self.ai_progress_var.set(0)
+        self.ai_status_var.set("嵌入翻译失败")
+        messagebox.showerror("嵌入失败", str(exc))
+
+    def _finish_embed_translation(self, updated: int, project: ProjectInfo) -> None:
+        if not self.project or self.project.root != project.root:
+            return
+        self.ai_progress_var.set(100)
+        self.ai_status_var.set(f"嵌入完成：{updated} 处")
         self.refresh_backups()
         self._append_recent_task("嵌入翻译", self.project.root, self.project.engine)
         self._set_status_text(f"已将翻译嵌入游戏数据：{updated} 处。原文件已自动备份。")
@@ -880,6 +1329,9 @@ class ToolkitApp:
         targets = {entry.source: entry.target for entry in self.translation_map.values() if entry.source.strip() and entry.target.strip()}
         if not targets:
             messagebox.showinfo("提示", "当前没有可加载的译文。请先导入翻译包、手动编辑或使用 AI 翻译。")
+            return
+        if self.project.engine == "Ren'Py":
+            self._load_renpy_runtime_translation()
             return
         try:
             result = self._runtime_request("POST", "/translation", {"enabled": True, "dict": targets})
@@ -894,38 +1346,199 @@ class ToolkitApp:
     def launch_translated_runtime(self) -> None:
         self.load_runtime_translation()
 
+    def _load_renpy_runtime_translation(self) -> None:
+        service = self._get_service()
+        if not hasattr(service, "build_runtime_translation_patch"):
+            messagebox.showinfo("提示", "当前 Ren'Py 项目暂不支持运行时翻译补丁。")
+            return
+        try:
+            patch_path, count = service.build_runtime_translation_patch(self.translation_map)
+        except Exception as exc:
+            messagebox.showerror("加载失败", f"生成 Ren'Py 临时翻译补丁失败：{exc}")
+            return
+        self._save_project_translation_cache()
+        self._append_recent_task("加载运行时翻译", self.project.root, self.project.engine)
+        self._set_status_text(f"已生成 Ren'Py 临时翻译补丁：{patch_path.name}，共 {count} 条。\n正在启动游戏，启动后的文本会优先显示译文。")
+        self.launch_current_game()
+        messagebox.showinfo(
+            "已启动游戏",
+            f"已为 Ren'Py 生成临时翻译补丁并启动游戏：{count} 条。\n\n"
+            "这是临时加载方案；删除 game 目录中的 zz_rpgrtl_runtime_translation.rpy 后，游戏会恢复原文。",
+        )
+
     def save_ai_settings(self) -> None:
         settings = self.workspace.load_settings()
-        provider = self.ai_provider_var.get().strip() or "OpenAI"
+        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
         keys = settings.get("ai_api_keys", {})
         if not isinstance(keys, dict):
             keys = {}
         keys[provider] = self.ai_api_key_var.get().strip()
+        base_urls = settings.get("ai_base_urls", {})
+        if not isinstance(base_urls, dict):
+            base_urls = {}
+        base_urls[provider] = self.ai_base_url_var.get().strip()
         settings["ai_provider"] = provider
         settings["ai_api_keys"] = keys
-        settings["ai_model"] = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+        settings["ai_base_urls"] = base_urls
+        if provider == "百度翻译":
+            settings["ai_model"] = "无需模型"
+        else:
+            model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+            if provider == "Doubao":
+                model = self._normalize_doubao_model(model)
+                self.ai_model_var.set(model)
+            settings["ai_model"] = model
+            models = settings.get("ai_models", {})
+            if not isinstance(models, dict):
+                models = {}
+            models[provider] = model
+            settings["ai_models"] = models
+        settings["baidu_appid"] = self.baidu_appid_var.get().strip()
+        settings["baidu_secret"] = self.baidu_secret_var.get().strip()
+        settings["ai_parallel_providers"] = self._selected_parallel_providers()
         self.workspace.save_settings(settings)
-        self.ai_status_var.set("AI 设置已保存。")
+        self._refresh_parallel_provider_checks()
+        self.ai_status_var.set("翻译设置已保存。")
+
+    def _on_translation_channel_change(self, _event: object | None = None) -> None:
+        self._refresh_translation_channel_ui()
+        channel = self.translation_channel_var.get()
+        self.ai_status_var.set(f"已切换到 {channel}。")
+
+    def _using_baidu_channel(self) -> bool:
+        return self.translation_channel_var.get() == "百度 API 翻译"
+
+    def _selected_parallel_providers(self) -> list[str]:
+        return [provider for provider, var in self.ai_parallel_provider_vars.items() if var.get()]
+
+    def _refresh_parallel_provider_checks(self) -> None:
+        if not hasattr(self, "ai_parallel_frame"):
+            return
+        settings = self.workspace.load_settings()
+        keys = settings.get("ai_api_keys", {})
+        if not isinstance(keys, dict):
+            keys = {}
+        saved = settings.get("ai_parallel_providers", [])
+        if isinstance(saved, str):
+            selected = {name.strip() for name in re.split(r"[,，;；\s]+", saved) if name.strip()}
+        elif isinstance(saved, list):
+            selected = {str(name).strip() for name in saved if str(name).strip()}
+        else:
+            selected = set()
+        current_provider = self.ai_provider_var.get().strip() or "OpenAI"
+        current_key = self.ai_api_key_var.get().strip()
+        configured = [
+            provider
+            for provider in ("OpenAI", "DeepSeek", "Doubao", "GLM", "NVIDIA")
+            if (provider == current_provider and current_key) or str(keys.get(provider, "")).strip()
+        ]
+        for child in self.ai_parallel_frame.winfo_children():
+            child.destroy()
+        self.ai_parallel_provider_vars = {}
+        if not configured:
+            self.ai_parallel_hint_var.set("保存至少一个 AI 厂商的 API Key 后，这里会显示可并行选择的厂商。")
+            return
+        for index, provider in enumerate(configured):
+            var = tk.BooleanVar(value=(provider in selected) or (not selected and provider == current_provider))
+            self.ai_parallel_provider_vars[provider] = var
+            ttk.Checkbutton(self.ai_parallel_frame, text=provider, variable=var).grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 12), pady=(0, 4))
+        self.ai_parallel_hint_var.set("只显示已保存 API Key 的厂商；勾选多个后会按批次并行分配。")
+
+    def _refresh_translation_channel_ui(self) -> None:
+        if not hasattr(self, "ai_settings_frame") or not hasattr(self, "baidu_settings_frame"):
+            return
+        if self._using_baidu_channel():
+            self.ai_settings_frame.grid_remove()
+            self.baidu_settings_frame.grid()
+            self.ai_provider_link.configure(text=self._provider_link_label("百度翻译"))
+        else:
+            self.baidu_settings_frame.grid_remove()
+            self.ai_settings_frame.grid()
+            self.ai_provider_link.configure(text=self._provider_link_label(self.ai_provider_var.get().strip() or "OpenAI"))
 
     def _on_ai_provider_change(self, _event: object | None = None) -> None:
         provider = self.ai_provider_var.get().strip() or "OpenAI"
         settings = self.workspace.load_settings()
         keys = settings.get("ai_api_keys", {})
         self.ai_api_key_var.set(keys.get(provider, ""))
+        base_urls = settings.get("ai_base_urls", {})
+        if not isinstance(base_urls, dict):
+            base_urls = {}
+        self.ai_base_url_var.set(base_urls.get(provider, self._default_ai_base_url(provider)))
+        self.baidu_appid_var.set(settings.get("baidu_appid", ""))
+        self.baidu_secret_var.set(settings.get("baidu_secret", ""))
+        models = settings.get("ai_models", {})
+        if not isinstance(models, dict):
+            models = {}
         if hasattr(self, "ai_model_box"):
             self.ai_model_box.configure(values=self._ai_model_options(provider))
-        self.ai_model_var.set(self._default_ai_model(provider))
+        if provider == "百度翻译":
+            self.ai_model_var.set("无需模型")
+            if hasattr(self, "ai_model_box"):
+                self.ai_model_box.configure(state="disabled")
+        else:
+            if hasattr(self, "ai_model_box"):
+                self.ai_model_box.configure(state="normal")
+            self.ai_model_var.set(str(models.get(provider, self._default_ai_model(provider))))
+        if hasattr(self, "ai_provider_link") and not self._using_baidu_channel():
+            self.ai_provider_link.configure(text=self._provider_link_label(provider))
+        self._refresh_ai_base_url_visibility(provider)
+        self._refresh_parallel_provider_checks()
         self.ai_status_var.set(f"已切换到 {provider}。")
 
     def _ai_model_options(self, provider: str | None = None) -> tuple[str, ...]:
         provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
         if provider == "DeepSeek":
             return ("deepseek-v4-flash", "deepseek-v4-pro")
+        if provider == "Doubao":
+            return ("doubao-seed-2-0-mini-260215", "doubao-seed-2-0-lite-260215", "doubao-seed-2-0-pro-260215")
+        if provider == "GLM":
+            return ("glm-4.5", "glm-4.5-air", "glm-4.5-flash")
+        if provider == "NVIDIA":
+            return ("minimaxai/minimax-m2.7",)
         return ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
 
     def _default_ai_model(self, provider: str | None = None) -> str:
         provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
-        return "deepseek-v4-flash" if provider == "DeepSeek" else "gpt-5.5"
+        if provider == "DeepSeek":
+            return "deepseek-v4-flash"
+        if provider == "Doubao":
+            return "doubao-seed-2-0-mini-260215"
+        if provider == "GLM":
+            return "glm-4.5"
+        if provider == "NVIDIA":
+            return "minimaxai/minimax-m2.7"
+        return "gpt-5.5"
+
+    @staticmethod
+    def _default_ai_base_url(provider: str | None = None) -> str:
+        if provider == "NVIDIA":
+            return "https://integrate.api.nvidia.com/v1"
+        return ""
+
+    def _refresh_ai_base_url_visibility(self, provider: str | None = None) -> None:
+        provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
+        if not hasattr(self, "ai_base_url_label") or not hasattr(self, "ai_base_url_entry"):
+            return
+        if provider == "NVIDIA":
+            self.ai_base_url_label.grid()
+            self.ai_base_url_entry.grid()
+            if not self.ai_base_url_var.get().strip():
+                self.ai_base_url_var.set(self._default_ai_base_url(provider))
+        else:
+            self.ai_base_url_label.grid_remove()
+            self.ai_base_url_entry.grid_remove()
+
+    def _provider_link_label(self, provider: str) -> str:
+        return f"打开 {provider} API 页面"
+
+    def open_ai_provider_page(self) -> None:
+        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
+        url = AI_PROVIDER_URLS.get(provider)
+        if not url:
+            messagebox.showinfo("提示", f"{provider} 暂时没有配置官网跳转地址。")
+            return
+        webbrowser.open(url)
 
     def translate_with_ai(self) -> None:
         if not self.project:
@@ -933,34 +1546,104 @@ class ToolkitApp:
             return
         if not self.translation_entries:
             self.extract_texts(silent=True)
-        pending = [entry for entry in self.translation_entries if self._translation_entry_in_scope(entry) and entry.source.strip() and not entry.target.strip()]
-        self._start_ai_translation(pending, f"当前范围“{self.translation_scope_var.get()}”没有需要 AI 翻译的空译文。")
+        base_pending = [
+            entry
+            for entry in self.translation_entries
+            if self._translation_entry_visible(entry) and entry.source.strip() and not entry.target.strip()
+        ]
+        pending = [entry for entry in base_pending if self._is_likely_dialogue_text(entry)]
+        skipped_non_dialogue = len(base_pending) - len(pending)
+        empty_message = f"当前范围“{self.translation_scope_var.get()}”没有需要 AI 翻译的空译文。"
+        if skipped_non_dialogue:
+            empty_message += f"\n已自动跳过 {skipped_non_dialogue} 条非对白或异常文本。"
+        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue)
 
     def translate_selected_with_ai(self) -> None:
         if not self.project:
             messagebox.showerror("错误", "请先加载项目。")
             return
-        pending = [entry for entry in self._selected_translation_entries() if entry.source.strip() and not entry.target.strip()]
-        self._start_ai_translation(pending, "选中的文本都已翻译，或没有可翻译原文。")
+        base_pending = [
+            entry
+            for entry in self._selected_translation_entries()
+            if entry.source.strip() and not entry.target.strip()
+        ]
+        pending = [entry for entry in base_pending if self._is_likely_dialogue_text(entry)]
+        skipped_non_dialogue = len(base_pending) - len(pending)
+        empty_message = "选中的文本都已翻译，或没有可翻译原文。"
+        if skipped_non_dialogue:
+            empty_message += f"\n已自动跳过 {skipped_non_dialogue} 条非对白或异常文本。"
+        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue)
 
-    def _start_ai_translation(self, pending: list[TranslationEntry], empty_message: str) -> None:
+    def _start_ai_translation(self, pending: list[TranslationEntry], empty_message: str, skipped_non_dialogue: int = 0) -> None:
         if not pending:
             messagebox.showinfo("提示", empty_message)
+            return
+        cache_hits = self._apply_translation_memory(pending)
+        request_entries = self._unique_ai_requests([entry for entry in pending if not entry.target.strip()])
+        if not request_entries:
+            self._save_project_translation_cache()
+            self._refresh_translation_tree()
+            done = sum(1 for item in self.translation_entries if item.target.strip())
+            self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
+            messagebox.showinfo("提示", f"当前需要翻译的文本都已从全局缓存命中：{cache_hits} 条。")
+            return
+        self.save_ai_settings()
+        self.ai_progress_var.set(0)
+        saved = len(pending) - len(request_entries)
+        suffix_parts = []
+        if saved:
+            suffix_parts.append(f"已合并 {saved} 条重复原文")
+        if cache_hits:
+            suffix_parts.append(f"全局缓存命中 {cache_hits} 条")
+        if skipped_non_dialogue:
+            suffix_parts.append(f"已跳过 {skipped_non_dialogue} 条非对白/异常文本")
+        suffix = f"，{'，'.join(suffix_parts)}" if suffix_parts else ""
+        self.ai_status_var.set(f"准备 AI 翻译：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，每批 100 条{suffix}。")
+        self._set_status_text(f"AI 翻译开始：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，每批 100 条{suffix}。")
+        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
+        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+        if provider == "百度翻译":
+            appid = self.baidu_appid_var.get().strip()
+            secret = self.baidu_secret_var.get().strip()
+            if not appid or not secret:
+                messagebox.showerror("缺少百度翻译参数", "请先填写百度翻译的 AppID 和 Secret Key。")
+                return
+            threading.Thread(target=self._baidu_translate_all_worker, args=(pending, request_entries, appid, secret), daemon=True).start()
             return
         api_key = self.ai_api_key_var.get().strip()
         if not api_key:
             messagebox.showerror("缺少 API Key", "请先在右侧 AI 翻译设置里输入 API Key。")
             return
-        request_entries = self._unique_ai_requests(pending)
-        self.save_ai_settings()
-        self.ai_progress_var.set(0)
-        saved = len(pending) - len(request_entries)
-        suffix = f"，已合并 {saved} 条重复原文" if saved else ""
-        self.ai_status_var.set(f"准备 AI 翻译：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，每批 100 条{suffix}。")
-        self._set_status_text(f"AI 翻译开始：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，每批 100 条{suffix}。")
-        provider = self.ai_provider_var.get().strip() or "OpenAI"
-        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
-        threading.Thread(target=self._ai_translate_all_worker, args=(pending, request_entries, api_key, model, provider), daemon=True).start()
+        provider_configs = self._active_ai_provider_configs(provider, api_key, model)
+        if not provider_configs:
+            messagebox.showerror("缺少 API Key", "并行厂商都没有可用 API Key。请先分别选择厂商并保存 API Key。")
+            return
+        providers_text = "、".join(config["provider"] for config in provider_configs)
+        self.ai_status_var.set(f"准备并行翻译：{providers_text}，共 {len(request_entries)} 条。")
+        threading.Thread(target=self._ai_translate_all_worker, args=(pending, request_entries, provider_configs), daemon=True).start()
+
+    def _apply_translation_memory(self, entries: list[TranslationEntry]) -> int:
+        hits = 0
+        for entry in entries:
+            if entry.target.strip():
+                continue
+            cached = self.translation_memory.get(entry.source.strip(), "").strip()
+            if cached:
+                entry.target = cached
+                hits += 1
+        return hits
+
+    def _remember_translations(self, entries: list[TranslationEntry]) -> int:
+        added = 0
+        for entry in entries:
+            source = entry.source.strip()
+            target = entry.target.strip()
+            if source and target and self.translation_memory.get(source) != target:
+                self.translation_memory[source] = target
+                added += 1
+        if added:
+            self.workspace.save_translation_memory(self.translation_memory)
+        return added
 
     @staticmethod
     def _unique_ai_requests(entries: list[TranslationEntry]) -> list[TranslationEntry]:
@@ -973,30 +1656,85 @@ class ToolkitApp:
                 unique.append(entry)
         return unique
 
-    def _ai_translate_all_worker(self, pending_entries: list[TranslationEntry], request_entries: list[TranslationEntry], api_key: str, model: str, provider: str) -> None:
+    def _active_ai_provider_configs(self, current_provider: str, current_api_key: str, current_model: str) -> list[dict[str, str]]:
+        settings = self.workspace.load_settings()
+        keys = settings.get("ai_api_keys", {})
+        models = settings.get("ai_models", {})
+        base_urls = settings.get("ai_base_urls", {})
+        if not isinstance(keys, dict):
+            keys = {}
+        if not isinstance(models, dict):
+            models = {}
+        if not isinstance(base_urls, dict):
+            base_urls = {}
+        requested = self._selected_parallel_providers()
+        if not requested:
+            requested = [current_provider]
+        configs: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for provider in requested:
+            if provider == "百度翻译" or provider in seen:
+                continue
+            seen.add(provider)
+            api_key = current_api_key if provider == current_provider else str(keys.get(provider, "")).strip()
+            if not api_key:
+                continue
+            model = current_model if provider == current_provider else str(models.get(provider, self._default_ai_model(provider))).strip()
+            configs.append(
+                {
+                    "provider": provider,
+                    "api_key": api_key,
+                    "model": model or self._default_ai_model(provider),
+                    "base_url": str(base_urls.get(provider, self._default_ai_base_url(provider))).strip(),
+                }
+            )
+        return configs
+
+    def _ai_translate_all_worker(self, pending_entries: list[TranslationEntry], request_entries: list[TranslationEntry], provider_configs: list[dict[str, str]]) -> None:
         total = len(request_entries)
         translated = 0
+        completed = 0
         pending_by_source: dict[str, list[TranslationEntry]] = {}
         for entry in pending_entries:
             pending_by_source.setdefault(entry.source.strip(), []).append(entry)
+
+        def apply_batch(batch: list[TranslationEntry], translations: dict[str, str]) -> int:
+            count = 0
+            for entry in batch:
+                value = translations.get(entry.entry_id, "").strip()
+                if value:
+                    for related in pending_by_source.get(entry.source.strip(), [entry]):
+                        if not related.target.strip():
+                            related.target = value
+                            count += 1
+                    self.translation_memory[entry.source.strip()] = value
+            return count
+
         try:
-            for start in range(0, total, 100):
-                batch = request_entries[start : start + 100]
-                batch_index = start // 100 + 1
-                batch_count = (total + 99) // 100
-                self.root.after(0, lambda b=batch_index, c=batch_count: self.ai_status_var.set(f"正在翻译第 {b}/{c} 批，每批最多 100 条..."))
-                translations = self._request_ai_translations(batch, api_key, model, provider)
-                for entry in batch:
-                    value = translations.get(entry.entry_id, "").strip()
-                    if value:
-                        for related in pending_by_source.get(entry.source.strip(), [entry]):
-                            if not related.target.strip():
-                                related.target = value
-                                translated += 1
-                progress = min(100, ((start + len(batch)) / total) * 100)
-                self._save_project_translation_cache()
-                self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
-                self.root.after(0, self._refresh_translation_tree)
+            batches = [request_entries[start : start + 100] for start in range(0, total, 100)]
+            max_workers = min(4, max(1, len(batches)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_map = {
+                    pool.submit(self._request_ai_translations, batch, config["api_key"], config["model"], config["provider"], config.get("base_url", "")): (index + 1, len(batches), batch, config)
+                    for index, batch in enumerate(batches)
+                    for config in (provider_configs[index % len(provider_configs)],)
+                }
+                for future in concurrent.futures.as_completed(future_map):
+                    batch_index, batch_count, batch, config = future_map[future]
+                    provider_name = config["provider"]
+                    self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name: self.ai_status_var.set(f"{p} 正在翻译第 {b}/{c} 批，每批最多 100 条..."))
+                    try:
+                        translations = future.result()
+                    except Exception as exc:
+                        self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name, e=exc: self.ai_status_var.set(f"{p} 第 {b}/{c} 批失败，正在拆分重试：{e}"))
+                        translations = self._retry_ai_batch(batch, config)
+                    translated += apply_batch(batch, translations)
+                    completed += len(batch)
+                    progress = min(100, (completed / total) * 100)
+                    self.workspace.save_translation_memory(self.translation_memory)
+                    self._save_project_translation_cache()
+                    self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
+                    self.root.after(0, self._refresh_translation_tree)
         except Exception as exc:
             self.root.after(0, lambda: self.ai_status_var.set(f"AI 翻译失败：{exc}"))
             self.root.after(0, lambda: messagebox.showerror("AI 翻译失败", str(exc)))
@@ -1006,21 +1744,101 @@ class ToolkitApp:
             self.translation_map = {entry.entry_id: entry for entry in self.translation_entries}
             done = sum(1 for item in self.translation_entries if item.target.strip())
             self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
+            remembered = self._remember_translations(self.translation_entries)
             self._refresh_translation_tree()
             self.ai_progress_var.set(100)
-            self.ai_status_var.set(f"一键翻译完成：新增 {translated} 条，实际请求 {total} 条，当前已译 {done}/{len(self.translation_entries)}。")
+            self.ai_status_var.set(f"一键翻译完成：新增 {translated} 条，实际请求 {total} 条，缓存更新 {remembered} 条，当前已译 {done}/{len(self.translation_entries)}。")
             self._save_project_translation_cache()
             if self.project:
                 self._append_recent_task("AI 一键翻译", self.project.root, self.project.engine)
             self._set_status_text("AI 翻译完成，译文已自动保存到当前游戏目录内的工作文件夹。")
         self.root.after(0, finish)
 
-    def _request_ai_translations(self, entries: list[TranslationEntry], api_key: str, model: str, provider: str) -> dict[str, str]:
+    def _retry_ai_batch(self, batch: list[TranslationEntry], config: dict[str, str]) -> dict[str, str]:
+        if not batch:
+            return {}
+        if len(batch) <= 10:
+            try:
+                return self._request_ai_translations(batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""))
+            except Exception:
+                return {}
+        mid = len(batch) // 2
+        result: dict[str, str] = {}
+        result.update(self._retry_ai_batch(batch[:mid], config))
+        result.update(self._retry_ai_batch(batch[mid:], config))
+        return result
+
+    def _baidu_translate_all_worker(self, pending_entries: list[TranslationEntry], request_entries: list[TranslationEntry], appid: str, secret: str) -> None:
+        total = len(request_entries)
+        translated = 0
+        completed = 0
+        pending_by_source: dict[str, list[TranslationEntry]] = {}
+        for entry in pending_entries:
+            pending_by_source.setdefault(entry.source.strip(), []).append(entry)
+
+        try:
+            batches = [request_entries[start : start + 100] for start in range(0, total, 100)]
+            max_workers = min(3, max(1, len(batches)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                future_map = {
+                    pool.submit(self._request_baidu_translations, batch, appid, secret): (index + 1, len(batches), batch)
+                    for index, batch in enumerate(batches)
+                }
+                for future in concurrent.futures.as_completed(future_map):
+                    batch_index, batch_count, batch = future_map[future]
+                    self.root.after(0, lambda b=batch_index, c=batch_count: self.ai_status_var.set(f"正在使用百度翻译，第 {b}/{c} 批，每批最多 100 条..."))
+                    try:
+                        translations = future.result()
+                    except Exception as exc:
+                        self.root.after(0, lambda b=batch_index, c=batch_count, e=exc: self.ai_status_var.set(f"百度第 {b}/{c} 批失败，正在跳过：{e}"))
+                        translations = {}
+                    for entry in batch:
+                        value = translations.get(entry.entry_id, "").strip()
+                        if value:
+                            for related in pending_by_source.get(entry.source.strip(), [entry]):
+                                if not related.target.strip():
+                                    related.target = value
+                                    translated += 1
+                            self.translation_memory[entry.source.strip()] = value
+                    completed += len(batch)
+                    progress = min(100, (completed / total) * 100)
+                    self.workspace.save_translation_memory(self.translation_memory)
+                    self._save_project_translation_cache()
+                    self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
+                    self.root.after(0, self._refresh_translation_tree)
+        except Exception as exc:
+            self.root.after(0, lambda: self.ai_status_var.set(f"百度翻译失败：{exc}"))
+            self.root.after(0, lambda: messagebox.showerror("百度翻译失败", str(exc)))
+            return
+
+        def finish() -> None:
+            self.translation_map = {entry.entry_id: entry for entry in self.translation_entries}
+            done = sum(1 for item in self.translation_entries if item.target.strip())
+            self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
+            remembered = self._remember_translations(self.translation_entries)
+            self._refresh_translation_tree()
+            self.ai_progress_var.set(100)
+            self.ai_status_var.set(f"百度翻译完成：新增 {translated} 条，实际请求 {total} 条，缓存更新 {remembered} 条，当前已译 {done}/{len(self.translation_entries)}。")
+            self._save_project_translation_cache()
+            if self.project:
+                self._append_recent_task("百度翻译", self.project.root, self.project.engine)
+            self._set_status_text("百度翻译完成，译文已自动保存到当前游戏目录内的工作文件夹。")
+        self.root.after(0, finish)
+
+    def _request_ai_translations(self, entries: list[TranslationEntry], api_key: str, model: str, provider: str, base_url: str = "") -> dict[str, str]:
         key_map = {str(index): entry.entry_id for index, entry in enumerate(entries, start=1)}
-        system_prompt = "你是专业游戏本地化译者。将 RPG Maker/Ren'Py 游戏对白翻译成自然简体中文。保留控制符、变量占位符、转义符、颜色代码、换行标记、标点结构和人名格式。只输出 JSON 对象，键必须使用输入里的短编号 id，不要输出解释。"
+        system_prompt = (
+            "你是专业游戏本地化译者。只翻译真正的游戏对白、台词、选项、菜单说明或叙述文本。"
+            "如果输入更像文件路径、图片名、资源名、URL、脚本代码、变量名、乱码、纯符号串、调试信息或其他非对白内容，"
+            "请在对应 id 的值里返回空字符串，表示跳过，不要改写。"
+            "保留控制符、变量占位符、转义符、颜色代码、换行标记和人名格式。"
+            "只输出合法 JSON 对象，例如 {\"1\":\"译文\",\"2\":\"\"}。"
+            "JSON 语法必须使用英文双引号、英文冒号和英文逗号；不要使用中文引号、中文冒号、书名号、数组外壳、Markdown 或解释。"
+        )
         user_prompt = json.dumps(
             {
                 "task": "translate_to_simplified_chinese",
+                "rule": "only_translate_dialogue_like_text; return empty string for non-dialogue or garbled content",
                 "format": {"id": "translated text"},
                 "entries": [
                     {
@@ -1037,9 +1855,39 @@ class ToolkitApp:
         )
         if provider == "DeepSeek":
             raw = self._request_deepseek_translations(api_key, model, system_prompt, user_prompt)
+        elif provider == "Doubao":
+            raw = self._request_doubao_translations(api_key, self._normalize_doubao_model(model), system_prompt, user_prompt)
+        elif provider == "GLM":
+            raw = self._request_glm_translations(api_key, model, system_prompt, user_prompt)
+        elif provider == "NVIDIA":
+            raw = self._request_nvidia_translations(api_key, model, system_prompt, user_prompt, base_url)
         else:
             raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt)
-        return {key_map[key]: value for key, value in raw.items() if key in key_map and str(value).strip()}
+        result: dict[str, str] = {}
+        for key, value in raw.items():
+            if key not in key_map:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            source_entry = entries[int(key) - 1] if key.isdigit() and 1 <= int(key) <= len(entries) else None
+            if source_entry and not self._is_likely_dialogue_text(source_entry):
+                continue
+            if self._looks_like_non_dialogue_translation(text):
+                continue
+            result[key_map[key]] = text
+        return result
+
+    @staticmethod
+    def _looks_like_non_dialogue_translation(text: str) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return True
+        if any(token in lowered for token in (".png", ".jpg", ".jpeg", ".webp", ".ogg", ".wav", ".mp3", ".json", ".rpyc", ".rpa", ".exe", "http://", "https://")):
+            return True
+        if re.fullmatch(r"[\W_]+", lowered):
+            return True
+        return False
 
     def _request_openai_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, str]:
         payload = {
@@ -1067,7 +1915,7 @@ class ToolkitApp:
             raise RuntimeError(f"OpenAI API 返回错误：{exc.code}\n{detail}") from exc
         payload = json.loads(raw)
         text = self._extract_response_text(payload)
-        parsed = json.loads(text)
+        parsed = self._load_llm_json(text, "OpenAI")
         if not isinstance(parsed, dict):
             raise RuntimeError("AI 返回内容不是 JSON 对象。")
         return {str(key): str(value) for key, value in parsed.items()}
@@ -1101,10 +1949,168 @@ class ToolkitApp:
         text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
         if not text:
             raise RuntimeError("无法从 DeepSeek 响应中读取文本。")
-        parsed = json.loads(text)
+        parsed = self._load_llm_json(text, "DeepSeek")
         if not isinstance(parsed, dict):
             raise RuntimeError("AI 返回内容不是 JSON 对象。")
         return {str(key): str(value) for key, value in parsed.items()}
+
+    def _request_doubao_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, str]:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 404 and "InvalidEndpointOrModel.NotFound" in detail:
+                detail += (
+                    "\n\n提示：火山方舟 API 需要使用已开通的可调用模型 ID 或推理接入点 ID。"
+                    "如果你刚才填的是控制台模型详情 ID，请改用 doubao-seed-2-0-mini-260215，"
+                    "或在方舟控制台开通/创建对应推理接入点后填写接入点 ID。"
+                )
+            raise RuntimeError(f"Doubao API 返回错误：{exc.code}\n{detail}") from exc
+        payload = json.loads(raw)
+        text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("无法从 Doubao 响应中读取文本。")
+        parsed = self._load_llm_json(text, "Doubao")
+        if not isinstance(parsed, dict):
+            raise RuntimeError("AI 返回内容不是 JSON 对象。")
+        return {str(key): str(value) for key, value in parsed.items()}
+
+    @staticmethod
+    def _normalize_doubao_model(model: str) -> str:
+        aliases = {
+            "doubao-seed-2-0-mini": "doubao-seed-2-0-mini-260215",
+            "doubao-seed-2-0-lite": "doubao-seed-2-0-lite-260215",
+            "doubao-seed-2-0-pro": "doubao-seed-2-0-pro-260215",
+        }
+        return aliases.get(model.strip(), model.strip())
+
+    def _request_glm_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, str]:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GLM API 返回错误：{exc.code}\n{detail}") from exc
+        payload = json.loads(raw)
+        text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("无法从 GLM 响应中读取文本。")
+        parsed = self._load_llm_json(text, "GLM")
+        if not isinstance(parsed, dict):
+            raise RuntimeError("AI 返回内容不是 JSON 对象。")
+        return {str(key): str(value) for key, value in parsed.items()}
+
+    def _request_nvidia_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str, base_url: str = "") -> dict[str, str]:
+        endpoint = self._nvidia_chat_completions_url(base_url)
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 1,
+            "top_p": 0.95,
+            "max_tokens": 8192,
+            "stream": False,
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"NVIDIA API 返回错误：{exc.code}\n{detail}") from exc
+        payload = json.loads(raw)
+        text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            raise RuntimeError("无法从 NVIDIA 响应中读取文本。")
+        parsed = self._load_llm_json(text, "NVIDIA")
+        if not isinstance(parsed, dict):
+            raise RuntimeError("AI 返回内容不是 JSON 对象。")
+        return {str(key): str(value) for key, value in parsed.items()}
+
+    def _nvidia_chat_completions_url(self, base_url: str = "") -> str:
+        base_url = base_url.strip() or self.ai_base_url_var.get().strip() or self._default_ai_base_url("NVIDIA")
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            return base_url
+        return f"{base_url}/chat/completions"
+
+    def _request_baidu_translations(self, entries: list[TranslationEntry], appid: str, secret: str) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for index, entry in enumerate(entries, start=1):
+            query = entry.source.strip()
+            salt = str(int(datetime.utcnow().timestamp() * 1000))
+            sign = hashlib.md5(f"{appid}{query}{salt}{secret}".encode("utf-8")).hexdigest()
+            params = urllib.parse.urlencode(
+                {
+                    "q": query,
+                    "from": "auto",
+                    "to": "zh",
+                    "appid": appid,
+                    "salt": salt,
+                    "sign": sign,
+                }
+            )
+            request = urllib.request.Request(f"https://fanyi-api.baidu.com/api/trans/vip/translate?{params}", method="GET")
+            try:
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    raw = response.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"百度翻译返回错误：{exc.code}\n{detail}") from exc
+            payload = json.loads(raw)
+            if "error_code" in payload:
+                raise RuntimeError(f"百度翻译错误：{payload.get('error_code')} {payload.get('error_msg', '')}")
+            items = payload.get("trans_result", [])
+            if items:
+                result[str(index)] = items[0].get("dst", "")
+        return result
 
     @staticmethod
     def _extract_response_text(payload: dict) -> str:
@@ -1120,6 +2126,122 @@ class ToolkitApp:
             return "\n".join(chunks)
         raise RuntimeError("无法从 OpenAI 响应中读取文本。")
 
+    @staticmethod
+    def _load_llm_json(text: str, provider: str) -> dict:
+        candidate = text.strip()
+        if not candidate:
+            raise RuntimeError(f"{provider} 没有返回可解析内容。")
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+            candidate = re.sub(r"\s*```$", "", candidate).strip()
+        try:
+            parsed = json.loads(candidate)
+        except JSONDecodeError as exc:
+            extracted = ToolkitApp._extract_json_object(candidate)
+            if extracted is None:
+                repaired = ToolkitApp._parse_llm_loose_json(candidate)
+                if repaired:
+                    return repaired
+                raise RuntimeError(f"{provider} 返回的不是有效 JSON：{exc}\n原始内容前 400 字符：{candidate[:400]}") from exc
+            try:
+                parsed = json.loads(extracted)
+            except JSONDecodeError as inner_exc:
+                repaired = ToolkitApp._parse_llm_loose_json(extracted) or ToolkitApp._parse_llm_loose_json(candidate)
+                if repaired:
+                    return repaired
+                raise RuntimeError(f"{provider} 返回了疑似 JSON，但仍无法解析：{inner_exc}\n原始内容前 400 字符：{candidate[:400]}") from inner_exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"{provider} 返回内容不是 JSON 对象。")
+        return parsed
+
+    @staticmethod
+    def _parse_llm_loose_json(text: str) -> dict[str, str]:
+        normalized = (
+            text.strip()
+            .replace("```json", "")
+            .replace("```", "")
+            .replace("【", "{")
+            .replace("】", "}")
+            .replace("：", ":")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("‘", '"')
+            .replace("’", '"')
+            .replace("❤", "\\u2764")
+        )
+        result: dict[str, str] = {}
+        for raw_line in normalized.splitlines():
+            line = raw_line.strip().strip(",，{}[]")
+            if not line:
+                continue
+            match = re.match(r'^"?(\d+)[^:]*:\s*"?(.*?)"?\s*[,，]?$', line)
+            if not match:
+                match = re.match(r'^"?(\d+)(?:["\'*:\s]+)+(.*?)"?\s*[,，]?$', line)
+            if match:
+                value = match.group(2).strip().strip('",，')
+                if value:
+                    result[match.group(1)] = value.replace("\\u2764", "❤")
+        repaired = ToolkitApp._repair_loose_json_object(normalized.replace("，", ","))
+        result.update({key: value for key, value in repaired.items() if key not in result})
+        return result
+
+    @staticmethod
+    def _repair_loose_json_object(text: str) -> dict[str, str]:
+        body = text.strip()
+        start = body.find("{")
+        end = body.rfind("}")
+        if start >= 0 and end > start:
+            body = body[start + 1 : end]
+        entries: list[str] = []
+        current: list[str] = []
+        in_string = False
+        escaped = False
+        for char in body:
+            if escaped:
+                current.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                current.append(char)
+                escaped = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                current.append(char)
+                continue
+            if char == "," and not in_string:
+                item = "".join(current).strip()
+                if item:
+                    entries.append(item)
+                current = []
+                continue
+            current.append(char)
+        item = "".join(current).strip()
+        if item:
+            entries.append(item)
+
+        result: dict[str, str] = {}
+        for entry in entries:
+            match = re.match(r'^"?(\d+)[^0-9":,]*"?\s*:\s*(.*)$', entry.strip())
+            if not match:
+                continue
+            key = match.group(1)
+            value = match.group(2).strip().strip(",")
+            if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+                value = value[1:-1]
+            value = value.strip()
+            if value:
+                result[key] = value.replace("\\u2764", "❤")
+        return result
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str | None:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        return text[start : end + 1]
+
     def update_translation_target(self) -> None:
         selection = self.translation_tree.selection()
         if not selection:
@@ -1128,26 +2250,54 @@ class ToolkitApp:
         if selection[0] == "__notice__":
             messagebox.showinfo("提示", "请先选择一条真实文本。")
             return
-        entry = self.translation_map[selection[0]]
-        entry.target = self.target_var.get()
-        self.translation_tree.item(entry.entry_id, values=(self._translation_category_label(entry.category), entry.file, entry.context, entry.source, entry.target))
+        entry_id = self.translation_view_id_map.get(selection[0], selection[0])
+        entry = self.translation_map[entry_id]
+        entry.target = self._target_editor_value()
+        self.target_var.set(entry.target)
+        self.translation_tree.item(selection[0], values=(self._translation_category_label(entry.category), entry.file, entry.context, entry.source, entry.target))
         self.translation_detail_var.set(f"{entry.file}\n{entry.context}\n原文：{entry.source}")
         self._save_project_translation_cache()
 
     def copy_source_to_target(self) -> None:
         selection = self.translation_tree.selection()
         if selection and selection[0] != "__notice__":
-            self.target_var.set(self.translation_map[selection[0]].source)
+            entry_id = self.translation_view_id_map.get(selection[0], selection[0])
+            self._set_target_editor(self.translation_map[entry_id].source)
+
+    def _set_target_editor(self, value: str) -> None:
+        self.target_var.set(value)
+        if hasattr(self, "target_text"):
+            self.target_text.delete("1.0", "end")
+            self.target_text.insert("1.0", value)
+
+    def _target_editor_value(self) -> str:
+        if hasattr(self, "target_text"):
+            return self.target_text.get("1.0", "end-1c")
+        return self.target_var.get()
+
+    def _clear_target_editor(self) -> None:
+        self._set_target_editor("")
 
     def _selected_translation_entries(self) -> list[TranslationEntry]:
         entries: list[TranslationEntry] = []
         for item_id in self.translation_tree.selection():
             if item_id == "__notice__":
                 continue
-            entry = self.translation_map.get(item_id)
+            entry_id = self.translation_view_id_map.get(item_id, item_id)
+            entry = self.translation_map.get(entry_id)
             if entry:
                 entries.append(entry)
         return entries
+
+    def select_visible_translations(self) -> None:
+        item_ids = [item_id for item_id in self.translation_tree.get_children() if item_id != "__notice__"]
+        if not item_ids:
+            messagebox.showinfo("提示", "当前筛选条件下没有可选择的文本。")
+            return
+        self.translation_tree.selection_set(item_ids)
+        self.translation_tree.focus(item_ids[0])
+        self.translation_tree.see(item_ids[0])
+        self.translation_detail_var.set(f"已选择当前显示的 {len(item_ids)} 条文本。可点击“翻译选中”只翻译这些条目。")
 
     def _project_workspace_dir(self) -> Path | None:
         if not self.project:
@@ -1197,7 +2347,7 @@ class ToolkitApp:
             self.data_record_map = {}
             self.data_object_map = {}
             self.data_status_var.set("0 条")
-            self._set_data_notice("请先选择或拖入 Game.exe。")
+            self._set_data_notice("请先选择或拖入游戏 exe。")
             return
         if not self._supports_full_editing(self.project):
             self.data_records = []
@@ -1208,17 +2358,32 @@ class ToolkitApp:
             if not silent:
                 messagebox.showinfo("提示", f"{self.project.engine} 当前仅支持识别、入库和启动。")
             return
+        project = self.project
+        self.data_status_var.set("读取中...")
+        threading.Thread(target=self._load_data_records_worker, args=(project, silent), daemon=True).start()
+
+    def _load_data_records_worker(self, project: ProjectInfo, silent: bool) -> None:
         try:
-            service = self._get_service()
-            self.data_records = service.list_data_records() if hasattr(service, "list_data_records") else []
+            service = self._service_for_project(project)
+            records = service.list_data_records() if hasattr(service, "list_data_records") else []
         except Exception as exc:
-            self.data_records = []
-            self.data_record_map = {}
-            self.data_status_var.set("读取失败")
-            self._set_data_notice(f"数据读取失败：{exc}")
-            if not silent:
-                messagebox.showerror("读取失败", str(exc))
+            self.root.after(0, lambda err=exc, s=silent: self._handle_data_records_error(err, s))
             return
+        self.root.after(0, lambda r=records, p=project: self._finish_load_data_records(r, p))
+
+    def _handle_data_records_error(self, exc: Exception, silent: bool) -> None:
+        self.data_records = []
+        self.data_record_map = {}
+        self.data_object_map = {}
+        self.data_status_var.set("读取失败")
+        self._set_data_notice(f"数据读取失败：{exc}")
+        if not silent:
+            messagebox.showerror("读取失败", str(exc))
+
+    def _finish_load_data_records(self, records: list[DataRecord], project: ProjectInfo) -> None:
+        if not self.project or self.project.root != project.root:
+            return
+        self.data_records = records
         self.data_record_map = {record.record_id: record for record in self.data_records}
         self.data_object_map = self._group_data_objects(self.data_records)
         self.data_status_var.set(f"{len(self.data_records)} 条")
@@ -1256,15 +2421,29 @@ class ToolkitApp:
             self.save_slot_box.configure(values=())
             self.save_status_var.set("请先加载项目。")
             return
+        project = self.project
+        self.save_status_var.set("正在扫描存档...")
+        threading.Thread(target=self._refresh_save_slots_worker, args=(project, silent), daemon=True).start()
+
+    def _refresh_save_slots_worker(self, project: ProjectInfo, silent: bool) -> None:
         try:
-            service = self._get_service()
-            self.save_slots = service.list_save_slots() if hasattr(service, "list_save_slots") else []
+            service = self._service_for_project(project)
+            slots = service.list_save_slots() if hasattr(service, "list_save_slots") else []
         except Exception as exc:
-            self.save_slots = []
-            self.save_status_var.set(f"读取存档失败：{exc}")
-            if not silent:
-                messagebox.showerror("读取存档失败", str(exc))
+            self.root.after(0, lambda err=exc, s=silent: self._handle_save_slots_error(err, s))
             return
+        self.root.after(0, lambda s=slots, p=project: self._finish_refresh_save_slots(s, p))
+
+    def _handle_save_slots_error(self, exc: Exception, silent: bool) -> None:
+        self.save_slots = []
+        self.save_status_var.set(f"读取存档失败：{exc}")
+        if not silent:
+            messagebox.showerror("读取存档失败", str(exc))
+
+    def _finish_refresh_save_slots(self, slots: list[SaveSlot], project: ProjectInfo) -> None:
+        if not self.project or self.project.root != project.root:
+            return
+        self.save_slots = slots
         values = [f"{slot.slot_id}: {slot.path.name}  {slot.modified_at}" for slot in self.save_slots]
         self.save_slot_box.configure(values=values)
         if values and not self.save_slot_var.get():
@@ -1693,11 +2872,26 @@ class ToolkitApp:
             if raw_path:
                 self.load_path(Path(raw_path))
             if not self.project:
-                messagebox.showerror("错误", "请先选择 Game.exe。")
+                messagebox.showerror("错误", "请先选择游戏 exe。")
                 return
         launcher = self.project.launcher_path
         if not launcher or not launcher.exists():
-            messagebox.showerror("错误", "当前项目未找到可启动的 Game.exe。")
+            fallback = Path(self.path_var.get().strip()) if self.path_var.get().strip() else None
+            if fallback and fallback.is_file() and fallback.suffix.lower() == ".exe" and fallback.exists():
+                launcher = fallback
+                self.project.launcher_path = fallback
+            elif self.project and self.project.root.exists():
+                guess = self.project.root / "Game.exe"
+                if guess.exists():
+                    launcher = guess
+                    self.project.launcher_path = guess
+                else:
+                    for candidate in sorted(self.project.root.glob("*.exe")):
+                        launcher = candidate
+                        self.project.launcher_path = candidate
+                        break
+        if not launcher or not launcher.exists():
+            messagebox.showerror("错误", "当前项目未找到可启动的 exe。")
             return
         self.game_process = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
         self.run_status_var.set("已启动")
@@ -1819,10 +3013,14 @@ class ToolkitApp:
     def _get_service(self) -> RPGMakerService | RenPyService:
         if not self.project:
             raise ValueError("未加载项目。")
-        if self.project.engine == "RPG Maker MV/MZ":
-            return RPGMakerService(self.project)
-        if self.project.engine == "Ren'Py":
-            return RenPyService(self.project)
+        return self._service_for_project(self.project)
+
+    @staticmethod
+    def _service_for_project(project: ProjectInfo) -> RPGMakerService | RenPyService:
+        if project.engine == "RPG Maker MV/MZ":
+            return RPGMakerService(project)
+        if project.engine == "Ren'Py":
+            return RenPyService(project)
         raise ValueError("当前引擎暂未启用完整编辑。")
 
     def _supports_full_editing(self, project: ProjectInfo) -> bool:
@@ -1833,18 +3031,47 @@ class ToolkitApp:
 
     def _refresh_translation_tree(self) -> None:
         needle = self.filter_var.get().strip().lower()
+        if self.translation_entries:
+            self.translation_detail_var.set("选择一条文本后可在右侧编辑译文。")
         for item in self.translation_tree.get_children():
             self.translation_tree.delete(item)
+        self.translation_view_id_map = {}
         inserted = 0
-        for entry in self.translation_entries:
-            if not self._translation_entry_in_scope(entry):
+        matched = 0
+        for index, entry in enumerate(self.translation_entries):
+            if not self._translation_entry_visible(entry):
                 continue
             haystack = f"{entry.file} {entry.context} {entry.source} {entry.target}".lower()
             if not needle or needle in haystack:
-                self.translation_tree.insert("", "end", iid=entry.entry_id, values=(self._translation_category_label(entry.category), entry.file, entry.context, entry.source, entry.target))
-                inserted += 1
+                matched += 1
+                if inserted < TREE_RENDER_LIMIT:
+                    view_id = f"row_{index}"
+                    self.translation_view_id_map[view_id] = entry.entry_id
+                    self.translation_tree.insert("", "end", iid=view_id, values=(self._translation_category_label(entry.category), entry.file, entry.context, entry.source, entry.target))
+                    inserted += 1
         if not inserted and self.translation_entries:
             self._set_translation_notice("当前筛选条件下没有匹配文本。")
+        elif matched > TREE_RENDER_LIMIT:
+            self.translation_detail_var.set(f"当前匹配 {matched} 条，已先显示前 {inserted} 条。可输入关键词缩小范围，界面会更流畅。")
+
+    def _refresh_translation_file_filter(self) -> None:
+        files = sorted({entry.file for entry in self.translation_entries if entry.file})
+        values = ("全部文件", *files)
+        if hasattr(self, "translation_file_box"):
+            self.translation_file_box.configure(values=values)
+            widest = max((len(item) for item in values), default=4)
+            width = max(18, min(52, widest + 2))
+            self.translation_file_box.configure(width=width)
+        if self.translation_file_filter_var.get() not in values:
+            self.translation_file_filter_var.set("全部文件")
+
+    def _translation_entry_visible(self, entry: TranslationEntry) -> bool:
+        if not self._translation_entry_in_scope(entry):
+            return False
+        selected_file = self.translation_file_filter_var.get().strip()
+        if selected_file and selected_file != "全部文件" and entry.file != selected_file:
+            return False
+        return True
 
     def _translation_entry_in_scope(self, entry: TranslationEntry) -> bool:
         scope = self.translation_scope_var.get()
@@ -1865,6 +3092,42 @@ class ToolkitApp:
             "system": "系统",
             "plugin": "插件",
         }.get(category, category or "文本")
+
+    @staticmethod
+    def _looks_already_chinese(text: str) -> bool:
+        stripped = text.strip()
+        if not stripped:
+            return True
+        cjk = sum(1 for char in stripped if "\u4e00" <= char <= "\u9fff")
+        kana = sum(1 for char in stripped if "\u3040" <= char <= "\u30ff")
+        latin = sum(1 for char in stripped if "a" <= char.lower() <= "z")
+        meaningful = cjk + kana + latin
+        if meaningful == 0:
+            return False
+        return cjk >= 2 and kana == 0 and (cjk / meaningful >= 0.5 or cjk >= latin)
+
+    @staticmethod
+    def _is_likely_dialogue_text(entry: TranslationEntry) -> bool:
+        text = entry.source.strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if any(token in lowered for token in (".png", ".jpg", ".jpeg", ".webp", ".webm", ".ogg", ".mp3", ".wav", ".mp4", ".json", ".rpyc", ".rpa", ".exe", "http://", "https://", "www.")):
+            return False
+        if "\\" in text or "/" in text:
+            if re.search(r"[a-zA-Z]:\\|\\\\|/|\\.", text):
+                return False
+        if len(text) < 2:
+            return False
+        if re.fullmatch(r"[\W_]+", text):
+            return False
+        if entry.category != "dialogue" and len(text) < 3:
+            return False
+        if text.count("{") != text.count("}") or text.count("[") != text.count("]"):
+            return False
+        if not any("\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" or ch.isalpha() for ch in text):
+            return False
+        return True
 
     def _refresh_data_tree(self) -> None:
         needle = self.data_filter_var.get().strip().lower()
@@ -1923,6 +3186,7 @@ class ToolkitApp:
     def _set_translation_notice(self, message: str) -> None:
         if not hasattr(self, "translation_tree"):
             return
+        self.translation_view_id_map = {}
         for item in self.translation_tree.get_children():
             self.translation_tree.delete(item)
         self.translation_tree.insert("", "end", iid="__notice__", values=("提示", "", "", message, ""))
@@ -1954,7 +3218,7 @@ class ToolkitApp:
     def _launch_library_entry(self, entry: LibraryEntry) -> None:
         launcher = Path(entry.launcher_path) if entry.launcher_path else Path(entry.path) / "Game.exe"
         if not launcher.exists():
-            messagebox.showerror("错误", "该项目没有找到可启动的 Game.exe。")
+            messagebox.showerror("错误", "该项目没有找到可启动的 exe。")
             return
         self.game_process = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
         self.run_status_var.set("已启动")
@@ -2006,8 +3270,9 @@ class ToolkitApp:
         if selection:
             if selection[0] == "__notice__":
                 return
-            entry = self.translation_map[selection[0]]
-            self.target_var.set(entry.target)
+            entry_id = self.translation_view_id_map.get(selection[0], selection[0])
+            entry = self.translation_map[entry_id]
+            self._set_target_editor(entry.target)
             self.translation_detail_var.set(f"{entry.file}\n{entry.context}\n原文：{entry.source}")
 
     def _on_data_select(self, _event: object) -> None:
@@ -2094,7 +3359,7 @@ class ToolkitApp:
                 if count:
                     buf = ctypes.create_unicode_buffer(32768)
                     shell32.DragQueryFileW(wparam, 0, buf, len(buf))
-                    self.root.after(0, lambda value=buf.value: self.load_path(Path(value)))
+                    self._pending_drop_path = buf.value
                 shell32.DragFinish(wparam)
                 return 0
             if self._old_wndproc:
@@ -2104,6 +3369,13 @@ class ToolkitApp:
         self._drop_callback = WNDPROC(wndproc)
         callback_ptr = ctypes.cast(self._drop_callback, ctypes.c_void_p).value
         self._old_wndproc = user32.SetWindowLongPtrW(hwnd, GWL_WNDPROC, LONG_PTR(callback_ptr))
+
+    def _flush_pending_drop(self) -> None:
+        if self._pending_drop_path:
+            path = self._pending_drop_path
+            self._pending_drop_path = None
+            self.load_path(Path(path))
+        self.root.after(100, self._flush_pending_drop)
 
     def _project_root(self) -> Path:
         if getattr(sys, "frozen", False):

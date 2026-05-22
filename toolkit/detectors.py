@@ -6,11 +6,14 @@ from .models import ProjectInfo
 
 
 def detect_project(path: str | Path) -> ProjectInfo:
-    root = Path(path).expanduser().resolve()
+    selected = Path(path).expanduser().resolve()
+    selected_launcher = selected if selected.is_file() and selected.suffix.lower() == ".exe" else None
+    root = selected
     if root.is_file():
         root = root.parent
 
     game_exe = root / "Game.exe"
+    launcher = selected_launcher or (game_exe if game_exe.exists() else None)
     rpg_data = root / "data"
     rpg_www_data = root / "www" / "data"
     renpy_game = root / "game"
@@ -20,7 +23,7 @@ def detect_project(path: str | Path) -> ProjectInfo:
             engine="RPG Maker MV/MZ",
             root=root,
             game_dir=root,
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
             data_dir=rpg_data,
         )
 
@@ -29,16 +32,16 @@ def detect_project(path: str | Path) -> ProjectInfo:
             engine="RPG Maker MV/MZ",
             root=root,
             game_dir=root / "www",
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
             data_dir=rpg_www_data,
         )
 
-    if renpy_game.is_dir() and any(renpy_game.rglob("*.rpy")):
+    if renpy_game.is_dir() and (any(renpy_game.rglob("*.rpy")) or any(renpy_game.rglob("*.rpyc")) or any(renpy_game.rglob("*.rpa"))):
         return ProjectInfo(
             engine="Ren'Py",
             root=root,
             game_dir=renpy_game,
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
             scripts_dir=renpy_game,
         )
 
@@ -47,7 +50,7 @@ def detect_project(path: str | Path) -> ProjectInfo:
             engine="RPG Maker XP",
             root=root,
             game_dir=root,
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
         )
 
     if list(root.glob("*.rvproj")) and (root / "Data").is_dir():
@@ -55,7 +58,7 @@ def detect_project(path: str | Path) -> ProjectInfo:
             engine="RPG Maker VX",
             root=root,
             game_dir=root,
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
         )
 
     if list(root.glob("*.rvproj2")) and (root / "Data").is_dir():
@@ -63,7 +66,7 @@ def detect_project(path: str | Path) -> ProjectInfo:
             engine="RPG Maker VX Ace",
             root=root,
             game_dir=root,
-            launcher_path=game_exe if game_exe.exists() else None,
+            launcher_path=launcher,
         )
 
     raise ValueError(

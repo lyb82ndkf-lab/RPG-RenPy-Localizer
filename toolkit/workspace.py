@@ -35,6 +35,7 @@ class Workspace:
         self.library_path = self.config_dir / "library.json"
         self.settings_path = self.config_dir / "settings.json"
         self.recent_tasks_path = self.config_dir / "recent_tasks.json"
+        self.translation_memory_path = self.config_dir / "translation_memory.json"
 
     @staticmethod
     def _user_config_dir() -> Path:
@@ -64,6 +65,17 @@ class Workspace:
 
     def save_settings(self, settings: dict[str, Any]) -> None:
         self._write_json(self.settings_path, settings)
+
+    def load_translation_memory(self) -> dict[str, str]:
+        payload = self._read_json(self.translation_memory_path, default={"translations": {}})
+        translations = payload.get("translations", {}) if isinstance(payload, dict) else {}
+        if not isinstance(translations, dict):
+            return {}
+        return {str(source): str(target) for source, target in translations.items() if str(source).strip() and str(target).strip()}
+
+    def save_translation_memory(self, translations: dict[str, str]) -> None:
+        clean = {str(source).strip(): str(target).strip() for source, target in translations.items() if str(source).strip() and str(target).strip()}
+        self._write_json(self.translation_memory_path, {"translations": clean})
 
     @staticmethod
     def _read_json(path: Path, default: Any) -> Any:

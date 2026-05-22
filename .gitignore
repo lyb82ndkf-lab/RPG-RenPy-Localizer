@@ -23,6 +23,12 @@ wheels/
 # Virtual Environment
 .venv/
 venv/
+
+# Android
+android_app/shell/.gradle/
+android_app/shell/app/build/
+android_app/shell/build/
+*.apk
 ENV/
 env/
 

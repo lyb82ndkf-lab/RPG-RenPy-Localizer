@@ -1,0 +1,73 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace "com.rpgrtl.shell"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.rpgrtl.shell"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        noCompress += [
+            "json",
+            "ogg",
+            "m4a",
+            "mp3",
+            "wav",
+            "mid",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "gif",
+            "rpa",
+            "rpyc",
+            "rvdata2",
+            "rgss3a",
+            "rgss2a",
+            "rgssad",
+            "so",
+            "zst"
+        ]
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+tasks.register("syncMobileUi", Copy) {
+    from("../../mobile_ui")
+    into("src/main/assets/mobile_ui")
+}
+
+preBuild.dependsOn("syncMobileUi")
+
+dependencies {
+    implementation "androidx.core:core-ktx:1.13.1"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+}

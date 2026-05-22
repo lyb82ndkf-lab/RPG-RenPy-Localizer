@@ -256,7 +256,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       const toMapY = value => value === "mouse" && window.TouchInput ? $gameMap.canvasToMapY(TouchInput.y) : Number(value);
       const x = Number.isFinite(toMapX(payload.player.teleport.x)) ? toMapX(payload.player.teleport.x) : $gamePlayer.x;
       const y = Number.isFinite(toMapY(payload.player.teleport.y)) ? toMapY(payload.player.teleport.y) : $gamePlayer.y;
-      $gamePlayer.reserveTransfer($gameMap.mapId(), x, y, $gamePlayer.direction(), 0);
+      $gamePlayer.setPosition(x, y);
+      $gamePlayer.center(x, y);
     }
     if (window.$gameMap) $gameMap.requestRefresh();
   }
@@ -314,7 +315,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (bridge.options.clickTeleport && window.TouchInput && TouchInput.isTriggered && TouchInput.isTriggered() && window.$gameMap && window.$gamePlayer) {
       const x = $gameMap.canvasToMapX(TouchInput.x);
       const y = $gameMap.canvasToMapY(TouchInput.y);
-      $gamePlayer.reserveTransfer($gameMap.mapId(), x, y, $gamePlayer.direction(), 0);
+      $gamePlayer.setPosition(x, y);
+      $gamePlayer.center(x, y);
       return;
     }
     return _sceneMapProcessMapTouch.call(this);

@@ -1,0 +1,1582 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>RPGRenPyLocalizer Android Prototype</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --surface: #ffffff;
+      --surface-2: #f3f7fb;
+      --ink: #101820;
+      --muted: #596979;
+      --line: #c8d4df;
+      --line-strong: #263746;
+      --brand: #0066ff;
+      --brand-2: #00ffff;
+      --warn: #ff4d4f;
+      --control: #0066ff;
+      --control-dark: #101820;
+      --radius: 2px;
+      --shadow: 6px 6px 0 rgba(0, 102, 255, 0.16);
+      font-family: "DejaVu Sans", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(rgba(0, 255, 255, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 255, 255, 0.07) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+
+    .app {
+      position: absolute;
+      width: 1360px;
+      min-height: 820px;
+      height: auto;
+      left: 0;
+      top: 0;
+      transform-origin: top left;
+      padding: 16px;
+      overflow: visible;
+    }
+
+    #scaleHint {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      background: var(--bg);
+      color: var(--surface);
+      font-size: 18px;
+      text-align: center;
+      padding: 24px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 9;
+      border: 1px solid rgba(0, 255, 255, 0.32);
+      border-left: 6px solid var(--brand-2);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      background: #101820;
+      color: #ffffff;
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(24px, 6vw, 42px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: var(--radius);
+      color: #101820;
+      background: var(--brand-2);
+    }
+
+    .shell-grid {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      gap: 14px;
+      margin-top: 14px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: #eef4fb;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-head h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input, select {
+      width: 100%;
+      min-height: 46px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      color: var(--ink);
+      font: inherit;
+      outline: none;
+    }
+
+    input[type="range"] {
+      min-height: 28px;
+      padding: 0;
+      accent-color: var(--brand);
+      background: transparent;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      min-height: 18px;
+      accent-color: var(--brand-2);
+    }
+
+    input:focus, select:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.14);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    button {
+      min-height: 42px;
+      padding: 0 16px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--ink);
+      color: #ffffff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary { background: #ffffff; color: var(--ink); }
+    button.brand { background: var(--brand); color: #ffffff; border-color: var(--brand); }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      padding: 12px;
+    }
+
+    .card strong {
+      display: block;
+      margin-top: 8px;
+      font-size: 23px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      background: #eef4fb;
+      border-bottom: 1px solid var(--line);
+      overflow: auto;
+    }
+
+    .tab {
+      min-height: 38px;
+      padding: 0 14px;
+      background: transparent;
+      color: var(--ink);
+    }
+    .tab.active {
+      background: var(--ink);
+      color: #ffffff;
+    }
+
+    .view {
+      display: none;
+      padding: 16px;
+      max-height: none;
+      overflow: visible;
+    }
+    .view.active {
+      display: block;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+      max-height: 60vh;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #ffffff;
+      padding: 12px;
+      text-align: left;
+    }
+
+    .item b { display: block; margin-bottom: 5px; }
+    .item small { color: var(--muted); line-height: 1.55; }
+
+    .main-stage {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 14px;
+    }
+
+    .preview {
+      min-height: 260px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: #101820;
+      color: #ffffff;
+      padding: 12px;
+      overflow: auto;
+    }
+
+    .map-grid {
+      display: grid;
+      gap: 1px;
+      width: max-content;
+    }
+
+    .tile {
+      width: 9px;
+      height: 9px;
+      background: #e8dec1;
+    }
+    .tile.wall { background: #5a655f; }
+    .tile.event { background: #e0a13b; }
+    .tile.transfer { background: #53a6ce; }
+
+    .status {
+      padding: 12px;
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--muted);
+      line-height: 1.65;
+      white-space: pre-wrap;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: var(--radius);
+      padding: 0 10px;
+      color: #07343a;
+      background: rgba(0, 255, 255, 0.24);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .detail-block {
+      display: grid;
+      gap: 8px;
+    }
+
+    .detail-block .row {
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: #f6f9fc;
+      border: 1px solid var(--line);
+    }
+
+    .control-editor {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .control-stage {
+      position: relative;
+      min-height: 420px;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(rgba(0, 255, 255, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 255, 255, 0.08) 1px, transparent 1px),
+        #101820;
+      background-size: 24px 24px;
+      box-shadow: var(--shadow);
+      touch-action: none;
+    }
+
+    .control-stage::before {
+      content: "";
+      position: absolute;
+      inset: 16px;
+      border: 1px dashed rgba(0,255,255,0.34);
+      border-radius: var(--radius);
+      pointer-events: none;
+    }
+
+    .control-stage-label {
+      position: absolute;
+      left: 24px;
+      top: 20px;
+      color: rgba(255,255,255,0.72);
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    .touch-button {
+      position: absolute;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      border: 1px solid rgba(0,255,255,0.6);
+      background: rgba(0,102,255,0.72);
+      color: #ffffff;
+      font-weight: 800;
+      user-select: none;
+      cursor: grab;
+      box-shadow: 0 10px 26px rgba(0,0,0,0.24);
+      transform: translate(-50%, -50%);
+      touch-action: none;
+    }
+
+    .touch-button:active {
+      cursor: grabbing;
+      transform: translate(-50%, -50%) scale(1.04);
+    }
+
+    .touch-button.selected {
+      outline: 4px solid rgba(0,255,255,0.2);
+      border-color: rgba(255,255,255,0.9);
+    }
+
+    .control-panel {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+
+    .control-row {
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .control-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      background: #f6f9fc;
+      border: 1px solid var(--line);
+    }
+
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .compact-actions button {
+      min-height: 36px;
+      padding-inline: 12px;
+      font-size: 13px;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .setting-card {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      min-height: 76px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--brand);
+      background: #ffffff;
+    }
+
+    .setting-card b {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .setting-card small {
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .mobile-only-note {
+      color: rgba(255,248,232,0.65);
+      font-size: 12px;
+      line-height: 1.7;
+      margin: 14px 4px 0;
+    }
+
+    @media (max-width: 920px) {
+      .shell-grid,
+      .main-stage,
+      .control-editor { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div>
+          <h1>RPGRenPyLocalizer</h1>
+          <div class="muted" style="color:rgba(255,255,255,0.74);margin-top:6px;">Android 原型 · 识别游戏 · 翻译 · 数据 · 地图 · 启动兼容设置</div>
+        </div>
+        <span class="badge" id="engineBadge">等待载入</span>
+      </div>
+    </header>
+
+    <section class="shell-grid">
+      <aside class="panel">
+        <div class="panel-head">
+          <h2>项目</h2>
+          <span class="pill" id="projectState">未载入</span>
+        </div>
+        <div class="panel-body stack">
+          <div class="field">
+            <label for="pathInput">游戏目录或 exe 路径</label>
+            <input id="pathInput" placeholder="例如 E:\\demo\\output\\Project1" />
+          </div>
+          <div class="actions">
+            <button class="brand" id="loadBtn">载入</button>
+            <button class="secondary" id="pickFolderBtn">手机选目录</button>
+            <button class="secondary" id="launchMobileGameBtn">启动手机游戏</button>
+            <button class="secondary" id="launchRenpyBtn">启动 Ren'Py</button>
+            <button class="secondary" id="launchExeRunnerBtn">外部运行 exe</button>
+            <button class="secondary" id="sampleBtn">Demo</button>
+            <button class="secondary" id="healthBtn">检查</button>
+          </div>
+          <div class="status" id="projectSummary">载入后显示项目摘要。</div>
+          <div class="summary-grid" id="summaryGrid"></div>
+        </div>
+      </aside>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>工作台</h2>
+          <div class="actions">
+            <button class="tab active" data-tab="overview">总览</button>
+            <button class="tab" data-tab="launch">启动设置</button>
+            <button class="tab" data-tab="translate">翻译</button>
+            <button class="tab" data-tab="data">数据</button>
+            <button class="tab" data-tab="maps">地图</button>
+            <button class="tab" data-tab="saves">存档</button>
+            <button class="tab" data-tab="runtime">运行</button>
+          </div>
+        </div>
+
+        <div class="view active" data-view="overview">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="field">
+                <label>项目说明</label>
+                <div class="status" id="runtimeNote">等待项目识别后显示 Android 运行建议。</div>
+              </div>
+              <div class="field">
+                <label>分类概览</label>
+                <div class="list" id="categoryList"></div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>地图预览</label>
+                <div class="preview" id="mapPreview">先在地图页选择地图。</div>
+              </div>
+              <div class="field">
+                <label>最近文本</label>
+                <div class="preview" id="textPreview">载入文本后会显示在这里。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="launch">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="field">
+                <label>HTML / RPG Maker MV/MZ 兼容设置</label>
+                <div class="settings-grid">
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchWebgl" checked />
+                    <span><b>启用 WebGL / 硬件加速</b><small>用于修复贴图黑块、PIXI 渲染异常。大多数 MV/MZ 游戏建议开启。</small></span>
+                  </label>
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchDomStorage" checked />
+                    <span><b>启用本地存储</b><small>允许 localStorage / IndexedDB，改善存档和配置读取。</small></span>
+                  </label>
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchFileAccess" checked />
+                    <span><b>允许本地资源访问</b><small>允许 HTML 游戏读取 js、json、图片、音频等目录资源。</small></span>
+                  </label>
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchMediaAutoplay" checked />
+                    <span><b>允许音频自动播放</b><small>减少 BGM / SE 首次播放失败。</small></span>
+                  </label>
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchDisableZoom" checked />
+                    <span><b>禁用 WebView 缩放控件</b><small>避免游戏画面被双指缩放破坏比例。</small></span>
+                  </label>
+                  <label class="setting-card">
+                    <input type="checkbox" id="launchResourceFallback" checked />
+                    <span><b>启用 www 路径兜底</b><small>兼容游戏把资源写成 /js/main.js 这种绝对路径的情况。</small></span>
+                  </label>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="brand" id="saveLaunchSettingsBtn">保存启动设置</button>
+                <button class="secondary" id="saveAndLaunchBtn">保存并启动手机游戏</button>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>为什么需要这些设置</label>
+                <div class="status">RPG Maker MV/MZ 在 Android WebView 里通常依赖 WebGL、Canvas、localStorage 和本地资源读取。贴图黑色方块常见原因是硬件加速或 WebGL 不可用，也可能是资源路径写法和手机 SAF 路径不一致。这里会在启动前应用兼容配置。</div>
+              </div>
+              <div class="field">
+                <label>当前启动配置</label>
+                <div class="preview" id="launchSettingsPreview">等待读取设置。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="translate">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="actions">
+                <button class="brand" id="entriesBtn">读取文本</button>
+                <button class="secondary" id="entries80Btn">前 80 条</button>
+              </div>
+              <div class="field">
+                <label>翻译条目</label>
+                <div class="list" id="entryList"></div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>文本详情</label>
+                <div class="preview" id="entryDetail">点选一条文本查看详情。</div>
+              </div>
+              <div class="field">
+                <label>翻译提示</label>
+                <div class="status">这里后续可以接 AI 翻译、缓存、去重、一键批量翻译和嵌入模式。Android 版会优先把长任务放到本地 API。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="data">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="actions">
+                <select id="categorySelect"></select>
+                <button class="secondary" id="recordsBtn">读取数据</button>
+              </div>
+              <div class="field">
+                <label>数据项</label>
+                <div class="list" id="recordList"></div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>数据详情</label>
+                <div class="preview" id="recordDetail">选择一条数据项查看字段。</div>
+              </div>
+              <div class="field">
+                <label>说明</label>
+                <div class="status">这里是未来的物品、角色、职业、状态、开关、变量等分类编辑区。下一步我们会把“点选字段直接编辑”也补上。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="maps">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="actions">
+                <button class="brand" id="mapsBtn">读取地图</button>
+                <button class="secondary" id="firstMapBtn">第一张</button>
+              </div>
+              <div class="field">
+                <label>地图列表</label>
+                <div class="list" id="mapList"></div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>地图详情</label>
+                <div class="preview" id="mapDetail">选择地图后这里显示方块、事件和传送信息。</div>
+              </div>
+              <div class="field">
+                <label>地图预览</label>
+                <div class="preview" id="mapCanvas">等待地图数据。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="saves">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="actions">
+                <button class="brand" id="saveSlotsBtn">读取存档</button>
+                <button class="secondary" id="backupSavesBtn">立即备份存档</button>
+                <button class="secondary" id="backupListBtn">备份列表</button>
+              </div>
+              <div class="field">
+                <label>存档槽</label>
+                <div class="list" id="saveSlotList"></div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>备份与说明</label>
+                <div class="preview" id="saveDetail">Android 版会把备份保存到游戏目录下的 .rpgrtl_android/backup。</div>
+              </div>
+              <div class="field">
+                <label>备份列表</label>
+                <div class="list" id="backupList"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view" data-view="runtime">
+          <div class="main-stage">
+            <div class="stack">
+              <div class="field">
+                <label>运行建议</label>
+                <div class="status" id="runtimeAdvice">没有项目时这里会显示空状态。</div>
+              </div>
+              <div class="field">
+                <label>操作</label>
+                <div class="actions">
+                  <button class="secondary" id="overlayPermissionBtn">打开悬浮窗权限</button>
+                </div>
+                <div class="status">这里用于配置手机游戏时覆盖在画面上的虚拟按键。按键位置、大小、透明度会保存到手机本地，启动游戏后自动应用。</div>
+              </div>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label>当前状态</label>
+                <div class="preview" id="runtimeState">等待项目状态。</div>
+              </div>
+            </div>
+          </div>
+          <div class="field" style="margin-top:14px">
+            <label>触屏按键布局</label>
+            <div class="control-editor">
+              <div class="control-stage" id="controlStage">
+                <div class="control-stage-label">Touch Layout Preview · 拖动按键调整位置</div>
+              </div>
+              <div class="control-panel">
+                <div class="control-toggle">
+                  <input type="checkbox" id="controlsEnabled" checked />
+                  <label for="controlsEnabled">启用触屏按键覆盖层</label>
+                </div>
+                <div class="field">
+                  <label for="controlSelect">当前按键</label>
+                  <select id="controlSelect"></select>
+                </div>
+                <div class="control-row">
+                  <label for="controlLabelInput">显示文字</label>
+                  <input id="controlLabelInput" />
+                </div>
+                <div class="control-row">
+                  <label for="controlKeySelect">映射按键</label>
+                  <select id="controlKeySelect"></select>
+                </div>
+                <div class="control-row">
+                  <label for="controlSizeRange">大小</label>
+                  <input id="controlSizeRange" type="range" min="32" max="140" step="2" />
+                </div>
+                <div class="control-row">
+                  <label for="controlOpacityRange">透明度</label>
+                  <input id="controlOpacityRange" type="range" min="0.18" max="1" step="0.02" />
+                </div>
+                <div class="actions compact-actions">
+                  <button class="brand" id="saveControlsBtn">保存布局</button>
+                  <button class="secondary" id="addControlBtn">新增按键</button>
+                  <button class="secondary" id="deleteControlBtn">删除按键</button>
+                </div>
+                <div class="preset-grid compact-actions">
+                  <button class="secondary" id="presetRpgBtn">RPG 预设</button>
+                  <button class="secondary" id="presetRenpyBtn">Ren'Py 预设</button>
+                </div>
+                <div class="status" id="controlHint">提示：在左侧预览区直接拖动按钮；保存后启动游戏会自动显示。常用映射：方向键、Z/Enter 确认、X/Esc 取消、Shift 加速、Ctrl 快进。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <p class="mobile-only-note">说明：这是 Android 原型的中间层。后续真正做 APK 时，这个页面会被塞进 WebView，再加上文件选择、悬浮层、虚拟按钮和兼容运行层。</p>
+  </main>
+  <div id="scaleHint">请横屏使用，这样可以显示接近电脑版的完整工作台界面。</div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const BASE_W = 1360;
+    const BASE_H = 820;
+    const KEY_MAP = [
+      ["UP", 19],
+      ["DOWN", 20],
+      ["LEFT", 21],
+      ["RIGHT", 22],
+      ["OK / Z", 66],
+      ["Cancel / X", 4],
+      ["Shift", 59],
+      ["Ctrl", 113],
+      ["Menu / Esc", 111],
+      ["Space", 62],
+    ];
+    const RPG_CONTROL_PRESET = [
+      { id: "up", label: "↑", keyCode: 19, x: 0.18, y: 0.58, size: 58, opacity: 0.62, enabled: true },
+      { id: "down", label: "↓", keyCode: 20, x: 0.18, y: 0.78, size: 58, opacity: 0.62, enabled: true },
+      { id: "left", label: "←", keyCode: 21, x: 0.09, y: 0.68, size: 58, opacity: 0.62, enabled: true },
+      { id: "right", label: "→", keyCode: 22, x: 0.27, y: 0.68, size: 58, opacity: 0.62, enabled: true },
+      { id: "ok", label: "A", keyCode: 66, x: 0.84, y: 0.66, size: 68, opacity: 0.7, enabled: true },
+      { id: "cancel", label: "B", keyCode: 4, x: 0.72, y: 0.76, size: 62, opacity: 0.58, enabled: true },
+      { id: "dash", label: "跑", keyCode: 59, x: 0.87, y: 0.42, size: 54, opacity: 0.48, enabled: true },
+      { id: "fast", label: "快", keyCode: 113, x: 0.74, y: 0.42, size: 54, opacity: 0.48, enabled: true },
+    ];
+    const RENPY_CONTROL_PRESET = [
+      { id: "tap", label: "确认", keyCode: 66, x: 0.84, y: 0.7, size: 78, opacity: 0.64, enabled: true },
+      { id: "back", label: "返回", keyCode: 4, x: 0.7, y: 0.78, size: 64, opacity: 0.52, enabled: true },
+      { id: "skip", label: "快进", keyCode: 113, x: 0.82, y: 0.44, size: 60, opacity: 0.52, enabled: true },
+      { id: "menu", label: "菜单", keyCode: 111, x: 0.12, y: 0.18, size: 58, opacity: 0.52, enabled: true },
+    ];
+    const state = {
+      project: null,
+      summary: null,
+      maps: [],
+      entries: [],
+      records: [],
+      saveSlots: [],
+      backups: [],
+      launchSettings: {
+        webgl: true,
+        domStorage: true,
+        fileAccess: true,
+        mediaAutoplay: true,
+        disableZoom: true,
+        resourceFallback: true,
+      },
+      controls: { enabled: true, buttons: RPG_CONTROL_PRESET.map(item => ({ ...item })) },
+      selectedControlId: "ok",
+    };
+
+    function isAndroidShell() {
+      return !!window.RPGRenPyShell;
+    }
+
+    function scaleDesktopUi() {
+      const root = document.querySelector(".app");
+      const hint = $("scaleHint");
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const isPhonePortrait = vh > vw && Math.min(vw, vh) < 760;
+      if (isPhonePortrait) {
+        hint.style.display = "flex";
+        root.style.display = "none";
+        return;
+      }
+      hint.style.display = "none";
+      root.style.display = "block";
+      const scale = Math.min(vw / BASE_W, 1);
+      root.style.transform = `scale(${scale})`;
+      root.style.left = `${(vw - BASE_W * scale) / 2}px`;
+      root.style.top = "0px";
+      const scaledHeight = Math.ceil(root.scrollHeight * scale + 24);
+      document.body.style.minHeight = `${Math.max(vh, scaledHeight)}px`;
+      document.body.style.height = `${Math.max(vh, scaledHeight)}px`;
+    }
+
+    function api(path, options = {}) {
+      return fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      }).then(async response => {
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || "请求失败");
+        return payload;
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[ch]));
+    }
+
+    function setTab(name) {
+      document.querySelectorAll("[data-tab]").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === name));
+      document.querySelectorAll("[data-view]").forEach(view => view.classList.toggle("active", view.dataset.view === name));
+    }
+
+    function androidJson(method, ...args) {
+      if (!window.RPGRenPyShell || typeof window.RPGRenPyShell[method] !== "function") {
+        throw new Error("当前不在 Android 壳内运行。");
+      }
+      const raw = window.RPGRenPyShell[method](...args);
+      const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!payload.ok) throw new Error(payload.error || "Android 本地接口请求失败");
+      return payload;
+    }
+
+    function updateProjectUi(project, summary) {
+      state.project = project;
+      state.summary = summary;
+      $("engineBadge").textContent = project.engine;
+      $("projectState").textContent = "已载入";
+      $("projectSummary").textContent = `${project.root}\n${project.launcher_path || "无启动器"}\n${project.android_runtime_note || ""}`;
+      $("runtimeNote").textContent = project.android_runtime_note || "";
+      $("runtimeAdvice").textContent = project.android_runtime_note || "";
+
+      const cards = [
+        ["地图", summary.maps],
+        ["物品", summary.items],
+        ["角色", summary.actors],
+        ["文本", summary.translation_entries],
+        ["数据", summary.data_records],
+        ["脚本", summary.scripts || 0],
+      ];
+      $("summaryGrid").innerHTML = cards.map(([label, value]) => `
+        <div class="card"><span class="muted">${label}</span><strong>${value ?? 0}</strong></div>
+      `).join("");
+
+      const categories = Array.isArray(summary.categories) ? summary.categories : [];
+      $("categoryList").innerHTML = categories.map(item => `
+        <button class="item" data-category="${escapeHtml(item.id)}">
+          <b>${escapeHtml(item.label)} <span class="pill">${item.count ?? 0}</span></b>
+          <small>${item.exists ? "存在" : "缺失"}</small>
+        </button>
+      `).join("");
+
+      $("categorySelect").innerHTML = `<option value="">全部分类</option>` + categories.map(item => `
+        <option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>
+      `).join("");
+
+      document.querySelectorAll("[data-category]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          $("categorySelect").value = btn.dataset.category;
+          await loadRecords();
+          setTab("data");
+        });
+      });
+    }
+
+    function updateAndroidScanUi(scan) {
+      const engine = scan.engine || "未知游戏";
+      state.project = {
+        engine,
+        root: scan.uri,
+        launcher_path: scan.exe || "",
+        android_runtime_note: scan.note || "",
+      };
+      state.summary = {
+        maps: scan.mapCount || 0,
+        items: scan.itemCount || 0,
+        actors: scan.actorCount || 0,
+        translation_entries: scan.textHintCount || 0,
+        data_records: scan.dataFileCount || 0,
+        scripts: scan.scriptCount || 0,
+        categories: [],
+      };
+      $("engineBadge").textContent = engine;
+      $("projectState").textContent = "已识别";
+      $("runtimeNote").textContent = scan.note || "";
+      $("runtimeAdvice").textContent = scan.launchAdvice || scan.note || "";
+      $("pathInput").value = scan.uri || "";
+      $("projectSummary").textContent = [
+        `已选择目录：${scan.name || scan.uri}`,
+        `识别结果：${engine}`,
+        scan.exe ? `发现 exe：${scan.exe}` : "未发现 exe",
+        scan.rpgEntry ? `MV/MZ 入口：${scan.rpgEntry}` : "",
+        scan.renpyEntry ? `Ren'Py Web 入口：${scan.renpyEntry}` : "",
+        scan.launchAdvice || scan.note || "",
+      ].filter(Boolean).join("\n");
+      $("summaryGrid").innerHTML = [
+        ["文件", scan.fileCount || 0],
+        ["目录", scan.dirCount || 0],
+        ["数据", scan.dataFileCount || 0],
+        ["地图", scan.mapCount || 0],
+        ["角色", scan.actorCount || 0],
+        ["物品", scan.itemCount || 0],
+      ].map(([label, value]) => `<div class="card"><span class="muted">${label}</span><strong>${value}</strong></div>`).join("");
+      $("categoryList").innerHTML = (scan.highlights || []).length
+        ? scan.highlights.map(item => `<div class="item"><b>${escapeHtml(item.label)}</b><small>${escapeHtml(item.value)}</small></div>`).join("")
+        : `<div class="status">没有发现关键文件。请确认选择的是游戏根目录，通常应包含 Game.exe、www/index.html 或 game/。</div>`;
+    }
+
+    function renderMaps(maps) {
+      state.maps = maps;
+      $("mapList").innerHTML = maps.length ? maps.map(map => `
+        <button class="item" data-map="${map.map_id}">
+          <b>${escapeHtml(map.name)} <span class="pill">ID ${map.map_id}</span></b>
+          <small>${map.width} x ${map.height} · 事件 ${map.event_count} · ${escapeHtml(map.file)}</small>
+        </button>
+      `).join("") : `<div class="status">当前没有地图，或者不是 RPG Maker MV/MZ。</div>`;
+      document.querySelectorAll("[data-map]").forEach(btn => btn.addEventListener("click", () => previewMap(btn.dataset.map)));
+    }
+
+    function renderMapDetail(detail) {
+      const record = detail.record;
+      $("mapDetail").innerHTML = `
+        <div><b>${escapeHtml(record.name)}</b></div>
+        <div class="muted">${record.width} x ${record.height} · 事件 ${record.event_count} · 图块 ${detail.tiles.length}</div>
+        <div style="margin-top:8px" class="detail-block">
+          ${(detail.events || []).slice(0, 12).map(ev => `
+            <div class="row">
+              <b>EV${String(ev.event_id).padStart(3, "0")} · ${escapeHtml(ev.name || "无名事件")}</b>
+              <div class="muted">坐标 ${ev.x}, ${ev.y} · 页数 ${ev.page_count} · 指令 ${ev.command_count}</div>
+              <div class="muted">${(ev.conditions || []).map(escapeHtml).join(" / ")}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+      const width = Math.max(1, record.width || 1);
+      $("mapCanvas").innerHTML = `
+        <div style="margin-bottom:8px">地图格子预览</div>
+        <div class="map-grid" style="grid-template-columns: repeat(${width}, 9px)">
+          ${(detail.tiles || []).map(tile => {
+            const cls = tile.transfer_count ? "transfer" : tile.event_count ? "event" : tile.passable ? "" : "wall";
+            return `<span class="tile ${cls}" title="${tile.x},${tile.y}"></span>`;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    function renderEntries(entries, count) {
+      state.entries = entries;
+      $("entryList").innerHTML = entries.length ? entries.map((entry, index) => `
+        <button class="item" data-entry="${index}">
+          <b>${escapeHtml(entry.source).slice(0, 90)}</b>
+          <small>${escapeHtml(entry.file)} · ${escapeHtml(entry.category)} · ${escapeHtml(entry.context)}</small>
+        </button>
+      `).join("") : `<div class="status">暂无文本，或者需要先提取。</div>`;
+      document.querySelectorAll("[data-entry]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const entry = entries[Number(btn.dataset.entry)];
+          $("entryDetail").textContent = [
+            `原文：${entry.source}`,
+            `文件：${entry.file}`,
+            `分类：${entry.category}`,
+            `上下文：${entry.context}`,
+            `ID：${entry.entry_id}`,
+          ].join("\n");
+          $("textPreview").textContent = entry.source;
+        });
+      });
+      $("textPreview").textContent = entries[0]?.source || "载入文本后会显示在这里。";
+    }
+
+    function renderRecords(records) {
+      state.records = records;
+      $("recordList").innerHTML = records.length ? records.map((record, index) => `
+        <button class="item" data-record="${index}">
+          <b>${escapeHtml(record.object_label || record.label)}</b>
+          <small>${escapeHtml(record.file)} · ${escapeHtml(record.location)} · ${escapeHtml(record.value).slice(0, 90)}</small>
+        </button>
+      `).join("") : `<div class="status">没有数据项。</div>`;
+      document.querySelectorAll("[data-record]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const record = records[Number(btn.dataset.record)];
+          renderRecordDetail(record);
+        });
+      });
+    }
+
+    function renderRecordDetail(record) {
+      $("recordDetail").innerHTML = `
+        <div class="detail-block">
+          <div class="row"><b>对象</b><div>${escapeHtml(record.object_label || record.label)}</div></div>
+          <div class="row"><b>字段</b><div>${escapeHtml(record.label)}</div></div>
+          <div class="row"><b>文件</b><div>${escapeHtml(record.file)} · ${escapeHtml(record.location)}</div></div>
+          <div class="row">
+            <b>当前值</b>
+            <input id="androidRecordValueInput" value="${escapeHtml(record.value)}" />
+          </div>
+          <div class="actions">
+            <button class="brand" id="androidRecordSaveBtn">保存到游戏文件</button>
+          </div>
+          <div class="status">保存前会自动把原文件备份到 .rpgrtl_android/backup/data。</div>
+        </div>
+      `;
+      $("androidRecordSaveBtn").addEventListener("click", () => saveAndroidRecord(record));
+    }
+
+    function renderSaveSlots(slots) {
+      state.saveSlots = slots;
+      $("saveSlotList").innerHTML = slots.length ? slots.map(slot => `
+        <button class="item" data-save="${slot.slot_id}">
+          <b>${escapeHtml(slot.label)} <span class="pill">${escapeHtml(slot.name)}</span></b>
+          <small>${escapeHtml(slot.modified_at)} · ${Math.round((slot.size || 0) / 1024)} KB</small>
+        </button>
+      `).join("") : `<div class="status">没有发现 file*.rpgsave / file*.rmmzsave。请先进游戏保存一次。</div>`;
+      document.querySelectorAll("[data-save]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const slot = slots.find(item => String(item.slot_id) === btn.dataset.save);
+          $("saveDetail").textContent = slot ? [
+            `存档：${slot.name}`,
+            `槽位：${slot.slot_id}`,
+            `大小：${slot.size} 字节`,
+            `修改时间：${slot.modified_at}`,
+            "目前 Android 版先支持扫描和备份；压缩存档内容编辑会在下一轮接入。",
+          ].join("\n") : "";
+        });
+      });
+    }
+
+    function renderBackups(backups) {
+      state.backups = backups;
+      $("backupList").innerHTML = backups.length ? backups.map(item => `
+        <div class="item">
+          <b>${escapeHtml(item.name)}</b>
+          <small>${escapeHtml(item.path)} · ${escapeHtml(item.modified_at)} · ${Math.round((item.size || 0) / 1024)} KB</small>
+        </div>
+      `).join("") : `<div class="status">暂无备份。</div>`;
+    }
+
+    function setMessage(text) {
+      $("projectSummary").textContent = text;
+    }
+
+    function readLaunchSettingsFromForm() {
+      state.launchSettings = {
+        webgl: $("launchWebgl").checked,
+        domStorage: $("launchDomStorage").checked,
+        fileAccess: $("launchFileAccess").checked,
+        mediaAutoplay: $("launchMediaAutoplay").checked,
+        disableZoom: $("launchDisableZoom").checked,
+        resourceFallback: $("launchResourceFallback").checked,
+      };
+      return state.launchSettings;
+    }
+
+    function applyLaunchSettingsToForm() {
+      $("launchWebgl").checked = state.launchSettings.webgl !== false;
+      $("launchDomStorage").checked = state.launchSettings.domStorage !== false;
+      $("launchFileAccess").checked = state.launchSettings.fileAccess !== false;
+      $("launchMediaAutoplay").checked = state.launchSettings.mediaAutoplay !== false;
+      $("launchDisableZoom").checked = state.launchSettings.disableZoom !== false;
+      $("launchResourceFallback").checked = state.launchSettings.resourceFallback !== false;
+      renderLaunchSettingsPreview();
+    }
+
+    function renderLaunchSettingsPreview() {
+      const settings = state.launchSettings;
+      $("launchSettingsPreview").textContent = [
+        `WebGL / 硬件加速：${settings.webgl !== false ? "开启" : "关闭"}`,
+        `本地存储：${settings.domStorage !== false ? "开启" : "关闭"}`,
+        `本地资源访问：${settings.fileAccess !== false ? "开启" : "关闭"}`,
+        `音频自动播放：${settings.mediaAutoplay !== false ? "开启" : "关闭"}`,
+        `禁用缩放：${settings.disableZoom !== false ? "开启" : "关闭"}`,
+        `www 路径兜底：${settings.resourceFallback !== false ? "开启" : "关闭"}`,
+      ].join("\n");
+    }
+
+    function persistLaunchSettingsLocally() {
+      localStorage.setItem("rpgrtl_launch_settings", JSON.stringify(state.launchSettings));
+    }
+
+    function loadLaunchSettingsLocally() {
+      try {
+        const raw = localStorage.getItem("rpgrtl_launch_settings");
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        state.launchSettings = { ...state.launchSettings, ...parsed };
+      } catch (error) {
+        console.warn("launch settings load failed", error);
+      }
+    }
+
+    function saveLaunchSettingsToAndroid(showMessage = true) {
+      readLaunchSettingsFromForm();
+      persistLaunchSettingsLocally();
+      renderLaunchSettingsPreview();
+      const payload = JSON.stringify(state.launchSettings);
+      if (window.RPGRenPyShell && typeof window.RPGRenPyShell.saveLaunchSettings === "function") {
+        window.RPGRenPyShell.saveLaunchSettings(payload);
+        return true;
+      }
+      if (showMessage) setMessage("启动设置已保存在浏览器本地。打包到 Android 壳后会同步给 WebView。");
+      return false;
+    }
+
+    function cloneControls(preset) {
+      return preset.map(item => ({ ...item }));
+    }
+
+    function selectedControl() {
+      return state.controls.buttons.find(item => item.id === state.selectedControlId) || state.controls.buttons[0] || null;
+    }
+
+    function persistControlsLocally() {
+      localStorage.setItem("rpgrtl_touch_controls", JSON.stringify(state.controls));
+    }
+
+    function loadControlsLocally() {
+      try {
+        const raw = localStorage.getItem("rpgrtl_touch_controls");
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.buttons)) {
+          state.controls = {
+            enabled: parsed.enabled !== false,
+            buttons: parsed.buttons.map((item, index) => ({
+              id: item.id || `btn_${index + 1}`,
+              label: item.label || "BTN",
+              keyCode: Number(item.keyCode || 66),
+              x: Math.min(1, Math.max(0, Number(item.x ?? 0.5))),
+              y: Math.min(1, Math.max(0, Number(item.y ?? 0.5))),
+              size: Math.min(140, Math.max(32, Number(item.size || 56))),
+              opacity: Math.min(1, Math.max(0.18, Number(item.opacity || 0.62))),
+              enabled: item.enabled !== false,
+            })),
+          };
+          state.selectedControlId = state.controls.buttons[0]?.id || "";
+        }
+      } catch (error) {
+        console.warn("touch controls load failed", error);
+      }
+    }
+
+    function renderControlKeyOptions() {
+      $("controlKeySelect").innerHTML = KEY_MAP.map(([label, code]) => `
+        <option value="${code}">${escapeHtml(label)}</option>
+      `).join("");
+    }
+
+    function renderControlEditor() {
+      $("controlsEnabled").checked = state.controls.enabled !== false;
+      $("controlSelect").innerHTML = state.controls.buttons.map(item => `
+        <option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${KEY_MAP.find(([, code]) => code === item.keyCode)?.[0] || item.keyCode}</option>
+      `).join("");
+      const current = selectedControl();
+      const stage = $("controlStage");
+      stage.querySelectorAll(".touch-button").forEach(node => node.remove());
+      state.controls.buttons.forEach(item => {
+        if (item.enabled === false) return;
+        const btn = document.createElement("div");
+        btn.className = `touch-button${item.id === state.selectedControlId ? " selected" : ""}`;
+        btn.dataset.controlId = item.id;
+        btn.textContent = item.label;
+        btn.style.left = `${item.x * 100}%`;
+        btn.style.top = `${item.y * 100}%`;
+        btn.style.width = `${item.size}px`;
+        btn.style.height = `${item.size}px`;
+        btn.style.opacity = item.opacity;
+        btn.addEventListener("pointerdown", startDragControl);
+        stage.appendChild(btn);
+      });
+      if (!current) return;
+      $("controlSelect").value = current.id;
+      $("controlLabelInput").value = current.label;
+      $("controlKeySelect").value = String(current.keyCode);
+      $("controlSizeRange").value = String(current.size);
+      $("controlOpacityRange").value = String(current.opacity);
+    }
+
+    function startDragControl(event) {
+      const id = event.currentTarget.dataset.controlId;
+      state.selectedControlId = id;
+      renderControlEditor();
+      const stage = $("controlStage");
+      const target = Array.from(stage.querySelectorAll(".touch-button")).find(node => node.dataset.controlId === id);
+      target?.setPointerCapture?.(event.pointerId);
+
+      const move = (moveEvent) => {
+        const rect = stage.getBoundingClientRect();
+        const item = selectedControl();
+        if (!item) return;
+        item.x = Math.min(0.98, Math.max(0.02, (moveEvent.clientX - rect.left) / rect.width));
+        item.y = Math.min(0.96, Math.max(0.04, (moveEvent.clientY - rect.top) / rect.height));
+        const node = Array.from(stage.querySelectorAll(".touch-button")).find(element => element.dataset.controlId === item.id);
+        if (node) {
+          node.style.left = `${item.x * 100}%`;
+          node.style.top = `${item.y * 100}%`;
+        }
+      };
+      const stop = () => {
+        persistControlsLocally();
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    }
+
+    function updateSelectedControl(patch) {
+      const current = selectedControl();
+      if (!current) return;
+      Object.assign(current, patch);
+      persistControlsLocally();
+      renderControlEditor();
+    }
+
+    function setControlPreset(preset) {
+      state.controls = { enabled: true, buttons: cloneControls(preset) };
+      state.selectedControlId = state.controls.buttons[0]?.id || "";
+      persistControlsLocally();
+      renderControlEditor();
+    }
+
+    function saveControlsToAndroid() {
+      persistControlsLocally();
+      const payload = JSON.stringify(state.controls);
+      if (window.RPGRenPyShell && typeof window.RPGRenPyShell.saveTouchControls === "function") {
+        window.RPGRenPyShell.saveTouchControls(payload);
+        return;
+      }
+      setMessage("布局已保存在浏览器本地。打包到 Android 壳后会同步到原生覆盖层。");
+    }
+
+    window.onAndroidGameFolderPicked = function(uri) {
+      $("pathInput").value = uri;
+      setMessage(`Android 已选择目录：${uri}\n正在扫描目录和子目录，请稍等...`);
+    };
+
+    window.onAndroidProjectScanned = function(raw) {
+      try {
+        const scan = typeof raw === "string" ? JSON.parse(raw) : raw;
+        updateAndroidScanUi(scan);
+      } catch (error) {
+        setMessage(`目录扫描结果解析失败：${error.message}\n${raw}`);
+      }
+    };
+
+    window.onAndroidShellMessage = function(message) {
+      setMessage(message);
+    };
+
+    function callAndroidBridge(method) {
+      if (!window.RPGRenPyShell || typeof window.RPGRenPyShell[method] !== "function") {
+        setMessage("当前不在 Android 壳内运行，无法调用手机系统功能。");
+        return false;
+      }
+      window.RPGRenPyShell[method]();
+      return true;
+    }
+
+    async function loadProject() {
+      const path = $("pathInput").value.trim();
+      if (!path) {
+        setMessage("请先输入游戏目录或 exe 路径。");
+        return;
+      }
+      if (isAndroidShell() && path.startsWith("content://")) {
+        setMessage("正在调用手机端目录扫描，不使用桌面 Python 服务...");
+        callAndroidBridge("scanSelectedGame");
+        return;
+      }
+      setMessage("正在识别项目...");
+      try {
+        const payload = await api("/api/project/load", {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        });
+        updateProjectUi(payload.project, payload.summary);
+        setMessage("项目已载入。");
+      } catch (error) {
+        setMessage(`载入失败：${error.message}`);
+      }
+    }
+
+    async function loadMaps() {
+      setTab("maps");
+      if (isAndroidShell() && $("pathInput").value.startsWith("content://")) {
+        try {
+          const payload = androidJson("androidMaps");
+          renderMaps(payload.maps || []);
+        } catch (error) {
+          $("mapList").innerHTML = `<div class="status">Android 读取地图失败：${escapeHtml(error.message)}</div>`;
+        }
+        return;
+      }
+      try {
+        const payload = await api("/api/maps");
+        renderMaps(payload.maps || []);
+      } catch (error) {
+        $("mapList").innerHTML = `<div class="status">读取地图失败：${error.message}</div>`;
+      }
+    }
+
+    async function previewMap(id) {
+      try {
+        const payload = isAndroidShell() && $("pathInput").value.startsWith("content://")
+          ? androidJson("androidMapDetail", Number(id))
+          : await api(`/api/maps/${id}`);
+        renderMapDetail(payload.detail);
+      } catch (error) {
+        $("mapDetail").textContent = `地图详情读取失败：${error.message}`;
+      }
+    }
+
+    async function loadEntries(limit = 80) {
+      setTab("translate");
+      if (isAndroidShell() && $("pathInput").value.startsWith("content://")) {
+        try {
+          const payload = androidJson("androidTranslationEntries", limit);
+          renderEntries(payload.entries || [], payload.count || 0);
+        } catch (error) {
+          $("entryList").innerHTML = `<div class="status">Android 读取文本失败：${escapeHtml(error.message)}</div>`;
+        }
+        return;
+      }
+      try {
+        const payload = await api(`/api/translate/entries?limit=${limit}`);
+        renderEntries(payload.entries || [], payload.count || 0);
+      } catch (error) {
+        $("entryList").innerHTML = `<div class="status">读取文本失败：${error.message}</div>`;
+      }
+    }
+
+    async function loadRecords() {
+      const category = $("categorySelect").value || "";
+      if (isAndroidShell() && $("pathInput").value.startsWith("content://")) {
+        try {
+          const payload = androidJson("androidDataRecords", category, 500);
+          renderRecords(payload.records || []);
+        } catch (error) {
+          $("recordList").innerHTML = `<div class="status">Android 读取数据失败：${escapeHtml(error.message)}</div>`;
+        }
+        return;
+      }
+      try {
+        const payload = await api(`/api/records?limit=120${category ? `&category=${encodeURIComponent(category)}` : ""}`);
+        renderRecords(payload.records || []);
+      } catch (error) {
+        $("recordList").innerHTML = `<div class="status">读取数据失败：${error.message}</div>`;
+      }
+    }
+
+    function saveAndroidRecord(record) {
+      if (!isAndroidShell()) return;
+      try {
+        const value = $("androidRecordValueInput").value;
+        const payload = androidJson("androidUpdateRecord", JSON.stringify(record), value);
+        record.value = payload.value ?? value;
+        renderRecordDetail(record);
+        setMessage(payload.message || "数据已保存。");
+      } catch (error) {
+        setMessage(`保存失败：${error.message}`);
+      }
+    }
+
+    async function loadSaveSlots() {
+      setTab("saves");
+      if (!isAndroidShell() || !$("pathInput").value.startsWith("content://")) {
+        $("saveSlotList").innerHTML = `<div class="status">桌面端存档功能请使用 Windows 主程序。Android 版需要先选择手机目录。</div>`;
+        return;
+      }
+      try {
+        const payload = androidJson("androidSaveSlots");
+        renderSaveSlots(payload.slots || []);
+      } catch (error) {
+        $("saveSlotList").innerHTML = `<div class="status">读取存档失败：${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function createAndroidSaveBackup() {
+      try {
+        const payload = androidJson("androidCreateSaveBackup");
+        $("saveDetail").textContent = payload.message || "备份完成。";
+        loadBackups();
+      } catch (error) {
+        $("saveDetail").textContent = `备份失败：${error.message}`;
+      }
+    }
+
+    function loadBackups() {
+      try {
+        const payload = androidJson("androidBackups");
+        renderBackups(payload.backups || []);
+      } catch (error) {
+        $("backupList").innerHTML = `<div class="status">读取备份失败：${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    $("loadBtn").addEventListener("click", loadProject);
+    $("pickFolderBtn").addEventListener("click", () => callAndroidBridge("pickGameFolder"));
+    $("launchMobileGameBtn").addEventListener("click", () => {
+      saveLaunchSettingsToAndroid(false);
+      callAndroidBridge("launchSelectedGame");
+    });
+    $("launchRenpyBtn").addEventListener("click", () => callAndroidBridge("launchRenpyGame"));
+    $("launchExeRunnerBtn").addEventListener("click", () => callAndroidBridge("launchExeWithExternalRunner"));
+    $("sampleBtn").addEventListener("click", () => {
+      $("pathInput").value = "E:\\demo\\output\\Project1";
+      loadProject();
+    });
+    $("healthBtn").addEventListener("click", async () => {
+      try {
+        const payload = await api("/api/health");
+        setMessage(`${payload.name} 已启动。`);
+      } catch (error) {
+        setMessage(`服务不可用：${error.message}`);
+      }
+    });
+
+    document.querySelectorAll("[data-tab]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        setTab(btn.dataset.tab);
+        if (btn.dataset.tab === "maps" && !state.maps.length) await loadMaps();
+        if (btn.dataset.tab === "translate" && !state.entries.length) await loadEntries(80);
+        if (btn.dataset.tab === "data" && !state.records.length) await loadRecords();
+        if (btn.dataset.tab === "saves" && !state.saveSlots.length) await loadSaveSlots();
+      });
+    });
+
+    $("mapsBtn").addEventListener("click", loadMaps);
+    $("firstMapBtn").addEventListener("click", async () => {
+      if (!state.maps.length) await loadMaps();
+      if (state.maps[0]) await previewMap(state.maps[0].map_id);
+    });
+    $("entriesBtn").addEventListener("click", () => loadEntries(500));
+    $("entries80Btn").addEventListener("click", () => loadEntries(80));
+    $("recordsBtn").addEventListener("click", loadRecords);
+    $("categorySelect").addEventListener("change", loadRecords);
+    $("saveSlotsBtn").addEventListener("click", loadSaveSlots);
+    $("backupSavesBtn").addEventListener("click", createAndroidSaveBackup);
+    $("backupListBtn").addEventListener("click", loadBackups);
+    $("overlayPermissionBtn").addEventListener("click", () => callAndroidBridge("openOverlaySettings"));
+    $("saveLaunchSettingsBtn").addEventListener("click", () => saveLaunchSettingsToAndroid(true));
+    $("saveAndLaunchBtn").addEventListener("click", () => {
+      saveLaunchSettingsToAndroid(false);
+      callAndroidBridge("launchSelectedGame");
+    });
+    ["launchWebgl", "launchDomStorage", "launchFileAccess", "launchMediaAutoplay", "launchDisableZoom", "launchResourceFallback"].forEach(id => {
+      $(id).addEventListener("change", () => {
+        readLaunchSettingsFromForm();
+        persistLaunchSettingsLocally();
+        renderLaunchSettingsPreview();
+      });
+    });
+    $("controlsEnabled").addEventListener("change", () => {
+      state.controls.enabled = $("controlsEnabled").checked;
+      persistControlsLocally();
+    });
+    $("controlSelect").addEventListener("change", () => {
+      state.selectedControlId = $("controlSelect").value;
+      renderControlEditor();
+    });
+    $("controlLabelInput").addEventListener("input", () => updateSelectedControl({ label: $("controlLabelInput").value || "BTN" }));
+    $("controlKeySelect").addEventListener("change", () => updateSelectedControl({ keyCode: Number($("controlKeySelect").value) }));
+    $("controlSizeRange").addEventListener("input", () => updateSelectedControl({ size: Number($("controlSizeRange").value) }));
+    $("controlOpacityRange").addEventListener("input", () => updateSelectedControl({ opacity: Number($("controlOpacityRange").value) }));
+    $("addControlBtn").addEventListener("click", () => {
+      const id = `btn_${Date.now()}`;
+      state.controls.buttons.push({ id, label: "新键", keyCode: 66, x: 0.5, y: 0.5, size: 58, opacity: 0.62, enabled: true });
+      state.selectedControlId = id;
+      persistControlsLocally();
+      renderControlEditor();
+    });
+    $("deleteControlBtn").addEventListener("click", () => {
+      state.controls.buttons = state.controls.buttons.filter(item => item.id !== state.selectedControlId);
+      state.selectedControlId = state.controls.buttons[0]?.id || "";
+      persistControlsLocally();
+      renderControlEditor();
+    });
+    $("presetRpgBtn").addEventListener("click", () => setControlPreset(RPG_CONTROL_PRESET));
+    $("presetRenpyBtn").addEventListener("click", () => setControlPreset(RENPY_CONTROL_PRESET));
+    $("saveControlsBtn").addEventListener("click", saveControlsToAndroid);
+
+    $("runtimeState").textContent = "等待项目识别。";
+    renderControlKeyOptions();
+    loadLaunchSettingsLocally();
+    applyLaunchSettingsToForm();
+    loadControlsLocally();
+    renderControlEditor();
+    scaleDesktopUi();
+    window.addEventListener("resize", scaleDesktopUi);
+    window.addEventListener("orientationchange", () => setTimeout(scaleDesktopUi, 220));
+  </script>
+</body>
+</html>

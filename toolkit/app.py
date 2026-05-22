@@ -166,6 +166,7 @@ class ToolkitApp:
         self.unlock_cg_var = tk.BooleanVar(value=False)
         self.fps_boost_var = tk.BooleanVar(value=False)
         self.map_click_teleport_var = tk.BooleanVar(value=False)
+        self.auto_backup_enabled_var = tk.BooleanVar(value=True)
 
         self.nav_buttons: dict[str, tk.Button] = {}
         self._drop_callback = None
@@ -591,6 +592,8 @@ class ToolkitApp:
             box.pack(side="left", padx=(10, 0))
             tk.Label(box, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
             ttk.Entry(box, textvariable=var, width=5).pack(side="left", padx=(4, 0))
+            if label == "经验":
+                ttk.Button(box, text="应用", command=self.apply_exp_rate_to_party, style="Tool.TButton", width=6).pack(side="left", padx=(6, 0))
 
         utility = tk.Frame(realtime, bg=PANEL_BG)
         utility.grid(row=2, column=1, sticky="nw", pady=(12, 0))
@@ -600,7 +603,6 @@ class ToolkitApp:
             box.pack(side="left", padx=(10, 0))
             tk.Label(box, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
             ttk.Entry(box, textvariable=var, width=5).pack(side="left", padx=(4, 0))
-        ttk.Button(utility, text="经验倍率到全队", command=self.apply_exp_rate_to_party, style="Tool.TButton", width=10).pack(side="left", padx=(10, 0))
 
         recent_wrap = tk.Frame(content, bg=PANEL_BG)
         recent_wrap.pack(fill="both", expand=True, pady=(18, 0))
@@ -854,7 +856,10 @@ class ToolkitApp:
         ttk.Button(content, text="保存当前存档", command=self.save_current_save, style="Primary.TButton", width=12).pack(fill="x", pady=(8, 0))
         backup_row = tk.Frame(content, bg=PANEL_BG)
         backup_row.pack(fill="x", pady=(8, 0))
-        ttk.Button(backup_row, text="开启自动备份", command=self.toggle_auto_backup, style="Primary.TButton", width=12).pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(backup_row, text="自动备份", variable=self.auto_backup_enabled_var, command=self._sync_auto_backup_state).pack(side="left")
+        ttk.Entry(backup_row, textvariable=self.auto_save_interval_var, width=6).pack(side="left", padx=(8, 0))
+        tk.Label(backup_row, text="分钟", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(4, 0))
+        ttk.Button(backup_row, text="打开存档", command=self.open_backup_browser, width=10).pack(side="left", padx=(10, 0))
         ttk.Button(backup_row, text="立即备份", command=self.create_manual_save_backup, width=8).pack(side="left", padx=(8, 0))
         tk.Label(content, textvariable=self.auto_backup_status_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=320).pack(fill="x", pady=(6, 0))
         ttk.Button(content, text="安装实时组件并连接", command=self.install_bridge_and_connect, style="Primary.TButton", width=14).pack(fill="x", pady=(12, 0))
@@ -885,7 +890,7 @@ class ToolkitApp:
         for label, var in (("经验", self.exp_rate_var), ("自动保存", self.auto_save_interval_var), ("字体", self.font_size_var)):
             tk.Label(utility_row, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
             ttk.Entry(utility_row, textvariable=var, width=5).pack(side="left", padx=(4, 8))
-        ttk.Button(gold, text="经验倍率到全队", command=self.apply_exp_rate_to_party).grid(row=11, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(utility_row, text="经验倍率到全队", command=self.apply_exp_rate_to_party).pack(side="left", padx=(8, 0))
         tk.Label(gold, text="修改金币、倍率、字体等数值后会自动应用；物品数量请在右侧列表双击修改。", bg=PANEL_BG, fg=TEXT_MUTED, wraplength=300, justify="left").grid(row=12, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         gold.grid_columnconfigure(1, weight=1)
 
@@ -967,10 +972,10 @@ class ToolkitApp:
             self.map_tree.column(key, width=width, stretch=(key in {"name", "display", "file"}))
         self._attach_tree_scrollbars(wrap, self.map_tree)
         self.map_tree.bind("<<TreeviewSelect>>", self._on_map_select)
-        self.map_tile_detail = tk.Text(right_content, height=12, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 10))
-        self.map_tile_detail.pack(fill="x", pady=(12, 0))
         self.map_switch_actions = tk.Frame(right_content, bg=PANEL_BG)
-        self.map_switch_actions.pack(fill="x", pady=(8, 0))
+        self.map_switch_actions.pack(fill="x", pady=(10, 0))
+        self.map_tile_detail = tk.Text(right_content, height=8, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 10))
+        self.map_tile_detail.pack(fill="both", expand=True, pady=(8, 0))
         return frame
 
     def _build_filter_row(self, parent: tk.Frame, variable: tk.StringVar, callback) -> None:
@@ -1203,6 +1208,8 @@ class ToolkitApp:
             self.data_status_var.set("暂不支持")
             self._set_translation_notice(f"{self.project.engine} 已识别，但暂未启用完整翻译。")
             self._set_data_notice(f"{self.project.engine} 已识别，但暂未启用完整数据编辑。")
+        self.auto_backup_enabled_var.set(True)
+        self._sync_auto_backup_state()
 
     def toggle_dashboard_library(self, collapse: bool | None = None) -> None:
         if not self._dashboard_split_controller:
@@ -3340,6 +3347,53 @@ class ToolkitApp:
             self.refresh_backups()
             self._set_status_text(f"已备份当前存档到：{copied}")
 
+    def open_backup_browser(self) -> None:
+        if not self.project:
+            messagebox.showinfo("提示", "请先加载 RPG Maker 项目。")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("自动备份存档")
+        dialog.geometry("760x420")
+        content = tk.Frame(dialog, bg=PANEL_BG, padx=16, pady=16)
+        content.pack(fill="both", expand=True)
+        tk.Label(content, text="自动备份存档", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tree = ttk.Treeview(content, columns=("file", "time", "map"), show="headings", height=12)
+        for key, label, width in (("file", "文件", 240), ("time", "时间", 160), ("map", "地图", 260)):
+            tree.heading(key, text=label)
+            tree.column(key, width=width, stretch=True)
+        tree.pack(fill="both", expand=True, pady=(12, 0))
+        entries: list[Path] = []
+        for meta in sorted((self.project.root / ".rpgrtl_backup" / "save_auto").glob("*.json")):
+            try:
+                payload = json.loads(meta.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            file_name = str(payload.get("backup_file") or meta.stem)
+            created_at = str(payload.get("created_at") or "")
+            map_name = str(payload.get("map_name") or "")
+            map_id = str(payload.get("map_id") or "")
+            display_map = f"{map_id} {map_name}".strip() or "未知"
+            base_file = meta.with_suffix("")
+            if base_file.exists():
+                entries.append(base_file)
+                tree.insert("", "end", iid=str(len(entries) - 1), values=(file_name, created_at, display_map))
+        if not entries:
+            tree.insert("", "end", values=("暂无自动备份", "", ""))
+        buttons = tk.Frame(content, bg=PANEL_BG)
+        buttons.pack(fill="x", pady=(12, 0))
+
+        def open_selected() -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            index = int(selection[0])
+            if index < 0 or index >= len(entries):
+                return
+            self._open_save_file(entries[index])
+
+        ttk.Button(buttons, text="打开选中备份", command=open_selected, style="Primary.TButton").pack(side="left")
+        ttk.Button(buttons, text="打开备份目录", command=self.open_backup_folder).pack(side="left", padx=(8, 0))
+
     def toggle_auto_backup(self) -> None:
         if self._auto_backup_after_id:
             try:
@@ -3352,10 +3406,9 @@ class ToolkitApp:
         self._schedule_save_auto_backup(run_now=True)
 
     def _schedule_save_auto_backup(self, run_now: bool = False) -> None:
-        try:
-            minutes = max(1, int(float(self.auto_save_interval_var.get() or 3)))
-        except ValueError:
-            minutes = 3
+        if not self.auto_backup_enabled_var.get():
+            return
+        minutes = self._auto_backup_minutes()
         if run_now:
             copied = self._backup_current_save("auto")
             if copied:
@@ -3366,11 +3419,10 @@ class ToolkitApp:
 
     def _run_scheduled_save_backup(self) -> None:
         self._auto_backup_after_id = None
+        if not self.auto_backup_enabled_var.get():
+            return
         copied = self._backup_current_save("auto")
-        try:
-            minutes = max(1, int(float(self.auto_save_interval_var.get() or 3)))
-        except ValueError:
-            minutes = 3
+        minutes = self._auto_backup_minutes()
         if copied:
             self.auto_backup_status_var.set(f"自动备份运行中：每 {minutes} 分钟，最近 {copied.name}")
             self.refresh_backups()
@@ -3380,19 +3432,49 @@ class ToolkitApp:
 
     def _backup_current_save(self, mode: str) -> Path | None:
         if not self.project:
-            messagebox.showinfo("提示", "请先加载 RPG Maker 项目。")
+            if mode != "auto":
+                messagebox.showinfo("提示", "请先加载 RPG Maker 项目。")
             return None
         slot = self._selected_save_slot()
         save_path = self.current_save_path or (slot.path if slot else None)
         if not save_path or not save_path.exists():
-            messagebox.showinfo("提示", "没有找到可备份的当前存档。请先选择或读取一个存档。")
+            if mode != "auto":
+                messagebox.showinfo("提示", "没有找到可备份的当前存档。请先选择或读取一个存档。")
             return None
         backup_dir = self.project.root / ".rpgrtl_backup" / ("save_auto" if mode == "auto" else "save_manual")
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target = backup_dir / f"{save_path.name}.{stamp}.bak"
         shutil.copy2(save_path, target)
+        self._write_save_backup_meta(target, save_path, slot)
         return target
+
+    def _write_save_backup_meta(self, backup_path: Path, source_path: Path, slot: SaveSlot | None) -> None:
+        if not self.project:
+            return
+        try:
+            data = self._get_service().load_save(source_path)
+            summary = self._get_service().save_summary(data)
+        except Exception:
+            summary = {}
+        map_name = ""
+        map_id = ""
+        if self.runtime_state and self.runtime_state.get("map"):
+            map_info = self.runtime_state["map"]
+            map_id = str(map_info.get("id", ""))
+            map_name = str(map_info.get("name") or map_info.get("displayName") or "")
+        elif summary:
+            map_name = str(summary.get("map_name", ""))
+        payload = {
+            "backup_file": backup_path.name,
+            "source_file": source_path.name,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "map_id": map_id,
+            "map_name": map_name,
+            "slot": slot.slot_id if slot else None,
+        }
+        meta_path = backup_path.with_suffix(backup_path.suffix + ".json")
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
 
     def apply_save_gold(self) -> None:
         if self._runtime_set({"gold": int(self.save_gold_var.get() or 0)}):
@@ -3648,6 +3730,17 @@ class ToolkitApp:
                     continue
         return counts
 
+    def _runtime_actor_map(self) -> dict[int, dict]:
+        actors: dict[int, dict] = {}
+        if not self.runtime_state:
+            return actors
+        for actor in self.runtime_state.get("actors", []):
+            try:
+                actors[int(actor.get("id") or 0)] = actor
+            except Exception:
+                continue
+        return actors
+
     @staticmethod
     def _data_runtime_item_key(records: list[DataRecord]) -> tuple[str, int] | None:
         if not records:
@@ -3666,6 +3759,15 @@ class ToolkitApp:
         except (TypeError, ValueError):
             return None
         return kind, item_id
+
+    def _runtime_actor_for_records(self, records: list[DataRecord]) -> dict | None:
+        if not records or records[0].file != "Actors.json":
+            return None
+        try:
+            actor_id = int(records[0].object_id.rsplit(":", 1)[-1])
+        except (AttributeError, ValueError):
+            return None
+        return self._runtime_actor_map().get(actor_id)
 
     def _populate_save_trees(self) -> None:
         for tree in (getattr(self, "save_items_tree", None), getattr(self, "save_actors_tree", None), getattr(self, "save_switches_tree", None), getattr(self, "save_variables_tree", None)):
@@ -4025,6 +4127,25 @@ class ToolkitApp:
                     return slot
         return self.save_slots[0] if self.save_slots else None
 
+    def _sync_auto_backup_state(self) -> None:
+        if self.auto_backup_enabled_var.get():
+            self._schedule_save_auto_backup(run_now=False)
+            self.auto_backup_status_var.set(f"自动备份已开启：每 {self._auto_backup_minutes()} 分钟")
+        else:
+            if self._auto_backup_after_id:
+                try:
+                    self.root.after_cancel(self._auto_backup_after_id)
+                except tk.TclError:
+                    pass
+                self._auto_backup_after_id = None
+            self.auto_backup_status_var.set("自动备份已关闭")
+
+    def _auto_backup_minutes(self) -> int:
+        try:
+            return max(1, int(float(self.auto_save_interval_var.get() or 3)))
+        except ValueError:
+            return 3
+
     def _ensure_save_loaded(self) -> bool:
         if self.save_payload is None:
             messagebox.showinfo("提示", "请先读取一个游戏存档。")
@@ -4216,6 +4337,19 @@ class ToolkitApp:
             backup_root = self.project.root / ".rpgrtl_backup"
             backup_root.mkdir(parents=True, exist_ok=True)
             os.startfile(backup_root)
+
+    def _open_save_file(self, path: Path) -> None:
+        if not self.project or not path.exists():
+            return
+        try:
+            service = self._get_service()
+            self.save_payload = service.load_save(path)
+            self.current_save_path = path
+            self._refresh_save_views()
+            self.save_status_var.set(f"已打开自动备份：{path.name}")
+            self._append_recent_task("打开自动备份", self.project.root, self.project.engine)
+        except Exception as exc:
+            messagebox.showerror("打开备份失败", str(exc))
 
     def open_project_folder(self) -> None:
         os.startfile(self.project.root if self.project else self._project_root())
@@ -4534,6 +4668,18 @@ class ToolkitApp:
                     self.data_runtime_count_var.set("")
             for item in self.data_property_tree.get_children():
                 self.data_property_tree.delete(item)
+            runtime_actor = self._runtime_actor_for_records(records)
+            if runtime_actor:
+                actor_id = int(runtime_actor.get("id") or 0)
+                for label, value in (
+                    ("实时等级", runtime_actor.get("level", "")),
+                    ("实时 HP", runtime_actor.get("hp", "")),
+                    ("实时 MP", runtime_actor.get("mp", "")),
+                    ("实时 TP", runtime_actor.get("tp", "")),
+                    ("实时经验", runtime_actor.get("exp", "")),
+                ):
+                    record_id = f"runtime_actor:{actor_id}:{label}"
+                    self.data_property_tree.insert("", "end", iid=record_id, values=(label, value))
             for record in records:
                 self.data_property_tree.insert("", "end", iid=record.record_id, values=(record.label, record.value))
             if records:
@@ -4553,6 +4699,9 @@ class ToolkitApp:
         if not selection:
             return
         record = self.data_record_map.get(selection[0])
+        if not record and selection[0].startswith("runtime_actor:"):
+            self._edit_runtime_actor_record(selection[0])
+            return
         if not record:
             return
         self.selected_record_id = record.record_id
@@ -4596,6 +4745,63 @@ class ToolkitApp:
         self._data_cell_editor = None
         if editor and editor.winfo_exists():
             editor.destroy()
+
+    def _edit_runtime_actor_record(self, record_id: str) -> None:
+        parts = record_id.split(":", 2)
+        if len(parts) != 3:
+            return
+        try:
+            actor_id = int(parts[1])
+        except ValueError:
+            return
+        label = parts[2]
+        item = self.data_property_tree.item(record_id, "values")
+        current = item[1] if len(item) > 1 else ""
+        self._destroy_data_cell_editor()
+        bbox = self.data_property_tree.bbox(record_id, "value")
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        editor = ttk.Entry(self.data_property_tree)
+        editor.insert(0, str(current))
+        editor.select_range(0, "end")
+        editor.place(x=x, y=y, width=width, height=height)
+        self._data_cell_editor = editor
+        committed = False
+
+        def commit(_event: object | None = None) -> None:
+            nonlocal committed
+            if committed:
+                return
+            committed = True
+            raw = editor.get()
+            self._destroy_data_cell_editor()
+            patch_key = {
+                "实时等级": "level",
+                "实时 HP": "hp",
+                "实时 MP": "mp",
+                "实时 TP": "tp",
+                "实时经验": "exp",
+            }.get(label)
+            if not patch_key:
+                return
+            try:
+                value = int(float(str(raw).strip()))
+            except ValueError:
+                messagebox.showerror("错误", "实时角色数值必须是数字。")
+                return
+            if self._runtime_set({"actors": {str(actor_id): {patch_key: value}}}):
+                self.data_property_tree.item(record_id, values=(label, value))
+
+        def cancel(_event: object | None = None) -> None:
+            nonlocal committed
+            committed = True
+            self._destroy_data_cell_editor()
+
+        editor.bind("<Return>", commit)
+        editor.bind("<FocusOut>", commit)
+        editor.bind("<Escape>", cancel)
+        editor.focus_set()
 
     def _edit_data_record_value(self, record: DataRecord) -> None:
         if not self.project:

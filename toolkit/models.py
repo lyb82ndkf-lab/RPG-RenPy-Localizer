@@ -57,3 +57,32 @@ class MapRecord:
     height: int = 0
     tileset_id: int = 0
     event_count: int = 0
+
+
+@dataclass(slots=True)
+class MapTileInfo:
+    x: int
+    y: int
+    passable: bool = True
+    event_count: int = 0
+    transfer_count: int = 0
+
+
+@dataclass(slots=True)
+class MapEventInfo:
+    event_id: int
+    name: str
+    x: int
+    y: int
+    page_count: int = 0
+    command_count: int = 0
+    conditions: list[str] = field(default_factory=list)
+    transfers: list[str] = field(default_factory=list)
+    commands: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MapDetail:
+    record: MapRecord
+    tiles: list[MapTileInfo] = field(default_factory=list)
+    events: list[MapEventInfo] = field(default_factory=list)

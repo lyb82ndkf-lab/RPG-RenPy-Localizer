@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import DataRecord, MapRecord, ProjectInfo, SaveSlot, TranslationEntry
+from .models import DataRecord, MapDetail, MapEventInfo, MapRecord, MapTileInfo, ProjectInfo, SaveSlot, TranslationEntry
 from .storage import load_json, save_json
 
 
@@ -66,9 +66,28 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   const bridge = window.RPGRenPyBridge = window.RPGRenPyBridge || {};
   bridge.started = true;
   bridge.enabled = true;
+  bridge.root = process.cwd ? process.cwd() : "";
   bridge.translationEnabled = false;
   bridge.translations = bridge.translations || {};
   bridge.locks = bridge.locks || {};
+  bridge.options = bridge.options || {
+    gameSpeed: 1,
+    moveSpeed: 0,
+    battleSpeed: 1,
+    autoBattle: false,
+    godMode: false,
+    autoSaveInterval: 0,
+    unlockCg: false,
+    fontSize: 0,
+    fpsBoost: false
+  };
+  bridge.lastAutoSaveAt = bridge.lastAutoSaveAt || 0;
+
+  function clamp(value, min, max, fallback) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, number));
+  }
 
   function json(res, status, payload) {
     const body = JSON.stringify(payload);
@@ -125,6 +144,12 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
           mp: actor._mp,
           mmp: actor.mmp || 0,
           tp: actor._tp || 0,
+          atk: actor.atk || 0,
+          def: actor.def || 0,
+          mat: actor.mat || 0,
+          mdf: actor.mdf || 0,
+          agi: actor.agi || 0,
+          luk: actor.luk || 0,
           exp: actor.currentExp ? actor.currentExp() : null
         });
       }
@@ -159,6 +184,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         y: window.$gamePlayer ? $gamePlayer.y : 0,
         through: window.$gamePlayer ? $gamePlayer.isThrough() : false
       },
+      options: bridge.options,
       translationEnabled: bridge.translationEnabled
     };
   }
@@ -183,15 +209,53 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         const actor = $gameActors.actor(Number(id));
         if (!actor || !patch) continue;
         if (patch.level !== undefined && actor.changeLevel) actor.changeLevel(Number(patch.level), false);
+        if (patch.exp !== undefined && actor.changeExp) actor.changeExp(Number(patch.exp) || 0, false);
         if (patch.hp !== undefined) actor._hp = Number(patch.hp) || 0;
         if (patch.mp !== undefined) actor._mp = Number(patch.mp) || 0;
         if (patch.tp !== undefined) actor._tp = Number(patch.tp) || 0;
+        const paramMap = { mhp: 0, mmp: 1, atk: 2, def: 3, mat: 4, mdf: 5, agi: 6, luk: 7 };
+        for (const [key, paramId] of Object.entries(paramMap)) {
+          if (patch[key] !== undefined && actor.addParam) {
+            const target = Number(patch[key]) || 0;
+            const current = actor[key] || 0;
+            actor.addParam(paramId, target - current);
+          }
+        }
+      }
+    }
+    if (payload.options) {
+      const options = payload.options;
+      if (options.gameSpeed !== undefined) bridge.options.gameSpeed = clamp(options.gameSpeed, 1, 16, 1);
+      if (options.moveSpeed !== undefined) bridge.options.moveSpeed = clamp(options.moveSpeed, 0, 6, 0);
+      if (options.battleSpeed !== undefined) bridge.options.battleSpeed = clamp(options.battleSpeed, 1, 16, 1);
+      if (options.autoBattle !== undefined) bridge.options.autoBattle = !!options.autoBattle;
+      if (options.godMode !== undefined) bridge.options.godMode = !!options.godMode;
+      if (options.autoSaveInterval !== undefined) bridge.options.autoSaveInterval = Math.max(0, Number(options.autoSaveInterval) || 0);
+      if (options.unlockCg !== undefined) bridge.options.unlockCg = !!options.unlockCg;
+      if (options.fontSize !== undefined) bridge.options.fontSize = Math.max(0, Number(options.fontSize) || 0);
+      if (options.fpsBoost !== undefined) bridge.options.fpsBoost = !!options.fpsBoost;
+      if (bridge.options.unlockCg && window.$gameSystem) {
+        $gameSystem._cgUnlocked = true;
+        $gameSystem._galleryUnlocked = true;
+        $gameSystem._unlockedCg = $gameSystem._unlockedCg || {};
+        for (let i = 1; i <= 999; i++) $gameSystem._unlockedCg[i] = true;
+      }
+      if (window.Graphics && bridge.options.fpsBoost) {
+        try { Graphics._maxFps = 60; } catch (_e) {}
       }
     }
     if (payload.locks) bridge.locks = payload.locks;
     if (payload.battle === "win" && window.BattleManager) BattleManager.processVictory();
     if (payload.battle === "lose" && window.BattleManager) BattleManager.processDefeat();
+    if (payload.battle === "escape" && window.BattleManager) BattleManager.processEscape();
     if (window.$gamePlayer && payload.player && payload.player.through !== undefined) $gamePlayer.setThrough(!!payload.player.through);
+    if (window.$gamePlayer && payload.player && payload.player.teleport && window.$gameMap) {
+      const toMapX = value => value === "mouse" && window.TouchInput ? $gameMap.canvasToMapX(TouchInput.x) : Number(value);
+      const toMapY = value => value === "mouse" && window.TouchInput ? $gameMap.canvasToMapY(TouchInput.y) : Number(value);
+      const x = Number.isFinite(toMapX(payload.player.teleport.x)) ? toMapX(payload.player.teleport.x) : $gamePlayer.x;
+      const y = Number.isFinite(toMapY(payload.player.teleport.y)) ? toMapY(payload.player.teleport.y) : $gamePlayer.y;
+      $gamePlayer.reserveTransfer($gameMap.mapId(), x, y, $gamePlayer.direction(), 0);
+    }
     if (window.$gameMap) $gameMap.requestRefresh();
   }
 
@@ -208,18 +272,61 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (lock.hp !== undefined) battler._hp = Number(lock.hp) || 0;
     if (lock.mp !== undefined) battler._mp = Number(lock.mp) || 0;
     if (lock.tp !== undefined) battler._tp = Number(lock.tp) || 0;
+    if (bridge.options.godMode) {
+      battler._hp = Math.max(1, battler.mhp || battler._hp || 1);
+      battler._mp = battler.mmp || battler._mp || 0;
+      battler._tp = 100;
+    }
   }
+
+  const _playerRealMoveSpeed = Game_Player.prototype.realMoveSpeed;
+  Game_Player.prototype.realMoveSpeed = function() {
+    const base = _playerRealMoveSpeed.call(this);
+    return bridge.options.moveSpeed > 0 ? bridge.options.moveSpeed : base;
+  };
+
+  const _battleManagerUpdate = BattleManager.update;
+  BattleManager.update = function(timeActive) {
+    const count = Math.max(1, Math.floor(bridge.options.battleSpeed || 1));
+    for (let i = 0; i < count; i++) _battleManagerUpdate.call(this, timeActive);
+  };
 
   const _sceneMapUpdate = Scene_Map.prototype.update;
   Scene_Map.prototype.update = function() {
-    _sceneMapUpdate.call(this);
+    const ctrlBoost = !!(window.Input && Input.isPressed && Input.isPressed("control"));
+    const speed = Math.max(Number(bridge.options.gameSpeed || 1), ctrlBoost ? 2 : 1);
+    const count = Math.max(1, Math.floor(speed));
+    for (let i = 0; i < count; i++) _sceneMapUpdate.call(this);
     if (window.$gameParty) $gameParty.members().forEach(applyLock);
+    if (bridge.options.autoSaveInterval > 0 && window.DataManager) {
+      const now = Date.now();
+      if (now - bridge.lastAutoSaveAt >= bridge.options.autoSaveInterval * 1000) {
+        bridge.lastAutoSaveAt = now;
+        try { DataManager.saveGame(1); } catch (_e) {}
+      }
+    }
   };
 
   const _sceneBattleUpdate = Scene_Battle.prototype.update;
   Scene_Battle.prototype.update = function() {
     _sceneBattleUpdate.call(this);
     if (window.$gameParty) $gameParty.members().forEach(applyLock);
+    if (bridge.options.autoBattle && window.BattleManager && BattleManager.inputting && BattleManager.inputting()) {
+      try {
+        if (window.$gameParty) {
+          $gameParty.members().forEach(actor => {
+            if (actor && actor.makeAutoBattleActions) actor.makeAutoBattleActions();
+          });
+        }
+        BattleManager.startTurn();
+      } catch (_e) {}
+    }
+  };
+
+  const _bitmapInitialize = Bitmap.prototype.initialize;
+  Bitmap.prototype.initialize = function(width, height) {
+    _bitmapInitialize.call(this, width, height);
+    if (bridge.options.fontSize > 0) this.fontSize = bridge.options.fontSize;
   };
 
   const _convert = Window_Base.prototype.convertEscapeCharacters;
@@ -234,7 +341,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") return json(res, 200, { ok: true });
     try {
-      if (req.url === "/ping") return json(res, 200, { ok: true, name: "RPGRenPyBridge" });
+      if (req.url === "/ping") return json(res, 200, { ok: true, name: "RPGRenPyBridge", root: bridge.root, pid: process.pid });
       if (req.url === "/state") return json(res, 200, state());
       if (req.url === "/set" && req.method === "POST") {
         apply(await readBody(req));
@@ -252,7 +359,14 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       json(res, 500, { ok: false, error: String(e && e.stack || e) });
     }
   });
-  bridge.server.listen(PORT, HOST);
+  bridge.server.on("error", e => {
+    bridge.lastError = String(e && e.stack || e);
+    bridge.started = false;
+  });
+  bridge.server.listen(PORT, HOST, () => {
+    bridge.started = true;
+    bridge.lastError = "";
+  });
 })();
 """
 
@@ -592,6 +706,164 @@ class RPGMakerService:
                 )
             )
         return maps
+
+    def map_detail(self, map_id: int) -> MapDetail:
+        records = {record.map_id: record for record in self.list_maps()}
+        record = records.get(map_id)
+        if not record:
+            record = MapRecord(map_id=map_id, name=f"Map {map_id}", display_name="", file=f"Map{map_id:03d}.json")
+        map_path = self.data_dir / record.file
+        data = load_json(map_path) if map_path.exists() else {}
+        width = int(data.get("width") or record.width or 0)
+        height = int(data.get("height") or record.height or 0)
+        record.width = width
+        record.height = height
+        record.display_name = str(data.get("displayName") or record.display_name)
+        record.tileset_id = int(data.get("tilesetId") or record.tileset_id or 0)
+
+        passable = self._map_passability(data, width, height, record.tileset_id)
+        events = self._map_events(data)
+        event_count: dict[tuple[int, int], int] = {}
+        transfer_count: dict[tuple[int, int], int] = {}
+        for event in events:
+            key = (event.x, event.y)
+            event_count[key] = event_count.get(key, 0) + 1
+            if event.transfers:
+                transfer_count[key] = transfer_count.get(key, 0) + len(event.transfers)
+        tiles = [
+            MapTileInfo(
+                x=x,
+                y=y,
+                passable=passable.get((x, y), True),
+                event_count=event_count.get((x, y), 0),
+                transfer_count=transfer_count.get((x, y), 0),
+            )
+            for y in range(height)
+            for x in range(width)
+        ]
+        return MapDetail(record=record, tiles=tiles, events=events)
+
+    def _map_passability(self, data: dict[str, Any], width: int, height: int, tileset_id: int) -> dict[tuple[int, int], bool]:
+        tilesets = load_json(self.data_dir / "Tilesets.json") if (self.data_dir / "Tilesets.json").exists() else []
+        flags: list[int] = []
+        if isinstance(tilesets, list) and 0 <= tileset_id < len(tilesets) and isinstance(tilesets[tileset_id], dict):
+            raw_flags = tilesets[tileset_id].get("flags") or []
+            if isinstance(raw_flags, list):
+                flags = [int(item or 0) for item in raw_flags]
+        raw = data.get("data") or []
+        layers = 6
+        result: dict[tuple[int, int], bool] = {}
+        for y in range(height):
+            for x in range(width):
+                blocked = False
+                for z in range(min(layers, max(1, len(raw) // max(1, width * height)))):
+                    index = (z * height + y) * width + x
+                    tile_id = int(raw[index] or 0) if index < len(raw) else 0
+                    if tile_id <= 0 or tile_id >= len(flags):
+                        continue
+                    flag = flags[tile_id]
+                    if flag & 0x10:
+                        continue
+                    if flag & 0x0F == 0x0F:
+                        blocked = True
+                        break
+                result[(x, y)] = not blocked
+        return result
+
+    def _map_events(self, data: dict[str, Any]) -> list[MapEventInfo]:
+        result: list[MapEventInfo] = []
+        events = data.get("events") or []
+        if not isinstance(events, list):
+            return result
+        for fallback_id, raw_event in enumerate(events):
+            if not isinstance(raw_event, dict):
+                continue
+            event_id = int(raw_event.get("id") or fallback_id)
+            pages = raw_event.get("pages") or []
+            conditions: list[str] = []
+            transfers: list[str] = []
+            commands_summary: list[str] = []
+            command_count = 0
+            if isinstance(pages, list):
+                for page_index, page in enumerate(pages, start=1):
+                    if not isinstance(page, dict):
+                        continue
+                    conditions.extend(self._event_page_conditions(page_index, page.get("conditions") or {}))
+                    commands = page.get("list") or []
+                    if isinstance(commands, list):
+                        command_count += len(commands)
+                        commands_summary.extend(self._event_command_summary(commands))
+                        transfers.extend(self._event_transfers(commands))
+            result.append(
+                MapEventInfo(
+                    event_id=event_id,
+                    name=str(raw_event.get("name") or f"Event {event_id}"),
+                    x=int(raw_event.get("x") or 0),
+                    y=int(raw_event.get("y") or 0),
+                    page_count=len(pages) if isinstance(pages, list) else 0,
+                    command_count=command_count,
+                    conditions=conditions,
+                    transfers=transfers,
+                    commands=commands_summary,
+                )
+            )
+        return result
+
+    @staticmethod
+    def _event_page_conditions(page_index: int, conditions: dict[str, Any]) -> list[str]:
+        result: list[str] = []
+        if conditions.get("switch1Valid"):
+            result.append(f"页{page_index}: 开关 {conditions.get('switch1Id')} ON")
+        if conditions.get("switch2Valid"):
+            result.append(f"页{page_index}: 开关 {conditions.get('switch2Id')} ON")
+        if conditions.get("variableValid"):
+            result.append(f"页{page_index}: 变量 {conditions.get('variableId')} >= {conditions.get('variableValue')}")
+        if conditions.get("selfSwitchValid"):
+            result.append(f"页{page_index}: 独立开关 {conditions.get('selfSwitchCh')} ON")
+        if conditions.get("itemValid"):
+            result.append(f"页{page_index}: 持有物品 {conditions.get('itemId')}")
+        if conditions.get("actorValid"):
+            result.append(f"页{page_index}: 队伍含角色 {conditions.get('actorId')}")
+        if not result:
+            result.append(f"页{page_index}: 无触发条件")
+        return result
+
+    @staticmethod
+    def _event_transfers(commands: list[Any]) -> list[str]:
+        transfers: list[str] = []
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            if command.get("code") != 201:
+                continue
+            params = command.get("parameters") or []
+            if len(params) >= 5:
+                transfers.append(f"传送到地图 {params[1]} ({params[2]}, {params[3]})")
+        return transfers
+
+    @staticmethod
+    def _event_command_summary(commands: list[Any]) -> list[str]:
+        summary: list[str] = []
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            code = command.get("code")
+            params = command.get("parameters") or []
+            if code == 101 and len(params) > 4 and isinstance(params[4], str):
+                summary.append(f"对话：{params[4][:32]}")
+            elif code in {401, 405} and params and isinstance(params[0], str):
+                summary.append(f"对话：{params[0][:32]}")
+            elif code == 121 and len(params) >= 3:
+                summary.append(f"开关：{params[0]}-{params[1]}")
+            elif code == 122 and len(params) >= 5:
+                summary.append(f"变量：{params[0]}-{params[1]}")
+            elif code == 201 and len(params) >= 5:
+                summary.append(f"传送：地图 {params[1]} ({params[2]}, {params[3]})")
+            elif code == 230:
+                summary.append("等待")
+            elif code == 355:
+                summary.append("脚本")
+        return summary[:12]
 
     def _backup_save(self, save_path: Path) -> None:
         if not save_path.exists():

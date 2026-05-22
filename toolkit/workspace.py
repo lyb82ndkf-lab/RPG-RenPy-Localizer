@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -76,6 +77,33 @@ class Workspace:
     def save_translation_memory(self, translations: dict[str, str]) -> None:
         clean = {str(source).strip(): str(target).strip() for source, target in translations.items() if str(source).strip() and str(target).strip()}
         self._write_json(self.translation_memory_path, {"translations": clean})
+
+    # ── 项目级缓存隔离 ──────────────────────────────────────────
+
+    @staticmethod
+    def _project_tm_path(config_dir: Path, project_root: Path) -> Path:
+        """按项目根路径哈希生成独立缓存文件名。"""
+        hash_id = hashlib.md5(str(project_root.resolve()).encode()).hexdigest()[:12]
+        return config_dir / f"tm_project_{hash_id}.json"
+
+    def load_project_translation_memory(self, project_root: Path | None) -> dict[str, str]:
+        if not project_root:
+            return {}
+        path = self._project_tm_path(self.config_dir, project_root)
+        if not path.exists():
+            return {}
+        payload = self._read_json(path, default={"translations": {}})
+        translations = payload.get("translations", {}) if isinstance(payload, dict) else {}
+        if not isinstance(translations, dict):
+            return {}
+        return {str(source): str(target) for source, target in translations.items() if str(source).strip() and str(target).strip()}
+
+    def save_project_translation_memory(self, project_root: Path | None, translations: dict[str, str]) -> None:
+        if not project_root:
+            return
+        path = self._project_tm_path(self.config_dir, project_root)
+        clean = {str(source).strip(): str(target).strip() for source, target in translations.items() if str(source).strip() and str(target).strip()}
+        self._write_json(path, {"translations": clean})
 
     @staticmethod
     def _read_json(path: Path, default: Any) -> Any:

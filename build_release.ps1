@@ -42,3 +42,8 @@ $PackageDir = Join-Path $Dist "RPGRenPyLocalizer"
 if (Test-Path $Readme) {
     Copy-Item -LiteralPath $Readme -Destination (Join-Path $PackageDir $GuideName) -Force
 }
+
+$StaticDir = Join-Path $Root "static"
+if (Test-Path $StaticDir) {
+    Copy-Item -LiteralPath $StaticDir -Destination (Join-Path $PackageDir "static") -Recurse -Force
+}

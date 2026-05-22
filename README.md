@@ -1,179 +1,184 @@
-# RPG Maker / Ren'Py 本地化工具箱
+# RPGRenPyLocalizer
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+Windows 本地化与实时修改工具，面向 RPG Maker MV/MZ 和 Ren'Py 单机游戏。
 
-一个面向 Windows 的单机游戏本地化与数据编辑工具，专注于 RPG Maker 和 Ren'Py 引擎游戏的汉化工作。
+它的目标是三件事：
+- 翻译游戏文本
+- 修改游戏数据
+- 连接运行中的游戏做实时控制
 
-## 功能特性
+## 功能
 
-### 核心功能
+### RPG Maker MV/MZ
+- 提取 `json` 数据、地图事件、系统文本
+- 实时读取金币、开关、变量、物品、角色状态
+- 实时修改金币、HP、MP、TP、经验倍率、移动速度、战斗速度
+- 地图查看、事件查看、坐标传送、点击地图瞬移
+- 数据编辑器支持物品、角色、职业、敌人、技能、状态等分类
+- 翻译工作台支持导入、导出、缓存、去重、AI 翻译、百度翻译
+- 支持实时桥接组件安装到游戏目录
 
-- **汉化文本提取与回写** - 从游戏文件中提取需要翻译的文本，翻译后写回游戏
-- **翻译包导入导出** - 支持 JSON 格式的翻译包，方便协作和版本管理
-- **数据库编辑** - 直接编辑游戏数据库中的常见字段
-- **对白文本编辑** - 支持 RPG Maker 事件文本和 Ren'Py 对白的直接编辑
+### Ren'Py
+- 提取脚本与翻译文本
+- 支持加载翻译、嵌入翻译、生成翻译文件
+- 支持运行时翻译补丁
+- 支持自动安装提取脚本
 
-### 界面功能
+### AI 翻译渠道
+- OpenAI
+- DeepSeek
+- Doubao
+- GLM
+- NVIDIA
+- Xiaomi Token Plan
+- 百度翻译 API
 
-- **现代化桌面界面** - 基于 Python 标准库 tkinter，无需额外安装 GUI 依赖
-- **游戏库管理** - 以工作台形式长期管理多个游戏项目
-  - 维护常用项目列表
-  - 保存备注与标签
-  - 查看最近任务
-  - 快速载入/打开目录/移除项目
-  - 一键启动游戏
-- **项目自动识别** - 自动检测游戏引擎类型
-- **翻译工作台** - 完整的翻译工作流程
-  - 提取文本
-  - 导出 JSON 翻译包
-  - 导入 JSON 翻译包
-  - 逐条编辑译文
-  - 回写到游戏
-- **环境与备份管理** - 自动环境准备和备份管理
+## 界面说明
 
-## 支持的游戏引擎
+主界面分为几个区域：
+- 游戏库：管理已加入的项目
+- 翻译工作台：提取、翻译、导入、导出、加载翻译
+- 数据编辑器：编辑游戏数据库字段
+- 环境与备份：查看运行环境、自动备份、备份目录
 
-### RPG Maker MV/MZ ✅
+翻译工作台中：
+- 默认翻译范围是“全部文本”
+- 支持多选条目
+- 支持一键翻译
+- 支持每次批量 100 条
+- 支持翻译缓存与全局去重
 
-- 识别 `data/*.json` 和 `www/data/*.json`
-- 提取常见数据库文本
-- 提取地图事件/公共事件文本
-- 回写翻译内容
-- 编辑常见文本字段
+数据编辑器中：
+- 按文件分类显示
+- 选中对象后，右侧展示属性和值
+- 双击值即可原地编辑
 
-### Ren'Py ✅
+地图查看中：
+- 左侧显示地图
+- 右侧显示事件、坐标、触发条件
+- 点击格子可查看详情
+- 可直接传送到选中坐标
 
-- 识别 `game/**/*.rpy` 源码文件
-- 识别 `game/tl/**` 翻译文件
-- 提取对白与字符串
-- 生成 `game/tl/schinese/codex_generated.rpy` 翻译文件
-- 直接编辑源码对白行
+实时控制中：
+- 金币、HP、MP、TP、变量、开关可实时修改
+- 支持穿墙、上帝模式、自动战斗、战斗胜利/失败、逃跑
+- 支持地图点击瞬移
 
-### RPG Maker XP/VX/VX Ace 🚧
+## 安装
 
-- 当前可识别项目目录
-- 可加入游戏库管理
-- 可一键启动 `Game.exe`
-- 完整文本提取与数据编辑功能开发中
+### 直接运行
+1. 双击 `启动工具.bat`
+2. 或运行 `main.py`
 
-## 安装与运行
+### 打包版
+如果你要发给别人，直接把 `dist\RPGRenPyLocalizer\` 整个文件夹发过去即可。
 
-### 方式一：双击启动（推荐）
+如果目标电脑没有 Python，也可以直接运行打包后的 `RPGRenPyLocalizer.exe`。
 
-直接双击项目根目录下的 `启动工具.bat` 文件。
+## 需要打包哪些文件
 
-### 方式二：命令行运行
+建议只发这些：
+- `dist\RPGRenPyLocalizer\` 整个目录
 
-```bash
-# 确保已安装 Python 3.8+
-py main.py
+不需要一起发这些：
+- `.venv`
+- `.workspace`
+- `build`
+- `__pycache__`
+- 源码目录里的开发缓存
 
-# 或者使用 python 命令
-python main.py
+## 配置保存位置
+
+AI 配置、最近任务、翻译记忆、游戏库等会保存在用户配置目录：
+
+`%APPDATA%\RPGRenPyLocalizer`
+
+也就是 Windows 用户目录下的应用数据位置，不会放在项目源码里。
+
+项目级缓存会保存在游戏目录下：
+- `.rpgrtl_backup`
+- `.rpgrtl_workspace`
+
+## 使用流程
+
+### 1. 加载游戏
+- 选择游戏 `exe`
+- 或直接把 `exe` 拖入窗口
+- 项目会自动识别引擎
+
+### 2. 翻译
+- 打开“翻译工作台”
+- 提取文本
+- 选择 AI 渠道或百度翻译
+- 点击一键翻译
+- 可导入/导出翻译包
+- 可加载到当前游戏或嵌入游戏
+
+### 3. 数据修改
+- 打开“数据编辑器”
+- 选择分类
+- 双击某个值直接修改
+- 保存后会自动写回文件
+
+### 4. 实时控制
+- 先安装实时组件并重启游戏
+- 再连接实时游戏
+- 然后就能实时修改金币、开关、变量、角色状态等
+
+## 打包
+
+执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
 
-### 环境说明
+打包结果在：
 
-本工具基于 Python 标准库 `tkinter` 构建 GUI 界面，**无需额外安装第三方包**即可运行主界面。
+```text
+dist\RPGRenPyLocalizer\
+```
 
-工具内置了"自动准备环境"功能，会在项目目录下创建 `.venv` 虚拟环境，用于支持：
+## 常见问题
 
-- 机翻 API 集成
-- OCR 文字识别
-- 打包成独立 exe 文件
-- 更多引擎支持
+### 1. 为什么没有 Python 也能运行？
+因为发布版已经用 PyInstaller 打包成独立 exe 了。
 
-## 使用指南
+### 2. 为什么 `Actors.initialLevel` 改了但游戏里等级没变？
+`initialLevel` 是数据库里的初始等级，不等于当前进程中的实时等级。
+现在工具会尽量同步实时角色等级，但前提是游戏已经连接了实时组件。
 
-### 首次使用
+### 3. 为什么点击地图瞬移没反应？
+你需要：
+- 先安装实时组件
+- 重启游戏
+- 再在工具里勾选“地图点击瞬移”
 
-1. 双击 `启动工具.bat` 或运行 `py main.py`
-2. 启动器会自动检查并准备运行环境
-3. 进入主界面后，点击"添加项目"选择游戏目录
-4. 工具会自动识别游戏引擎类型
-
-### 翻译工作流程
-
-1. 在游戏库中选择目标项目
-2. 进入"翻译工作台"
-3. 点击"提取文本"获取需要翻译的内容
-4. 导出 JSON 翻译包进行翻译
-5. 导入翻译后的 JSON 包
-6. 点击"回写到游戏"完成汉化
-
-### 数据编辑
-
-- **RPG Maker**: 编辑数据库字段、事件文本
-- **Ren'Py**: 直接编辑源码中的对白行
+### 4. 为什么翻译会跳过很多文本？
+工具会尽量过滤路径、乱码、系统占位文本，避免把非对白内容误翻译。
 
 ## 项目结构
 
-```
+```text
 RPGRenPyLocalizer/
-├── main.py              # 主程序入口
-├── launcher.py          # 启动器（带环境准备）
-├── 启动工具.bat          # Windows 批处理启动脚本
-├── toolkit/             # 核心工具包
-│   ├── app.py           # 应用主逻辑
-│   ├── detectors.py     # 游戏引擎检测器
-│   ├── models.py        # 数据模型
-│   ├── renpy.py         # Ren'Py 引擎支持
-│   ├── rpgmaker.py      # RPG Maker 引擎支持
-│   ├── storage.py       # 数据存储
-│   └── workspace.py     # 工作区管理
-├── build/               # 构建输出目录
-├── dist/                # 分发目录
-└── .venv/               # Python 虚拟环境（自动创建）
+├─ main.py
+├─ launcher.py
+├─ build_release.ps1
+├─ static/
+├─ toolkit/
+│  ├─ app.py
+│  ├─ detectors.py
+│  ├─ models.py
+│  ├─ renpy.py
+│  ├─ rpgmaker.py
+│  ├─ storage.py
+│  ├─ workspace.py
+│  └─ ui_*.py
+├─ dist/
+└─ build/
 ```
 
-## 备份机制
+## 说明
 
-首次写回或保存修改前，工具会自动在项目根目录创建 `.rpgrtl_backup` 备份目录，确保原始文件安全。
+这是一个用于单机游戏汉化、文本处理和实时修改的本地工具，不面向网络游戏，也不用于联机作弊。
 
-## 当前限制
-
-- 暂未完整支持 RPG Maker VX Ace/XP/2000/2003
-- 暂未支持加密封包直接编辑
-- 暂未内置自动机翻 API
-- 暂未打包为单文件 exe
-
-## 参考来源
-
-本工具的产品方向参考了以下开源项目：
-
-- `2R-Tools-main`
-- `RPGMakerUtils-main`
-- `RPGMaker2k3VarInspector-master`
-
-当前实现为全新 Python 桌面版本，便于在现有环境里直接运行并持续扩展。
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
-
-## 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
-## 更新日志
-
-### v1.0.0
-
-- 初始版本发布
-- 支持 RPG Maker MV/MZ 文本提取与回写
-- 支持 Ren'Py 对白提取与翻译
-- 现代化桌面界面
-- 游戏库管理功能
-- 自动环境准备
-
----
-
-**提示**: 本工具仅用于合法的游戏本地化工作，请遵守相关游戏的使用条款和版权规定。

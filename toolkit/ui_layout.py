@@ -1,31 +1,48 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
 
 
-class SplitPaneController:
-    def __init__(self, root: tk.Misc, main: tk.PanedWindow, side: tk.PanedWindow | None = None) -> None:
+class DashboardLayoutController:
+    def __init__(
+        self,
+        root: tk.Misc,
+        parent: tk.Frame,
+        library_container: tk.Frame,
+        overview_container: tk.Frame,
+        narrow_library_shell: tk.Frame,
+        expand_handle: tk.Label,
+        collapse_handle: tk.Label,
+    ) -> None:
         self.root = root
-        self.main = main
-        self.side = side
-        self._library_collapsed = False
+        self.parent = parent
+        self.library_container = library_container
+        self.overview_container = overview_container
+        self.narrow_library_shell = narrow_library_shell
+        self.expand_handle = expand_handle
+        self.collapse_handle = collapse_handle
+        self.collapsed = False
+        self._apply()
 
-    def toggle_library(self) -> None:
-        panes = self.main.panes()
-        if len(panes) < 2:
-            return
-        if self._library_collapsed:
-            self.main.paneconfigure(panes[0], width=420)
-            self.main.paneconfigure(panes[1], stretch="always")
-            self._library_collapsed = False
+    def toggle_library(self, collapse: bool | None = None) -> None:
+        self.collapsed = not self.collapsed if collapse is None else collapse
+        self._apply()
+
+    def _apply(self) -> None:
+        for child in self.parent.winfo_children():
+            child.grid_remove()
+        if self.collapsed:
+            self.parent.grid_columnconfigure(0, weight=0, minsize=54)
+            self.parent.grid_columnconfigure(1, weight=9, minsize=540)
+            self.narrow_library_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+            self.overview_container.grid(row=0, column=1, sticky="nsew")
+            self.collapse_handle.place_forget()
         else:
-            self.main.paneconfigure(panes[0], width=240)
-            self.main.paneconfigure(panes[1], stretch="always")
-            self._library_collapsed = True
+            self.parent.grid_columnconfigure(0, weight=4, minsize=320)
+            self.parent.grid_columnconfigure(1, weight=6, minsize=520)
+            self.library_container.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+            self.overview_container.grid(row=0, column=1, sticky="nsew")
         self.root.update_idletasks()
 
-    def collapse_library_on_load(self) -> None:
-        if not self._library_collapsed:
-            self.toggle_library()
-
+    def collapse_on_load(self) -> None:
+        self.toggle_library(True)

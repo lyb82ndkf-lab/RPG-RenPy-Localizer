@@ -27,7 +27,7 @@ from .models import DataRecord, MapDetail, MapRecord, ProjectInfo, SaveSlot, Tra
 from .renpy import RenPyService
 from .rpgmaker import RPGMakerService
 from .storage import export_translation_pack, import_translation_pack, load_json
-from .ui_layout import SplitPaneController
+from .ui_layout import DashboardLayoutController
 from .ui_theme import configure_app_style
 from .workspace import LibraryEntry, RecentTask, Workspace
 
@@ -98,7 +98,7 @@ class ToolkitApp:
         self.selected_record_id: str | None = None
         self.selected_data_runtime_item: tuple[str, int] | None = None
         self._auto_backup_after_id: str | None = None
-        self._dashboard_split_controller: SplitPaneController | None = None
+        self._dashboard_split_controller: DashboardLayoutController | None = None
         self._dashboard_library_collapsed = False
 
         self.path_var = tk.StringVar()
@@ -165,6 +165,7 @@ class ToolkitApp:
         self.auto_battle_var = tk.BooleanVar(value=False)
         self.unlock_cg_var = tk.BooleanVar(value=False)
         self.fps_boost_var = tk.BooleanVar(value=False)
+        self.map_click_teleport_var = tk.BooleanVar(value=False)
 
         self.nav_buttons: dict[str, tk.Button] = {}
         self._drop_callback = None
@@ -172,6 +173,7 @@ class ToolkitApp:
         self._pending_drop_path: str | None = None
         self._filter_after_ids: dict[str, str] = {}
         self._runtime_auto_apply_after_ids: dict[str, str] = {}
+        self._runtime_dirty_fields: set[str] = set()
         self._runtime_poll_after_id: str | None = None
         self._syncing_runtime_vars = False
         self._renpy_extract_poll_count = 0
@@ -179,6 +181,7 @@ class ToolkitApp:
         self._renpy_extract_process: subprocess.Popen[bytes] | None = None
         self._renpy_extract_pid: int | None = None
         self._project_load_token = 0
+        self._data_cell_editor: ttk.Entry | None = None
 
         self._configure_style()
         self._build_ui()
@@ -196,24 +199,26 @@ class ToolkitApp:
         configure_app_style(self.root, panel_bg=PANEL_BG, text_main=TEXT_MAIN, text_muted=TEXT_MUTED, accent=ACCENT)
 
     def _setup_runtime_auto_apply(self) -> None:
-        for var in (
-            self.save_gold_var,
-            self.hp_value_var,
-            self.mp_value_var,
-            self.tp_value_var,
-            self.game_speed_var,
-            self.move_speed_var,
-            self.battle_speed_var,
-            self.exp_rate_var,
-            self.auto_save_interval_var,
-            self.font_size_var,
-            self.item_amount_var,
-        ):
-            var.trace_add("write", lambda *_: self._schedule_auto_runtime_apply())
+        watched_fields: tuple[tuple[tk.Variable, str], ...] = (
+            (self.save_gold_var, "gold"),
+            (self.hp_value_var, "hp"),
+            (self.mp_value_var, "mp"),
+            (self.tp_value_var, "tp"),
+            (self.game_speed_var, "gameSpeed"),
+            (self.move_speed_var, "moveSpeed"),
+            (self.battle_speed_var, "battleSpeed"),
+            (self.map_click_teleport_var, "clickTeleport"),
+            (self.auto_save_interval_var, "autoSaveInterval"),
+            (self.font_size_var, "fontSize"),
+        )
+        for var, field in watched_fields:
+            var.trace_add("write", lambda *_args, field=field: self._schedule_auto_runtime_apply(field))
 
-    def _schedule_auto_runtime_apply(self) -> None:
+    def _schedule_auto_runtime_apply(self, field: str | None = None) -> None:
         if self._syncing_runtime_vars:
             return
+        if field:
+            self._runtime_dirty_fields.add(field)
         key = "runtime_auto_apply"
         after_id = self._runtime_auto_apply_after_ids.get(key)
         if after_id:
@@ -224,28 +229,59 @@ class ToolkitApp:
         self._runtime_auto_apply_after_ids[key] = self.root.after(450, self._auto_apply_runtime_values)
 
     def _auto_apply_runtime_values(self) -> None:
+        dirty_fields = set(self._runtime_dirty_fields)
+        self._runtime_dirty_fields.clear()
+        if not dirty_fields:
+            return
+        pending_values = {
+            "gold": self.save_gold_var.get(),
+            "hp": self.hp_value_var.get(),
+            "mp": self.mp_value_var.get(),
+            "tp": self.tp_value_var.get(),
+            "gameSpeed": self.game_speed_var.get(),
+            "moveSpeed": self.move_speed_var.get(),
+            "battleSpeed": self.battle_speed_var.get(),
+            "clickTeleport": str(self.map_click_teleport_var.get()),
+            "autoSaveInterval": self.auto_save_interval_var.get(),
+            "fontSize": self.font_size_var.get(),
+        }
         if not self.runtime_connected:
             self.refresh_runtime_state(silent=True)
         if not self.runtime_connected:
+            self._runtime_dirty_fields.update(dirty_fields)
+            return
+        payload: dict[str, object] = {}
+        if "gold" in dirty_fields:
+            payload["gold"] = int(pending_values["gold"] or 0)
+        option_payload: dict[str, float] = {}
+        if "gameSpeed" in dirty_fields:
+            option_payload["gameSpeed"] = self._clamped_float(pending_values["gameSpeed"], 1, 16, 1)
+        if "moveSpeed" in dirty_fields:
+            option_payload["moveSpeed"] = self._clamped_float(pending_values["moveSpeed"], 0, 6, 0)
+        if "battleSpeed" in dirty_fields:
+            option_payload["battleSpeed"] = self._clamped_float(pending_values["battleSpeed"], 1, 16, 1)
+        if "clickTeleport" in dirty_fields:
+            option_payload["clickTeleport"] = bool(self.map_click_teleport_var.get())
+        if "autoSaveInterval" in dirty_fields:
+            option_payload["autoSaveInterval"] = self._clamped_float(pending_values["autoSaveInterval"], 0, 999, 0) * 60
+        if "fontSize" in dirty_fields:
+            option_payload["fontSize"] = self._clamped_float(pending_values["fontSize"], 0, 96, 0)
+        if option_payload:
+            payload["options"] = option_payload
+        actor_fields = dirty_fields & {"hp", "mp", "tp"}
+        if actor_fields:
+            actors = self._build_auto_actor_payload(actor_fields, pending_values)
+            if actors:
+                payload["actors"] = actors
+        if not payload:
             return
         try:
-            self._runtime_set(
-                {
-                    "gold": int(self.save_gold_var.get() or 0),
-                    "options": {
-                        "gameSpeed": self._clamped_float(self.game_speed_var.get(), 1, 16, 1),
-                        "moveSpeed": self._clamped_float(self.move_speed_var.get(), 0, 6, 0),
-                        "battleSpeed": self._clamped_float(self.battle_speed_var.get(), 1, 16, 1),
-                        "autoSaveInterval": self._clamped_float(self.auto_save_interval_var.get(), 0, 999, 0) * 60,
-                        "fontSize": self._clamped_float(self.font_size_var.get(), 0, 96, 0),
-                    },
-                    "actors": self._build_auto_actor_payload(),
-                }
-            )
+            self._runtime_set(payload)
         except Exception:
+            self._runtime_dirty_fields.update(dirty_fields)
             pass
 
-    def _build_auto_actor_payload(self) -> dict[str, dict[str, int]]:
+    def _build_auto_actor_payload(self, fields: set[str] | None = None, pending_values: dict[str, str] | None = None) -> dict[str, dict[str, int]]:
         if not self.runtime_state:
             return {}
         actor = None
@@ -263,13 +299,16 @@ class ToolkitApp:
             actor = self.runtime_state["actors"][0]
         if not actor:
             return {}
-        return {
-            str(actor.get("id")): {
-                "hp": int(self.hp_value_var.get() or actor.get("hp", 0)),
-                "mp": int(self.mp_value_var.get() or actor.get("mp", 0)),
-                "tp": int(self.tp_value_var.get() or actor.get("tp", 0)),
-            }
-        }
+        fields = fields or {"hp", "mp", "tp"}
+        source_values = pending_values or {}
+        patch: dict[str, int] = {}
+        if "hp" in fields:
+            patch["hp"] = int(source_values.get("hp") or self.hp_value_var.get() or actor.get("hp", 0))
+        if "mp" in fields:
+            patch["mp"] = int(source_values.get("mp") or self.mp_value_var.get() or actor.get("mp", 0))
+        if "tp" in fields:
+            patch["tp"] = int(source_values.get("tp") or self.tp_value_var.get() or actor.get("tp", 0))
+        return {str(actor.get("id")): patch} if patch else {}
 
     def _build_ui(self) -> None:
         shell = tk.Frame(self.root, bg=APP_BG)
@@ -414,18 +453,29 @@ class ToolkitApp:
         frame = tk.Frame(parent, bg=APP_BG)
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
+        self.library_collapse_icon = self._load_ui_icon("ArrowLeft.png", 18)
+        self.library_expand_icon = self._load_ui_icon("ArrowRight.png", 18)
 
-        pane = ttk.PanedWindow(frame, orient="horizontal")
-        pane.grid(row=0, column=0, sticky="nsew")
+        grid = tk.Frame(frame, bg=APP_BG)
+        grid.grid(row=0, column=0, sticky="nsew")
+        grid.grid_columnconfigure(0, weight=4, minsize=320)
+        grid.grid_columnconfigure(1, weight=6, minsize=520)
+        grid.grid_rowconfigure(0, weight=1)
 
-        library = self._create_panel(pane)
-        library.configure(width=420)
+        library = self._create_panel(grid)
+        library.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         self._build_library_panel(library)
-        overview = self._create_panel(pane)
+        overview = self._create_panel(grid)
+        overview.grid(row=0, column=1, sticky="nsew")
         self._build_overview_panel(overview)
-        pane.add(library, weight=1)
-        pane.add(overview, weight=4)
-        self._dashboard_split_controller = SplitPaneController(self.root, pane)
+        narrow = self._create_panel(grid)
+        narrow_content = tk.Frame(narrow, bg=PANEL_BG, padx=6, pady=10)
+        narrow_content.pack(fill="both", expand=True)
+        expand_handle = tk.Label(narrow_content, image=self.library_expand_icon, bg=PANEL_BG, cursor="hand2")
+        expand_handle.pack(pady=(0, 8))
+        expand_handle.bind("<Button-1>", lambda _e: self.toggle_dashboard_library())
+        tk.Label(narrow_content, text="游\n戏\n库", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 11, "bold"), justify="center").pack()
+        self._dashboard_split_controller = DashboardLayoutController(self.root, grid, library, overview, narrow, expand_handle, self.library_collapse_button)
         return frame
 
     def _build_library_panel(self, parent: tk.Frame) -> None:
@@ -434,13 +484,15 @@ class ToolkitApp:
         header = tk.Frame(content, bg=PANEL_BG)
         header.pack(fill="x")
         tk.Label(header, text="游戏库", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(side="left")
-        ttk.Button(header, text="折叠", command=self.toggle_dashboard_library, style="Tool.TButton", width=8).pack(side="right")
+        self.library_collapse_button = tk.Label(header, image=self.library_collapse_icon, bg=PANEL_BG, cursor="hand2")
+        self.library_collapse_button.pack(side="right")
+        self.library_collapse_button.bind("<Button-1>", lambda _e: self.toggle_dashboard_library())
 
         filter_row = tk.Frame(content, bg=PANEL_BG)
         filter_row.pack(fill="x", pady=(14, 10))
         ttk.Entry(filter_row, textvariable=self.library_filter_var).pack(side="left", fill="x", expand=True)
         self.library_filter_var.trace_add("write", lambda *_: self._refresh_library())
-        ttk.Button(filter_row, text="加入当前", command=self.add_current_project_to_library, style="Primary.TButton", width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(filter_row, text="加入当前", command=self.add_current_project_to_library, style="Primary.TButton", width=7).pack(side="left", padx=(6, 0))
 
         self.library_list = tk.Listbox(content, font=("Microsoft YaHei UI", 10), bd=0, highlightthickness=1, highlightbackground=BORDER, selectbackground=ACCENT, selectforeground="white")
         self.library_list.pack(fill="both", expand=True)
@@ -479,9 +531,9 @@ class ToolkitApp:
         quick = tk.LabelFrame(content, text="主要操作", bg=PANEL_BG, fg=TEXT_MAIN, padx=12, pady=10)
         quick.pack(fill="x")
         quick.grid_columnconfigure((0, 1, 2), weight=1)
-        ttk.Button(quick, text="翻译工作台", command=lambda: self._show_section("translation"), style="Primary.TButton").grid(row=0, column=0, sticky="ew")
-        ttk.Button(quick, text="数据编辑器", command=lambda: self._show_section("data")).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(quick, text="连接实时游戏", command=self.refresh_runtime_state, style="Primary.TButton").grid(row=0, column=2, sticky="ew")
+        ttk.Button(quick, text="翻译工作台", command=lambda: self._show_section("translation"), style="Primary.TButton", width=10).grid(row=0, column=0, sticky="ew")
+        ttk.Button(quick, text="数据编辑器", command=lambda: self._show_section("data"), width=10).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(quick, text="连接实时游戏", command=self.refresh_runtime_state, style="Primary.TButton", width=12).grid(row=0, column=2, sticky="ew")
 
         realtime = tk.LabelFrame(content, text="实时控制", bg=PANEL_BG, fg=TEXT_MAIN, padx=14, pady=12)
         realtime.pack(fill="x", pady=(14, 0))
@@ -505,6 +557,7 @@ class ToolkitApp:
             ("FPS 优化", self.fps_boost_var, self.apply_runtime_options),
         ):
             ttk.Checkbutton(flag_row, text=label, variable=var, command=command, style="Compact.TCheckbutton").pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(flag_row, text="地图点击瞬移", variable=self.map_click_teleport_var, style="Compact.TCheckbutton").pack(side="left", padx=(0, 10))
 
         gauges = tk.Frame(realtime, bg=PANEL_BG)
         gauges.grid(row=0, column=1, sticky="nw")
@@ -527,9 +580,8 @@ class ToolkitApp:
             ("战斗胜利", lambda: self.runtime_battle_result("win"), 10),
             ("战斗失败", lambda: self.runtime_battle_result("lose"), 10),
             ("逃跑", lambda: self.runtime_battle_result("escape"), 8),
-            ("鼠标瞬移", self.teleport_to_mouse, 10),
         ):
-            ttk.Button(actions, text=label, command=command, style="Tool.TButton", width=width).pack(side="left", padx=(0, 8))
+            ttk.Button(actions, text=label, command=command, style="Tool.TButton", width=max(6, width - 2)).pack(side="left", padx=(0, 8))
 
         tuning = tk.Frame(realtime, bg=PANEL_BG)
         tuning.grid(row=2, column=0, sticky="nw", pady=(12, 0), padx=(0, 16))
@@ -548,7 +600,7 @@ class ToolkitApp:
             box.pack(side="left", padx=(10, 0))
             tk.Label(box, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
             ttk.Entry(box, textvariable=var, width=5).pack(side="left", padx=(4, 0))
-        ttk.Button(utility, text="经验倍率到全队", command=self.apply_exp_rate_to_party, style="Tool.TButton", width=14).pack(side="left", padx=(10, 0))
+        ttk.Button(utility, text="经验倍率到全队", command=self.apply_exp_rate_to_party, style="Tool.TButton", width=10).pack(side="left", padx=(10, 0))
 
         recent_wrap = tk.Frame(content, bg=PANEL_BG)
         recent_wrap.pack(fill="both", expand=True, pady=(18, 0))
@@ -591,13 +643,13 @@ class ToolkitApp:
         head = tk.Frame(content, bg=PANEL_BG)
         head.pack(fill="x")
         tk.Label(head, text="翻译工作台", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(side="left")
-        ttk.Button(head, text="提取文本", command=self.extract_texts).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="翻译选中", command=self.translate_selected_with_ai).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="一键翻译全部", command=self.translate_with_ai).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="导出翻译包", command=self.export_pack).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="导入翻译包", command=self.import_pack).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="加载翻译到当前游戏", command=self.load_runtime_translation, style="Primary.TButton").pack(side="right", padx=(0, 6))
-        self.embed_button = ttk.Button(head, text="嵌入游戏", command=self.embed_translation_permanently, style="Primary.TButton")
+        ttk.Button(head, text="提取文本", command=self.extract_texts, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(head, text="翻译选中", command=self.translate_selected_with_ai, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(head, text="翻译全部", command=self.translate_with_ai, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(head, text="导出翻译包", command=self.export_pack, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(head, text="导入翻译包", command=self.import_pack, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(head, text="加载翻译到当前", command=self.load_runtime_translation, style="Primary.TButton", width=14).pack(side="right", padx=(0, 6))
+        self.embed_button = ttk.Button(head, text="嵌入游戏", command=self.embed_translation_permanently, style="Primary.TButton", width=10)
         self.embed_button.pack(side="right", padx=(0, 6))
         self._build_filter_row(content, self.filter_var, self._refresh_translation_tree)
 
@@ -631,19 +683,19 @@ class ToolkitApp:
         tk.Label(content, textvariable=self.translation_detail_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=480).pack(fill="x", pady=(10, 14))
         tk.Label(content, text="当前译文", bg=PANEL_BG, fg=TEXT_MUTED).pack(anchor="w")
         target_wrap = tk.Frame(content, bg=PANEL_BG)
-        target_wrap.pack(fill="both", expand=True, pady=(4, 0))
-        self.target_text = tk.Text(target_wrap, height=8, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 11), undo=True)
+        target_wrap.pack(fill="x", pady=(4, 0))
+        self.target_text = tk.Text(target_wrap, height=2, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 11), undo=True)
         target_scroll = ttk.Scrollbar(target_wrap, orient="vertical", command=self.target_text.yview)
         self.target_text.configure(yscrollcommand=target_scroll.set)
         self.target_text.grid(row=0, column=0, sticky="nsew")
         target_scroll.grid(row=0, column=1, sticky="ns")
-        target_wrap.grid_rowconfigure(0, weight=1)
+        target_wrap.grid_rowconfigure(0, weight=0)
         target_wrap.grid_columnconfigure(0, weight=1)
         buttons = tk.Frame(content, bg=PANEL_BG)
         buttons.pack(fill="x", pady=(12, 0))
-        ttk.Button(buttons, text="更新当前条目", command=self.update_translation_target, style="Primary.TButton").pack(side="left")
-        ttk.Button(buttons, text="复制原文", command=self.copy_source_to_target).pack(side="left", padx=(6, 0))
-        ttk.Button(buttons, text="清空", command=self._clear_target_editor).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="更新当前条目", command=self.update_translation_target, style="Primary.TButton", width=10).pack(side="left")
+        ttk.Button(buttons, text="复制原文", command=self.copy_source_to_target, width=8).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="清空", command=self._clear_target_editor, width=6).pack(side="left", padx=(6, 0))
 
         ai = tk.LabelFrame(content, text="翻译服务", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
         ai.pack(fill="x", pady=(18, 0))
@@ -702,7 +754,7 @@ class ToolkitApp:
         self.ai_provider_link = ttk.Button(action_row, text="打开 API 页面", command=self.open_ai_provider_page)
         self.ai_provider_link.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(action_row, text="保存设置", command=self.save_ai_settings).grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton").grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton", width=12).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.ai_progress = ttk.Progressbar(ai, variable=self.ai_progress_var, maximum=100)
         self.ai_progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         tk.Label(ai, textvariable=self.ai_status_var, bg=PANEL_BG, fg=TEXT_MUTED, wraplength=340, justify="left").grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -728,8 +780,8 @@ class ToolkitApp:
         head = tk.Frame(content, bg=PANEL_BG)
         head.pack(fill="x")
         tk.Label(head, text="数据编辑器", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(side="left")
-        ttk.Button(head, text="刷新数据项", command=self.load_data_records).pack(side="left", padx=(12, 0))
-        ttk.Button(head, text="保存修改", command=self.save_selected_record, style="Primary.TButton").pack(side="right")
+        ttk.Button(head, text="刷新数据", command=self.load_data_records, width=7).pack(side="left", padx=(12, 0))
+        ttk.Button(head, text="保存修改", command=self.save_selected_record, style="Primary.TButton", width=8).pack(side="right")
         self._build_filter_row(content, self.data_filter_var, self._refresh_data_tree)
 
         category_wrap = tk.Frame(content, bg=PANEL_BG)
@@ -765,12 +817,8 @@ class ToolkitApp:
             self.data_property_tree.column(key, width=width, stretch=True)
         self._attach_tree_scrollbars(prop_wrap, self.data_property_tree)
         self.data_property_tree.bind("<<TreeviewSelect>>", self._on_data_property_select)
+        self.data_property_tree.bind("<Double-Button-1>", self._on_data_property_edit)
 
-        edit = tk.Frame(content, bg=PANEL_BG)
-        edit.pack(fill="x", pady=(12, 0))
-        tk.Label(edit, text="当前字段值", bg=PANEL_BG, fg=TEXT_MUTED).pack(anchor="w")
-        self.data_text = tk.Text(edit, height=4, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 10))
-        self.data_text.pack(fill="x", pady=(4, 0))
         runtime_row = tk.Frame(content, bg=PANEL_BG)
         runtime_row.pack(fill="x", pady=(10, 0))
         tk.Label(runtime_row, text="当前持有数量", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
@@ -802,24 +850,24 @@ class ToolkitApp:
         self.save_slot_box = ttk.Combobox(row, textvariable=self.save_slot_var, state="readonly", values=())
         self.save_slot_box.pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="刷新", command=self.refresh_save_slots).pack(side="left", padx=(8, 0))
-        ttk.Button(content, text="读取当前存档", command=self.load_selected_save, style="Primary.TButton").pack(fill="x", pady=(12, 0))
-        ttk.Button(content, text="保存当前存档", command=self.save_current_save, style="Primary.TButton").pack(fill="x", pady=(8, 0))
+        ttk.Button(content, text="读取当前存档", command=self.load_selected_save, style="Primary.TButton", width=12).pack(fill="x", pady=(12, 0))
+        ttk.Button(content, text="保存当前存档", command=self.save_current_save, style="Primary.TButton", width=12).pack(fill="x", pady=(8, 0))
         backup_row = tk.Frame(content, bg=PANEL_BG)
         backup_row.pack(fill="x", pady=(8, 0))
-        ttk.Button(backup_row, text="开启自动备份", command=self.toggle_auto_backup, style="Primary.TButton").pack(side="left", fill="x", expand=True)
-        ttk.Button(backup_row, text="立即备份", command=self.create_manual_save_backup).pack(side="left", padx=(8, 0))
+        ttk.Button(backup_row, text="开启自动备份", command=self.toggle_auto_backup, style="Primary.TButton", width=12).pack(side="left", fill="x", expand=True)
+        ttk.Button(backup_row, text="立即备份", command=self.create_manual_save_backup, width=8).pack(side="left", padx=(8, 0))
         tk.Label(content, textvariable=self.auto_backup_status_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=320).pack(fill="x", pady=(6, 0))
-        ttk.Button(content, text="安装实时组件并连接", command=self.install_bridge_and_connect, style="Primary.TButton").pack(fill="x", pady=(12, 0))
-        ttk.Button(content, text="刷新实时状态", command=self.refresh_runtime_state).pack(fill="x", pady=(8, 0))
+        ttk.Button(content, text="安装实时组件并连接", command=self.install_bridge_and_connect, style="Primary.TButton", width=14).pack(fill="x", pady=(12, 0))
+        ttk.Button(content, text="刷新实时状态", command=self.refresh_runtime_state, width=12).pack(fill="x", pady=(8, 0))
 
         gold = tk.LabelFrame(content, text="常用修改", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
         gold.pack(fill="x", pady=(18, 0))
         tk.Label(gold, text="金币", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
         ttk.Entry(gold, textvariable=self.save_gold_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        ttk.Button(gold, text="999999", command=lambda: self.quick_set_gold(999999)).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(gold, text="999999", command=lambda: self.quick_set_gold(999999), width=8).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         tk.Label(gold, text="批量物品数量", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(gold, textvariable=self.item_amount_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Button(gold, text="全物品/装备", command=self.quick_max_items).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(gold, text="全物品/装备", command=self.quick_max_items, width=10).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Checkbutton(gold, text="穿墙", variable=self.player_through_var, command=self.apply_player_through).grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Checkbutton(gold, text="上帝模式", variable=self.god_mode_var, command=self.apply_runtime_options).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         ttk.Checkbutton(gold, text="自动战斗", variable=self.auto_battle_var, command=self.apply_runtime_options).grid(row=5, column=0, sticky="w", pady=(8, 0))
@@ -865,8 +913,8 @@ class ToolkitApp:
 
     def _build_map_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid_columnconfigure(0, weight=7)
-        frame.grid_columnconfigure(1, weight=3)
+        frame.grid_columnconfigure(0, weight=60, uniform="map_columns")
+        frame.grid_columnconfigure(1, weight=40, uniform="map_columns")
         frame.grid_rowconfigure(1, weight=1)
         head = self._create_panel(frame)
         head.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
@@ -887,8 +935,10 @@ class ToolkitApp:
         legend.pack(fill="x", pady=(8, 0))
         for color, label in (("#d9ead3", "可走"), ("#4b5563", "墙"), ("#f6d365", "事件"), ("#65c7f7", "传送"), ("#ff5a5f", "玩家"), ("#ffffff", "选中")):
             item = tk.Frame(legend, bg=PANEL_BG)
-            item.pack(side="left", padx=(0, 12))
-            tk.Label(item, text="  ", bg=color, relief="solid", bd=1).pack(side="left")
+            item.pack(side="left", padx=(0, 8))
+            swatch = tk.Canvas(item, width=10, height=10, bg=PANEL_BG, highlightthickness=0)
+            swatch.create_rectangle(0, 0, 10, 10, fill=color, outline=BORDER)
+            swatch.pack(side="left")
             tk.Label(item, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(4, 0))
         canvas_wrap = tk.Frame(left_content, bg=PANEL_BG)
         canvas_wrap.pack(fill="both", expand=True, pady=(12, 0))
@@ -902,6 +952,7 @@ class ToolkitApp:
         canvas_wrap.grid_rowconfigure(0, weight=1)
         canvas_wrap.grid_columnconfigure(0, weight=1)
         self.map_canvas.bind("<Button-1>", self._on_map_canvas_click)
+        self.map_canvas.bind("<B1-Motion>", self._on_map_canvas_drag)
 
         right_content = tk.Frame(right, bg=PANEL_BG, padx=16, pady=16)
         right_content.pack(fill="both", expand=True)
@@ -1117,6 +1168,7 @@ class ToolkitApp:
             self.path_var.set(str(self.project.root))
         self._apply_project_state()
         self._show_section("dashboard")
+        self.toggle_dashboard_library(collapse=True)
 
     def _apply_project_state(self) -> None:
         if not self.project:
@@ -1151,6 +1203,29 @@ class ToolkitApp:
             self.data_status_var.set("暂不支持")
             self._set_translation_notice(f"{self.project.engine} 已识别，但暂未启用完整翻译。")
             self._set_data_notice(f"{self.project.engine} 已识别，但暂未启用完整数据编辑。")
+
+    def toggle_dashboard_library(self, collapse: bool | None = None) -> None:
+        if not self._dashboard_split_controller:
+            return
+        if collapse is None:
+            self._dashboard_split_controller.toggle_library()
+            self._dashboard_library_collapsed = not self._dashboard_library_collapsed
+            return
+        if collapse != self._dashboard_library_collapsed:
+            self._dashboard_split_controller.toggle_library()
+            self._dashboard_library_collapsed = collapse
+
+    def _load_ui_icon(self, file_name: str, size: int) -> tk.PhotoImage:
+        icon_path = self._project_root() / "static" / file_name
+        if not icon_path.exists():
+            icon_path = Path(__file__).resolve().parents[1] / "static" / file_name
+        if not icon_path.exists():
+            return tk.PhotoImage(width=size, height=size)
+        image = tk.PhotoImage(file=str(icon_path))
+        width = max(1, image.width())
+        height = max(1, image.height())
+        factor = max(1, min(width // size, height // size))
+        return image.subsample(factor, factor)
 
     def _refresh_engine_specific_navigation(self) -> None:
         is_rpgmaker = bool(self.project and self.project.engine == "RPG Maker MV/MZ")
@@ -2988,6 +3063,8 @@ class ToolkitApp:
             messagebox.showerror("错误", "请先选择一个可编辑数据项。")
             return
         record = self.data_record_map[self.selected_record_id]
+        self._edit_data_record_value(record)
+        return
         service = self._get_service()
         new_value = self.data_text.get("1.0", "end-1c")
         try:
@@ -3180,6 +3257,7 @@ class ToolkitApp:
                 self.auto_battle_var.set(bool(options.get("autoBattle", False)))
                 self.unlock_cg_var.set(bool(options.get("unlockCg", False)))
                 self.fps_boost_var.set(bool(options.get("fpsBoost", False)))
+                self.map_click_teleport_var.set(bool(options.get("clickTeleport", False)))
             if self.project and self.project.data_dir:
                 runtime_counts = self._runtime_item_count_map()
                 for kind, file_name in (("items", "Items.json"), ("weapons", "Weapons.json"), ("armors", "Armors.json")):
@@ -3326,7 +3404,9 @@ class ToolkitApp:
         self._refresh_save_views()
 
     def quick_set_gold(self, amount: int) -> None:
+        self._runtime_dirty_fields.discard("gold")
         self.save_gold_var.set(str(amount))
+        self._runtime_dirty_fields.discard("gold")
         if self._runtime_set({"gold": amount}):
             return
         if not self._ensure_save_loaded():
@@ -3478,6 +3558,9 @@ class ToolkitApp:
     def teleport_to_mouse(self) -> None:
         self._runtime_set({"player": {"teleport": {"x": "mouse", "y": "mouse"}}})
 
+    def teleport_to_tile(self, x: int, y: int) -> None:
+        self._runtime_set({"player": {"teleport": {"x": int(x), "y": int(y)}}})
+
     @staticmethod
     def _clamped_float(value: str, minimum: float, maximum: float, fallback: float) -> float:
         try:
@@ -3546,7 +3629,11 @@ class ToolkitApp:
             return
         service = self._get_service()
         summary = service.save_summary(self.save_payload) if hasattr(service, "save_summary") else {}
-        self.save_gold_var.set(str(summary.get("gold", 0)))
+        self._syncing_runtime_vars = True
+        try:
+            self.save_gold_var.set(str(summary.get("gold", 0)))
+        finally:
+            self._syncing_runtime_vars = False
         self._populate_save_trees()
 
     def _runtime_item_count_map(self) -> dict[tuple[str, int], int]:
@@ -3779,10 +3866,20 @@ class ToolkitApp:
         if not detail:
             return
         canvas = self.map_canvas
+        self._map_drag_origin = (event.x, event.y)
+        canvas.scan_mark(event.x, event.y)
         x = int(canvas.canvasx(event.x) // self.map_tile_size)
         y = int(canvas.canvasy(event.y) // self.map_tile_size)
         if 0 <= x < detail.record.width and 0 <= y < detail.record.height:
             self._show_map_tile_detail(x, y)
+            if self.map_click_teleport_var.get():
+                self.teleport_to_tile(x, y)
+
+    def _on_map_canvas_drag(self, event: tk.Event) -> None:
+        canvas = getattr(self, "map_canvas", None)
+        if not canvas:
+            return
+        canvas.scan_dragto(event.x, event.y, gain=1)
 
     def _show_map_tile_detail(self, x: int, y: int) -> None:
         text = getattr(self, "map_tile_detail", None)
@@ -3798,6 +3895,7 @@ class ToolkitApp:
         self._draw_map_canvas()
         tile = next((item for item in detail.tiles if item.x == x and item.y == y), None)
         self._clear_map_switch_actions()
+        self._add_map_teleport_action(x, y)
         switch_ids: set[int] = set()
         lines = [
             f"坐标 ({x}, {y})",
@@ -3831,6 +3929,12 @@ class ToolkitApp:
             return
         for child in frame.winfo_children():
             child.destroy()
+
+    def _add_map_teleport_action(self, x: int, y: int) -> None:
+        frame = getattr(self, "map_switch_actions", None)
+        if not frame:
+            return
+        ttk.Button(frame, text=f"传送到 ({x}, {y})", command=lambda tx=x, ty=y: self.teleport_to_tile(tx, ty)).pack(side="left", padx=(0, 8), pady=(0, 6))
 
     def _add_map_condition_action(self, condition: str) -> None:
         frame = getattr(self, "map_switch_actions", None)
@@ -4316,8 +4420,6 @@ class ToolkitApp:
         if hasattr(self, "data_property_tree"):
             for item in self.data_property_tree.get_children():
                 self.data_property_tree.delete(item)
-        if hasattr(self, "data_text"):
-            self.data_text.delete("1.0", "end")
         if hasattr(self, "data_runtime_count_var"):
             self.data_runtime_count_var.set("")
 
@@ -4424,7 +4526,6 @@ class ToolkitApp:
             records = self.data_object_map.get(self.selected_data_object_id, [])
             self.selected_record_id = None
             self.selected_data_runtime_item = self._data_runtime_item_key(records)
-            self.data_text.delete("1.0", "end")
             if hasattr(self, "data_runtime_count_var"):
                 if self.selected_data_runtime_item:
                     current = self._runtime_item_count_map().get(self.selected_data_runtime_item, 0) if self.runtime_state else ""
@@ -4445,9 +4546,90 @@ class ToolkitApp:
             return
         self.selected_record_id = selection[0]
         record = self.data_record_map[self.selected_record_id]
-        self.data_text.delete("1.0", "end")
-        self.data_text.insert("1.0", record.value)
         self.data_detail_var.set(f"{record.object_label}\n{record.location}\n字段：{record.label}")
+
+    def _on_data_property_edit(self, _event: object) -> None:
+        selection = self.data_property_tree.selection()
+        if not selection:
+            return
+        record = self.data_record_map.get(selection[0])
+        if not record:
+            return
+        self.selected_record_id = record.record_id
+        self._start_data_cell_edit(record)
+
+    def _start_data_cell_edit(self, record: DataRecord) -> None:
+        tree = self.data_property_tree
+        self._destroy_data_cell_editor()
+        bbox = tree.bbox(record.record_id, "value")
+        if not bbox:
+            return
+        x, y, width, height = bbox
+        editor = ttk.Entry(tree)
+        editor.insert(0, record.value)
+        editor.select_range(0, "end")
+        editor.place(x=x, y=y, width=width, height=height)
+        self._data_cell_editor = editor
+        committed = False
+
+        def commit(_event: object | None = None) -> None:
+            nonlocal committed
+            if committed:
+                return
+            committed = True
+            value = editor.get()
+            self._destroy_data_cell_editor()
+            self._save_data_record_value(record, value)
+
+        def cancel(_event: object | None = None) -> None:
+            nonlocal committed
+            committed = True
+            self._destroy_data_cell_editor()
+
+        editor.bind("<Return>", commit)
+        editor.bind("<FocusOut>", commit)
+        editor.bind("<Escape>", cancel)
+        editor.focus_set()
+
+    def _destroy_data_cell_editor(self) -> None:
+        editor = self._data_cell_editor
+        self._data_cell_editor = None
+        if editor and editor.winfo_exists():
+            editor.destroy()
+
+    def _edit_data_record_value(self, record: DataRecord) -> None:
+        if not self.project:
+            return
+        new_value = self._ask_value("修改字段值", f"{record.object_label}\n{record.label}", record.value)
+        if new_value is None:
+            return
+        self._save_data_record_value(record, new_value)
+
+    def _save_data_record_value(self, record: DataRecord, new_value: str) -> None:
+        if not self.project:
+            return
+        service = self._get_service()
+        try:
+            service.update_record(record, new_value)
+        except Exception as exc:
+            messagebox.showerror("保存失败", f"无法保存该字段：{exc}")
+            return
+        record.value = new_value
+        if hasattr(self, "data_property_tree") and self.data_property_tree.exists(record.record_id):
+            self.data_property_tree.item(record.record_id, values=(record.label, record.value))
+        self.refresh_backups()
+        self._append_recent_task("保存数据修改", self.project.root, self.project.engine)
+        self._maybe_apply_actor_initial_level_to_runtime(record, new_value)
+
+    def _maybe_apply_actor_initial_level_to_runtime(self, record: DataRecord, new_value: str) -> None:
+        if record.file != "Actors.json" or record.label != "initialLevel":
+            return
+        try:
+            actor_id = int(record.object_id.rsplit(":", 1)[-1])
+            level = int(float(str(new_value).strip()))
+        except (ValueError, AttributeError):
+            return
+        self._runtime_set({"actors": {str(actor_id): {"level": max(1, level)}}})
 
     def _on_library_select(self, _event: object) -> None:
         selection = self.library_list.curselection()

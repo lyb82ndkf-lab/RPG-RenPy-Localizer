@@ -79,7 +79,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     autoSaveInterval: 0,
     unlockCg: false,
     fontSize: 0,
-    fpsBoost: false
+    fpsBoost: false,
+    clickTeleport: false
   };
   bridge.lastAutoSaveAt = bridge.lastAutoSaveAt || 0;
 
@@ -234,6 +235,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       if (options.unlockCg !== undefined) bridge.options.unlockCg = !!options.unlockCg;
       if (options.fontSize !== undefined) bridge.options.fontSize = Math.max(0, Number(options.fontSize) || 0);
       if (options.fpsBoost !== undefined) bridge.options.fpsBoost = !!options.fpsBoost;
+      if (options.clickTeleport !== undefined) bridge.options.clickTeleport = !!options.clickTeleport;
       if (bridge.options.unlockCg && window.$gameSystem) {
         $gameSystem._cgUnlocked = true;
         $gameSystem._galleryUnlocked = true;
@@ -305,6 +307,17 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         try { DataManager.saveGame(1); } catch (_e) {}
       }
     }
+  };
+
+  const _sceneMapProcessMapTouch = Scene_Map.prototype.processMapTouch;
+  Scene_Map.prototype.processMapTouch = function() {
+    if (bridge.options.clickTeleport && window.TouchInput && TouchInput.isTriggered && TouchInput.isTriggered() && window.$gameMap && window.$gamePlayer) {
+      const x = $gameMap.canvasToMapX(TouchInput.x);
+      const y = $gameMap.canvasToMapY(TouchInput.y);
+      $gamePlayer.reserveTransfer($gameMap.mapId(), x, y, $gamePlayer.direction(), 0);
+      return;
+    }
+    return _sceneMapProcessMapTouch.call(this);
   };
 
   const _sceneBattleUpdate = Scene_Battle.prototype.update;

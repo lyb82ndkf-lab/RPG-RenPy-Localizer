@@ -11,13 +11,33 @@ android {
         applicationId "com.rpgrtl.shell"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "0.1"
+        versionCode 25
+        versionName "2.5"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../rpgrtl-release.keystore")
+            storePassword "rpgrtl2025"
+            keyAlias "rpgrtl"
+            keyPassword "rpgrtl2025"
+        }
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include "arm64-v8a", "armeabi-v7a"
+            universalApk true
+        }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

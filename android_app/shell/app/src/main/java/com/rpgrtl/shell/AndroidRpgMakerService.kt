@@ -39,7 +39,7 @@ class AndroidRpgMakerService(
             if (!isEditableFile(name)) continue
             if (category.isNotBlank() && category != name && category != categoryFor(name)) continue
             val data = readJson(file) ?: continue
-            listRecords(name, data, mutableListOf(), records, limit.coerceIn(1, 5000)) { count++ }
+            listRecords(name, data, mutableListOf(), records, limit.coerceIn(1, 5000), data) { count++ }
         }
         return JSONObject()
             .put("ok", true)
@@ -317,6 +317,7 @@ class AndroidRpgMakerService(
         path: MutableList<Any>,
         out: JSONArray,
         limit: Int,
+        rootData: Any?,
         inc: () -> Unit
     ) {
         if (node is JSONObject) {
@@ -326,10 +327,10 @@ class AndroidRpgMakerService(
                 if (key in SKIP_DATA_KEYS) continue
                 val value = node.opt(key)
                 val nextPath = path + key
-                if (isScalar(value)) addRecord(fileName, nextPath, value, out, limit, inc)
+                if (isScalar(value)) addRecord(fileName, nextPath, value, out, limit, rootData, inc)
                 if (value is JSONObject || value is JSONArray) {
                     path.add(key)
-                    listRecords(fileName, value, path, out, limit, inc)
+                    listRecords(fileName, value, path, out, limit, rootData, inc)
                     path.removeAt(path.lastIndex)
                 }
             }
@@ -337,17 +338,17 @@ class AndroidRpgMakerService(
             for (index in 0 until node.length()) {
                 val value = node.opt(index) ?: continue
                 val nextPath = path + index
-                if (isScalar(value)) addRecord(fileName, nextPath, value, out, limit, inc)
+                if (isScalar(value)) addRecord(fileName, nextPath, value, out, limit, rootData, inc)
                 if (value is JSONObject || value is JSONArray) {
                     path.add(index)
-                    listRecords(fileName, value, path, out, limit, inc)
+                    listRecords(fileName, value, path, out, limit, rootData, inc)
                     path.removeAt(path.lastIndex)
                 }
             }
         }
     }
 
-    private fun addRecord(fileName: String, path: List<Any>, value: Any?, out: JSONArray, limit: Int, inc: () -> Unit) {
+    private fun addRecord(fileName: String, path: List<Any>, value: Any?, out: JSONArray, limit: Int, rootData: Any?, inc: () -> Unit) {
         if (value is String && value.isBlank()) return
         inc()
         if (out.length() >= limit) return
@@ -359,7 +360,7 @@ class AndroidRpgMakerService(
                 .put("file", fileName)
                 .put("category", categoryFor(fileName))
                 .put("object_id", objectId(fileName, path))
-                .put("object_label", objectLabel(fileName, path))
+                .put("object_label", objectLabel(fileName, path, rootData))
                 .put("location", path.joinToString("/"))
                 .put("json_path", JSONArray(path))
         )
@@ -553,9 +554,14 @@ class AndroidRpgMakerService(
         return if (path.firstOrNull() is Int) "$fileName:${path.first()}" else "$fileName:root"
     }
 
-    private fun objectLabel(fileName: String, path: List<Any>): String {
+    private fun objectLabel(fileName: String, path: List<Any>, rootData: Any?): String {
         val base = fileName.removeSuffix(".json")
-        return if (path.firstOrNull() is Int) "$base ${path.first()}" else base
+        val index = path.firstOrNull() as? Int ?: return base
+        val named = (rootData as? JSONArray)
+            ?.optJSONObject(index)
+            ?.optString("name", "")
+            ?.takeIf { it.isNotBlank() }
+        return named ?: "$base $index"
     }
 
     private fun isTextFile(name: String): Boolean = name in TEXT_FILES || (name.startsWith("Map") && name.endsWith(".json"))

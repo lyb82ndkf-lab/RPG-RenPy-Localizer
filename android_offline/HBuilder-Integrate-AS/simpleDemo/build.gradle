@@ -1,0 +1,78 @@
+apply plugin: 'com.android.application'
+
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+def dcloudAppKeyValue = (project.findProperty('dcloudAppKey') ?: localProps.getProperty('dcloudAppKey') ?: '').toString()
+def androidPackageValue = (project.findProperty('androidPackage') ?: localProps.getProperty('androidPackage') ?: 'com.rpgrtl.localizer').toString()
+def appVersionCodeValue = (project.findProperty('appVersionCode') ?: localProps.getProperty('appVersionCode') ?: '2').toString().toInteger()
+def appVersionNameValue = (project.findProperty('appVersionName') ?: localProps.getProperty('appVersionName') ?: '0.2').toString()
+def signingAliasValue = (project.findProperty('signingAlias') ?: localProps.getProperty('signingAlias') ?: 'rpgrtl').toString()
+def signingKeyPasswordValue = (project.findProperty('signingKeyPassword') ?: localProps.getProperty('signingKeyPassword') ?: 'rpgrtl2026').toString()
+def signingStoreFileValue = (project.findProperty('signingStoreFile') ?: localProps.getProperty('signingStoreFile') ?: 'rpgrtl-release.keystore').toString()
+def signingStorePasswordValue = (project.findProperty('signingStorePassword') ?: localProps.getProperty('signingStorePassword') ?: 'rpgrtl2026').toString()
+
+android {
+    compileSdkVersion 35
+    buildToolsVersion '35.0.0'
+    namespace androidPackageValue
+    defaultConfig {
+        applicationId androidPackageValue
+        minSdkVersion 21
+        targetSdkVersion 34
+        versionCode appVersionCodeValue
+        versionName appVersionNameValue
+        multiDexEnabled true
+        manifestPlaceholders = [
+                dcloudAppKey: dcloudAppKeyValue
+        ]
+        compileOptions {
+            sourceCompatibility JavaVersion.VERSION_1_8
+            targetCompatibility JavaVersion.VERSION_1_8
+        }
+    }
+    signingConfigs {
+        config {
+            keyAlias signingAliasValue
+            keyPassword signingKeyPasswordValue
+            storeFile file(signingStoreFileValue)
+            storePassword signingStorePasswordValue
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.config
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        release {
+            signingConfig signingConfigs.config
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    aaptOptions {
+        additionalParameters '--auto-add-overlay'
+        ignoreAssetsPattern "!.svn:!.git:.*:!CVS:!thumbs.db:!picasa.ini:!*.scc:*~"
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.aar', '*.jar'], exclude: [])
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.0.0'
+    implementation 'androidx.core:core:1.1.0'
+    implementation "androidx.fragment:fragment:1.1.0"
+    implementation 'androidx.recyclerview:recyclerview:1.1.0'
+    implementation 'com.facebook.fresco:fresco:2.5.0'
+    implementation "com.facebook.fresco:animated-gif:2.5.0"
+    implementation 'com.github.bumptech.glide:glide:4.9.0'
+    implementation 'com.alibaba:fastjson:1.2.83'
+    implementation 'androidx.webkit:webkit:1.5.0'
+}
+

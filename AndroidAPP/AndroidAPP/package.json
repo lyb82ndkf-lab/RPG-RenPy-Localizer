@@ -1,0 +1,24 @@
+{
+  "id": "rpgrenpy-localizer-uniapp",
+  "name": "rpgrenpy-localizer-uniapp",
+  "displayName": "RPG RenPy Localizer Android",
+  "version": "0.1.0",
+  "description": "UniApp + Vue3 鐗堟湰鐨?RPG Maker / Ren'Py 鏈湴鍖栦笌浣撻獙宸ュ叿",
+  "scripts": {
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": [
+    "uni-app",
+    "vue3",
+    "rpgmaker",
+    "renpy",
+    "localization"
+  ],
+  "license": "MIT",
+  "dependencies": {},
+  "engines": {
+    "HBuilderX": "^4.0.0",
+    "uni-app": "^4.0.0"
+  }
+}
+

@@ -39,6 +39,11 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun selectGameFolder(uri: String): String {
+        return activity.selectGameFolder(uri)
+    }
+
+    @JavascriptInterface
     fun launchSelectedGame() {
         activity.runOnUiThread {
             activity.launchSelectedGame()
@@ -56,6 +61,13 @@ class ShellBridge(private val activity: MainActivity) {
     fun launchExeWithExternalRunner() {
         activity.runOnUiThread {
             activity.launchExeWithExternalRunner()
+        }
+    }
+
+    @JavascriptInterface
+    fun toggleToolPage() {
+        activity.runOnUiThread {
+            activity.toggleToolPage()
         }
     }
 
@@ -97,5 +109,30 @@ class ShellBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun androidBackups(): String {
         return activity.androidBackups()
+    }
+
+    @JavascriptInterface
+    fun saveAiSettings(json: String): String {
+        return activity.saveAiSettings(json)
+    }
+
+    @JavascriptInterface
+    fun androidAiTranslate(requestJson: String): String {
+        return activity.androidAiTranslate(requestJson)
+    }
+
+    @JavascriptInterface
+    fun runtimeStatus(): String {
+        return activity.runtimeStatus()
+    }
+
+    @JavascriptInterface
+    fun runtimeCheat(action: String, value: String): String {
+        return activity.runtimeCheat(action, value)
+    }
+
+    @JavascriptInterface
+    fun androidToolbarAction(action: String): String {
+        return activity.androidToolbarAction(action)
     }
 }

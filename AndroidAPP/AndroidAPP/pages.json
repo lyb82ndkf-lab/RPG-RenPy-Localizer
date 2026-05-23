@@ -1,0 +1,23 @@
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/translate/translate", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/data-editor/data-editor", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/maps/maps", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/saves/saves", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/settings/settings", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } },
+    { "path": "pages/runtime/runtime", "style": { "navigationStyle": "custom", "disableScale": true, "animationType": "none", "animationDuration": 0, "navigationBarTitleText": "" } }
+  ],
+  "globalStyle": {
+    "navigationStyle": "custom",
+    "disableScale": true,
+    "animationType": "none",
+    "animationDuration": 0,
+    "renderLink": true,
+    "navigationBarTitleText": "",
+    "navigationBarBackgroundColor": "#0f1720",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0f1720",
+    "backgroundTextStyle": "light"
+  }
+}

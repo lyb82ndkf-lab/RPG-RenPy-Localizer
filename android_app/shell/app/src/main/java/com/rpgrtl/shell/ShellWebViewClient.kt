@@ -4,6 +4,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.RenderProcessGoneDetail
+import android.util.Log
 
 class ShellWebViewClient(private val activity: MainActivity) : WebViewClient() {
     override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
@@ -23,11 +25,14 @@ class ShellWebViewClient(private val activity: MainActivity) : WebViewClient() {
 
     override fun onPageFinished(view: WebView?, url: String?) {
         super.onPageFinished(view, url)
+        Log.d("PERF", "Page finished: ${url ?: "unknown"}")
+        injectFpsMonitor(view)
         if (url != null && url.contains("mobile_ui/index.html")) {
-            activity.dispatchRestoredFolderIfAny()
             return
         }
         if (url == null || (!url.contains("rpgrtl_game_runtime") && !url.contains("rpgrtl.local/game"))) return
+        activity.injectGameCompatibilityPatch(view)
+        activity.injectGameErrorCollector(view)
         val patch = """
             (function() {
               if (!window.StorageManager || window.__rpgrtlAndroidSaveFix) return;
@@ -49,6 +54,37 @@ class ShellWebViewClient(private val activity: MainActivity) : WebViewClient() {
             })();
         """.trimIndent()
         view?.evaluateJavascript(patch, null)
+        activity.injectCheatScript()
         activity.reapplyGameOverlay()
+    }
+
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+        Log.e("PERF", "WebView render process gone, didCrash=${detail.didCrash()}")
+        activity.onWebViewRenderProcessGone(view, detail.didCrash())
+        return true
+    }
+
+    private fun injectFpsMonitor(view: WebView?) {
+        val script = """
+            (function(){
+              if (window.__rpgrtlFpsMonitor) return;
+              window.__rpgrtlFpsMonitor = true;
+              var frames = 0;
+              var last = performance.now();
+              function tick(){
+                frames++;
+                var now = performance.now();
+                if (now - last >= 1000) {
+                  var fps = Math.round(frames * 1000 / (now - last));
+                  if (fps < 30) console.warn('[PERF] Low FPS: ' + fps);
+                  frames = 0;
+                  last = now;
+                }
+                requestAnimationFrame(tick);
+              }
+              requestAnimationFrame(tick);
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(script, null)
     }
 }

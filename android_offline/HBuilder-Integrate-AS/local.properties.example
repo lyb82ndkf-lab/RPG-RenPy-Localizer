@@ -1,0 +1,6 @@
+## Copy this file to local.properties and fill the DCloud offline Android AppKey.
+## The key must be generated in DCloud developer console for:
+## AppID: __UNI__C81328E
+## Android package: com.rpgrtl.localizer
+## Certificate SHA1: 86:69:A8:13:E6:A5:0F:0E:BC:9B:73:C7:86:F3:D5:FB:D2:05:31:08
+dcloudAppKey=

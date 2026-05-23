@@ -31,7 +31,7 @@
         android:largeHeap="true"
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.RPGRenPyLocalizer">
+        android:theme="@style/Theme.RPGRenPyLocalizer.Splash">
         <activity
             android:name=".MainActivity"
             android:alwaysRetainTaskState="true"

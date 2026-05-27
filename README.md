@@ -1,184 +1,217 @@
 # RPGRenPyLocalizer
 
-Windows 本地化与实时修改工具，面向 RPG Maker MV/MZ 和 Ren'Py 单机游戏。
+**Windows 本地化与实时修改工具**，面向 RPG Maker MV/MZ 和 Ren'Py 单机游戏。支持翻译、数据编辑、存档修改、实时作弊，以及 Android APK 迁移。
 
-它的目标是三件事：
-- 翻译游戏文本
-- 修改游戏数据
-- 连接运行中的游戏做实时控制
+---
 
-## 功能
+## 功能总览
 
-### RPG Maker MV/MZ
-- 提取 `json` 数据、地图事件、系统文本
-- 实时读取金币、开关、变量、物品、角色状态
-- 实时修改金币、HP、MP、TP、经验倍率、移动速度、战斗速度
-- 地图查看、事件查看、坐标传送、点击地图瞬移
-- 数据编辑器支持物品、角色、职业、敌人、技能、状态等分类
-- 翻译工作台支持导入、导出、缓存、去重、AI 翻译、百度翻译
-- 支持实时桥接组件安装到游戏目录
+| 模块 | RPG Maker MV/MZ | Ren'Py |
+|------|:--:|:--:|
+| 文本提取 | ✅ JSON / 地图事件 / 系统文本 | ✅ 脚本翻译文本 |
+| AI 翻译 | ✅ 7 个渠道，并行批量 | ✅ 同左 |
+| 翻译缓存与去重 | ✅ 精确 + 归一化 + 模糊匹配 | ✅ 同左 |
+| 数据编辑器 | ✅ 物品/角色/职业/敌人/技能/状态 | — |
+| 地图查看 | ✅ 瓦片地图 + 事件查看 + 坐标传送 | — |
+| 存档修改 | ✅ 金币/物品/角色/开关/变量 | — |
+| 实时控制 | ✅ 穿墙/上帝模式/自动战斗/瞬移 | — |
+| 导入/导出翻译包 | ✅ | ✅ |
+| 嵌入翻译到游戏 | ✅ | ✅ |
+| Android 迁移 | ✅ Winlator 引擎集成 | ✅ WebView 后端 |
 
-### Ren'Py
-- 提取脚本与翻译文本
-- 支持加载翻译、嵌入翻译、生成翻译文件
-- 支持运行时翻译补丁
-- 支持自动安装提取脚本
+---
 
-### AI 翻译渠道
-- OpenAI
-- DeepSeek
-- Doubao
-- GLM
-- NVIDIA
-- Xiaomi Token Plan
-- 百度翻译 API
+## AI 翻译渠道
+
+| 渠道 | 说明 |
+|------|------|
+| OpenAI | 标准 API（支持自定义 Base URL） |
+| DeepSeek | 国产高性价比大模型 |
+| Doubao（豆包） | 字节跳动 |
+| GLM | 智谱 AI |
+| NVIDIA | NVIDIA AI |
+| Xiaomi Token Plan | 小米 token 计划 / 普通 API Key |
+| 百度翻译 API | 百度机器翻译 |
+
+支持**多厂商并行翻译**：同时勾选多个渠道，工具自动轮询分配批次，最大化吞吐量。
+
+---
 
 ## 界面说明
 
-主界面分为几个区域：
-- 游戏库：管理已加入的项目
-- 翻译工作台：提取、翻译、导入、导出、加载翻译
-- 数据编辑器：编辑游戏数据库字段
-- 环境与备份：查看运行环境、自动备份、备份目录
+```
+┌──────────────────────────────────────────────┐
+│  导航栏          │  内容区                    │
+│                   │                            │
+│  游戏库           │  游戏库：已加入的项目列表    │
+│  翻译工作台       │  翻译工作台：提取/翻译/导出  │
+│  数据编辑器       │  数据编辑器：字段查看与编辑  │
+│  存档修改         │  存档修改：金币/物品/角色    │
+│  地图查看         │  地图查看：瓦片地图+事件     │
+│  环境与备份       │  环境与备份：自动备份管理    │
+│                   │                            │
+└──────────────────────────────────────────────┘
+```
 
-翻译工作台中：
-- 默认翻译范围是“全部文本”
-- 支持多选条目
-- 支持一键翻译
-- 支持每次批量 100 条
-- 支持翻译缓存与全局去重
+- **翻译工作台**：左侧翻译列表 + 右侧译文编辑 + 底部 AI 设置
+- **数据编辑器**：左侧对象列表 + 右侧属性编辑（双击值原地编辑）
+- **存档修改**：左侧存档选择 + 右侧物品/角色/开关/变量多标签页
+- **地图查看**：左侧瓦片地图 + 右侧事件列表与详情
 
-数据编辑器中：
-- 按文件分类显示
-- 选中对象后，右侧展示属性和值
-- 双击值即可原地编辑
+---
 
-地图查看中：
-- 左侧显示地图
-- 右侧显示事件、坐标、触发条件
-- 点击格子可查看详情
-- 可直接传送到选中坐标
+## 安装与运行
 
-实时控制中：
-- 金币、HP、MP、TP、变量、开关可实时修改
-- 支持穿墙、上帝模式、自动战斗、战斗胜利/失败、逃跑
-- 支持地图点击瞬移
+### Windows（推荐）
 
-## 安装
+1. 下载 `dist\RPGRenPyLocalizer\` 整个文件夹
+2. 双击 `RPGRenPyLocalizer.exe`
+3. **不要只发单独 exe**，`_internal` 文件夹包含 Python 运行时，缺了无法启动
 
-### 直接运行
-1. 双击 `启动工具.bat`
-2. 或运行 `main.py`
+目标电脑不需要安装 Python。
 
-### 打包版
-如果你要发给别人，直接把 `dist\RPGRenPyLocalizer\` 整个文件夹发过去即可。
+### 从源码运行
 
-如果目标电脑没有 Python，也可以直接运行打包后的 `RPGRenPyLocalizer.exe`。
+```bash
+pip install -r requirements.txt
+python main.py
+```
 
-## 需要打包哪些文件
-
-建议只发这些：
-- `dist\RPGRenPyLocalizer\` 整个目录
-
-不需要一起发这些：
-- `.venv`
-- `.workspace`
-- `build`
-- `__pycache__`
-- 源码目录里的开发缓存
-
-## 配置保存位置
-
-AI 配置、最近任务、翻译记忆、游戏库等会保存在用户配置目录：
-
-`%APPDATA%\RPGRenPyLocalizer`
-
-也就是 Windows 用户目录下的应用数据位置，不会放在项目源码里。
-
-项目级缓存会保存在游戏目录下：
-- `.rpgrtl_backup`
-- `.rpgrtl_workspace`
+---
 
 ## 使用流程
 
 ### 1. 加载游戏
-- 选择游戏 `exe`
-- 或直接把 `exe` 拖入窗口
-- 项目会自动识别引擎
+- 点击「选择 exe」选择游戏启动文件
+- 或直接拖入 exe 到窗口
+- 工具自动识别引擎类型（RPG Maker MV/MZ / Ren'Py）
 
 ### 2. 翻译
-- 打开“翻译工作台”
-- 提取文本
-- 选择 AI 渠道或百度翻译
-- 点击一键翻译
-- 可导入/导出翻译包
-- 可加载到当前游戏或嵌入游戏
+- 切换到「翻译工作台」
+- 点击「提取文本」
+- 选择翻译范围和文件
+- 配置 AI 渠道和 API Key → 「保存设置」
+- 点击「一键翻译全部」或「翻译选中」
 
 ### 3. 数据修改
-- 打开“数据编辑器”
-- 选择分类
-- 双击某个值直接修改
-- 保存后会自动写回文件
+- 切换到「数据编辑器」
+- 选择分类（物品/角色/职业等）
+- 选中对象 → 右侧双击值 → 修改 → 保存
 
-### 4. 实时控制
-- 先安装实时组件并重启游戏
-- 再连接实时游戏
-- 然后就能实时修改金币、开关、变量、角色状态等
+### 4. 存档修改
+- 切换到「存档修改」
+- 点击「刷新存档列表」
+- 选择存档 → 修改金币/物品/角色/开关/变量
 
-## 打包
+### 5. 实时控制（仅 RPG Maker）
+- 先点击「安装实时组件」并重启游戏
+- 再点击「连接实时游戏」
+- 然后可以使用穿墙、上帝模式、自动战斗、地图点击瞬移等
 
-执行：
+---
+
+## 配置保存位置
+
+| 内容 | 路径 |
+|------|------|
+| AI 配置 / API Key | `%APPDATA%\RPGRenPyLocalizer\settings.json` |
+| 翻译记忆缓存 | `%APPDATA%\RPGRenPyLocalizer\translation_memory.json` |
+| 项目级翻译缓存 | `<游戏目录>\.rpgrtl_workspace\` |
+| 自动备份 | `<游戏目录>\.rpgrtl_backup\` |
+
+AI 配置保存在当前 Windows 用户目录，**发给别人时不会泄露你的 API Key**。
+
+---
+
+## 打包发布
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
 
-打包结果在：
+打包结果：`dist\RPGRenPyLocalizer\`（包含 exe + _internal）
 
-```text
-dist\RPGRenPyLocalizer\
-```
+分享时把整个 `dist\RPGRenPyLocalizer\` 文件夹打包即可。
 
-## 常见问题
-
-### 1. 为什么没有 Python 也能运行？
-因为发布版已经用 PyInstaller 打包成独立 exe 了。
-
-### 2. 为什么 `Actors.initialLevel` 改了但游戏里等级没变？
-`initialLevel` 是数据库里的初始等级，不等于当前进程中的实时等级。
-现在工具会尽量同步实时角色等级，但前提是游戏已经连接了实时组件。
-
-### 3. 为什么点击地图瞬移没反应？
-你需要：
-- 先安装实时组件
-- 重启游戏
-- 再在工具里勾选“地图点击瞬移”
-
-### 4. 为什么翻译会跳过很多文本？
-工具会尽量过滤路径、乱码、系统占位文本，避免把非对白内容误翻译。
+---
 
 ## 项目结构
 
 ```text
 RPGRenPyLocalizer/
-├─ main.py
-├─ launcher.py
-├─ build_release.ps1
-├─ static/
-├─ toolkit/
-│  ├─ app.py
-│  ├─ detectors.py
-│  ├─ models.py
-│  ├─ renpy.py
-│  ├─ rpgmaker.py
-│  ├─ storage.py
-│  ├─ workspace.py
-│  └─ ui_*.py
-├─ dist/
-└─ build/
+├── main.py                    # 入口
+├── launcher.py                # 启动引导窗口
+├── build_release.ps1          # PyInstaller 打包脚本
+├── build_all.ps1              # 全量构建脚本
+├── static/                    # 图标与静态资源
+├── toolkit/                   # 核心工具包
+│   ├── app.py                 # 主界面（tkinter，~5800 行）
+│   ├── detectors.py           # 游戏引擎检测
+│   ├── models.py              # 数据模型
+│   ├── renpy.py               # Ren'Py 服务
+│   ├── rpgmaker.py            # RPG Maker 服务
+│   ├── storage.py             # JSON 持久化与翻译包
+│   ├── ui_layout.py           # 响应式布局控制
+│   ├── ui_theme.py            # ttk 主题
+│   ├── workspace.py           # 工作空间与缓存管理
+│   └── core/
+│       ├── facade.py          # 无头核心（CLI/API 复用）
+│       └── __main__.py
+├── android_app/               # Android 壳工程
+│   ├── shell/                 # Kotlin 壳（Gradle + Winlator 引擎）
+│   ├── backend/               # Python 本地 API 服务
+│   └── mobile_ui/             # Vue 3 移动端前端
+├── AndroidAPP/                # UniApp 前端工程
+├── android_offline/           # HBuilder 离线集成工程
+├── ppt/                       # HTML 演示文稿
+└── dist/                      # 打包输出
 ```
+
+---
+
+## Android 迁移
+
+Android 版正在开发中，目标架构：
+
+```
+RPGRenPyLocalizer APK
+├── Vue 3 / UniApp 中文界面
+├── Kotlin Shell（文件权限 / WebView / 悬浮工具栏）
+├── Python Core（翻译 / 数据 / 存档 / 地图）
+└── 运行后端
+    ├── RPG Maker → WebView
+    ├── Ren'Py → 翻译补丁
+    └── Windows exe → Winlator 引擎（Wine + Box64）
+```
+
+详见 [`ANDROID_APK_PLAN.md`](ANDROID_APK_PLAN.md) 和 [`WINLATOR_MIGRATION.md`](WINLATOR_MIGRATION.md)。
+
+---
+
+## 常见问题
+
+### 为什么没有 Python 也能运行？
+发布版用 PyInstaller 打包，`_internal` 自带 Python 运行时。
+
+### 为什么翻译会跳过很多文本？
+工具自动过滤路径、乱码、系统占位文本和非对白内容，避免误翻译。
+
+### 地图瞬移没反应？
+需要先安装实时组件 → 重启游戏 → 勾选「地图点击瞬移」→ 点击地图格子。
+
+### `Actors.initialLevel` 改了但游戏里等级没变？
+`initialLevel` 是数据库初始值，不等于当前进程实时等级。连接实时组件后可同步实时属性。
+
+### API Key 保存在哪？安全吗？
+保存在 `%APPDATA%\RPGRenPyLocalizer\settings.json`，仅当前 Windows 用户可访问。分享 exe 时不会带出去。
+
+### 支持哪些引擎版本？
+- RPG Maker MV / MZ（主要支持）
+- Ren'Py（文本提取与翻译）
+- RPG Maker XP / VX / VX Ace（部分支持）
+
+---
 
 ## 说明
 
-这是一个用于单机游戏汉化、文本处理和实时修改的本地工具，不面向网络游戏，也不用于联机作弊。
-
+本工具用于单机游戏汉化、文本处理和实时修改，不面向网络游戏，不用于联机作弊。

@@ -1,0 +1,274 @@
+# ninja log v5
+3447	5368	8013327193355637	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_renderer.c.o	59a8fc616882c6f
+91	2227	8013327157807215	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_blitter.c.o	2247f9367468b975
+28	2073	8013327152014419	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_formats.c.o	9b191ed187dee568
+6891	7836	8013327218596752	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug_describe.c.o	a386bab8cf36f608
+5127	6343	8013327205825926	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug.c.o	6001a38aa0a65d0b
+966	2884	8013327161246525	winlator/CMakeFiles/winlator.dir/src/ring_buffer.c.o	a9d2bfdc1787c48
+4037	5251	8013327193090854	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_hash_table.c.o	54d02ec06ba94da1
+649	2682	8013327156634047	winlator/CMakeFiles/winlator.dir/src/xoutput_stream.c.o	2163dea67ea93cb
+11031	12275	8013327261491970	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_formats.c.o	6bd1e65d211ca1f9
+2687	10074	8013327237550153	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_renderer.c.o	539133f9e3a4ca5
+254	2426	8013327150826430	winlator/CMakeFiles/winlator.dir/src/sysvshared_memory.c.o	788c0876fa47f366
+4161	5544	8013327193800335	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_texture.c.o	f45eeed6bc31e9d6
+2114	6750	8013327193686149	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/texture_decoder.c.o	a63f029f8a4dc8fb
+12278	13170	8013327274289863	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_vao.c.o	7224810f87a6ab05
+354	2577	8013327155522032	winlator/CMakeFiles/winlator.dir/src/xconnector_epoll.c.o	6ae74c08657c2f4f
+773	2791	8013327160720430	winlator/CMakeFiles/winlator.dir/src/xinput_stream.c.o	581d9c8c63caf028
+1068	2993	8013327164069205	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_object.c.o	fb3ed8922ba6be1a
+168	3437	8013327168728186	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_decode.c.o	f14c0d00823c22d1
+3251	4444	8013327187300927	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_object.c.o	7d4b157de49345b2
+2578	3648	8013327175351952	virglrenderer/CMakeFiles/virglrenderer.dir/src/iov.c.o	554244bc572bd37e
+8445	9471	8013327235064977	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_hash.c.o	f413ee034cd3ef71
+1868	3248	8013327171926747	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/xwindow_swapchain.c.o	f388299d646e8cf
+6054	7944	8013327212096072	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_bitmask.c.o	46ca2901b5bc1a51
+870	7355	8013327191819603	winlator/CMakeFiles/winlator.dir/src/wine_registry_editor.c.o	2e7ad889efcf5859
+1598	6568	8013327188324260	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/resource_memory.c.o	f4724325a5009e99
+2995	4160	8013327181357121	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_shm.c.o	5ba1591232ca7ebe
+8701	9548	8013327237955559	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_dump.c.o	bb2191dd5bce75df
+2885	4036	8013327181752794	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server.c.o	e15f9bc262afb979
+6344	8292	8013327215719930	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_surface.c.o	63c62eba0b82e2d1
+449	7603	8013327200024272	winlator/CMakeFiles/winlator.dir/src/arrays.c.o	c1bbfc056e62d14e
+3679	5122	8013327192642313	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format.c.o	ee21c6d6216da6dc
+5375	6890	8013327207799724	winlator/CMakeFiles/winlator.dir/src/drawable.c.o	c5fe066744b55369
+11207	14631	8013327289157119	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_converter.c.o	3f1ea1f4299e9c46
+1947	8815	8013327194147373	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/shader_inspector.c.o	34134c62ab6f054e
+10950	12379	8013327265019631	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_material.c.o	a0b5c6d99b07d315
+9651	10419	8013327244243884	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/elf_soname_patcher.cpp.o	ab4f944c08b09cb
+6579	8394	8013327215629958	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_math.c.o	6505714d432ff696
+4518	6050	8013327201107478	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format_table.c.o	6ee52d7a36b66c65
+9063	9769	8013327238382384	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_iterate.c.o	404b094b64a44aeb
+9147	9846	8013327239355399	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_util.c.o	33c2bccba8e6d6da
+5665	7101	8013327210389060	winlator/CMakeFiles/winlator.dir/src/gpu_image.c.o	1dd6c016bde72d26
+6754	7510	8013327216776468	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_cpu_detect.c.o	413f7e52f63822d5
+8170	9299	8013327232141145	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_cache.c.o	bc5076babba8f363
+9744	10521	8013327246830250	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmidihandler.so	2f68176fb4cd9d96
+13000	13903	8013327281502338	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libwinlator.so	cd866cab1a3e55bc
+5254	12980	8013327271349780	winlator/CMakeFiles/winlator.dir/src/gpu_helper.c.o	ca13ef24addb1947
+1755	11774	8013327224591874	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vulkan_helper.c.o	4c750e38dd5b72ea
+7511	8905	8013327225408033	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_parse.c.o	a3ba82e0858b858b
+9549	11206	8013327251215773	libadrenotools/src/hook/CMakeFiles/hook_impl.dir/hook_impl.cpp.o	49c7b8fd17cd2be4
+7945	9145	8013327230511814	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_build.c.o	f37aff5f1ac28930
+7839	9052	8013327227023223	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_info.c.o	eec1614e08b4ceba
+8906	9743	8013327237490155	midihandler/CMakeFiles/midihandler.dir/midihandler.c.o	2fe0b75511edd97
+8817	9646	8013327237217788	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_scan.c.o	ff7a78ab28a8cda6
+7168	8130	8013327220005433	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_strings.c.o	21eb323cf8f51029
+7357	8699	8013327223649082	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_sanity.c.o	9dc3ee7102d6acb6
+8293	10301	8013327239128387	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_ureg.c.o	488593b406095208
+9471	10212	8013327241116292	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/os/os_misc.c.o	903b5ccd7a9d3185
+9301	9978	8013327240848550	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_transform.c.o	c8d433b54b6894d8
+10075	10600	8013327247256694	libadrenotools/src/hook/CMakeFiles/file_redirect_hook.dir/file_redirect_hook.c.o	476e21bd14a97892
+10218	10949	8013327248233914	libadrenotools/src/hook/CMakeFiles/main_hook.dir/main_hook.c.o	58e0949b9aa25600
+10420	11125	8013327251020888	libadrenotools/src/hook/CMakeFiles/gsl_alloc_hook.dir/gsl_alloc_hook.c.o	33bbdb0063732d5d
+10303	11027	8013327252634609	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/main.c.o	b9b8308ef0645810
+9980	11315	8013327253529000	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/android_linker_ns.cpp.o	f392ff3a83cbbf14
+9770	11451	8013327253708992	libadrenotools/CMakeFiles/adrenotools.dir/src/driver.cpp.o	3c8aaa972024e98f
+7605	10738	8013327244089135	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_text.c.o	5bdc2bb4f0c9f6c1
+10601	11915	8013327258872084	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_context.c.o	375e32c755882e1
+10811	12190	8013327260320791	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_texture.c.o	c5fb96e9e7b4d7d4
+10524	12069	8013327260571669	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_renderer.c.o	75a91ce0cda64422
+2792	12540	8013327251698462	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_shader.c.o	796ac673b1251209
+9859	12488	8013327265679950	libadrenotools/CMakeFiles/adrenotools.dir/src/bcenabler.cpp.o	69e5686541c1ee2f
+12070	13111	8013327272279678	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_query.c.o	db6a66a6d8a06ab4
+12191	13116	8013327273364689	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/attrib_stack.c.o	5c0a4f988e726a75
+11319	12472	8013327263389408	libadrenotools/lib/linkernsbypass/liblinkernsbypass.a	a9608acf374d97d1
+11453	12507	8013327267558903	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_buffer.c.o	6434efb9182983cd
+11776	13603	8013327278677693	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/compressed_texture.c.o	e5aec78c5f3db6f
+12381	13328	8013327276274423	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_framebuffer.c.o	b49b2d79232e4cbc
+13910	14592	8013327288743328	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvirglrenderer.so	3589bff4ae97cc80
+12489	13445	8013327275771288	libadrenotools/libadrenotools.a	c6b85d10d6759535
+1489	15466	8013327291089146	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/main.c.o	7481bae9b851ad3b
+12473	13355	8013327275982494	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libhook_impl.so	348c36988db53b90
+11917	13420	8013327276692833	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/arb_program.c.o	98ab8c464768d0b7
+11126	13935	8013327282130381	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/request_handler.c.o	3584a5f08f0ad9bd
+2459	14789	8013327290631492	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/timeline_semaphore.c.o	797baf1ea9bf7130
+1681	15752	8013327293753192	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_context.c.o	73656754dec3f384
+13405	14335	8013327284935236	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgsl_alloc_hook.so	cec14081c45df027
+13356	14227	8013327284623888	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmain_hook.so	97420b8abc08679f
+13382	14233	8013327284685521	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libfile_redirect_hook.so	e6b95bb86f4c2f
+14632	15379	8013327295841414	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgladiorenderer.so	bd9abe442558fe09
+2230	16625	8013327309202714	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/async_pipeline_creator.c.o	d883652cafd28711
+1391	27694	8013327419761212	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/request_handler.c.o	bb1c587041fe3dec
+27904	28299	8013327425873050	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvortekrenderer.so	d9fc7f11329ed516
+19	1318	8013333342731018	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_blitter.c.o	2247f9367468b975
+64	1415	8013333341461418	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_formats.c.o	9b191ed187dee568
+148	1504	8013333341431042	winlator/CMakeFiles/winlator.dir/src/xconnector_epoll.c.o	6ae74c08657c2f4f
+203	1594	8013333341754921	winlator/CMakeFiles/winlator.dir/src/sysvshared_memory.c.o	788c0876fa47f366
+272	1685	8013333345511772	winlator/CMakeFiles/winlator.dir/src/xinput_stream.c.o	581d9c8c63caf028
+343	1772	8013333342802349	winlator/CMakeFiles/winlator.dir/src/xoutput_stream.c.o	2163dea67ea93cb
+473	1851	8013333345897175	winlator/CMakeFiles/winlator.dir/src/ring_buffer.c.o	a9d2bfdc1787c48
+635	1970	8013333348316825	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_object.c.o	fb3ed8922ba6be1a
+1144	2038	8013333353776268	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/xwindow_swapchain.c.o	f388299d646e8cf
+105	2159	8013333351877283	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_decode.c.o	f14c0d00823c22d1
+1686	2277	8013333356046848	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_shm.c.o	5ba1591232ca7ebe
+1595	2362	8013333356616402	virglrenderer/CMakeFiles/virglrenderer.dir/src/iov.c.o	554244bc572bd37e
+559	2721	8013333360079178	winlator/CMakeFiles/winlator.dir/src/wine_registry_editor.c.o	2e7ad889efcf5859
+1060	2990	8013333360109170	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/resource_memory.c.o	f4724325a5009e99
+1971	3337	8013333364765177	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server.c.o	e15f9bc262afb979
+2362	3442	8013333364454691	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_texture.c.o	f45eeed6bc31e9d6
+2039	3605	8013333365104566	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_object.c.o	7d4b157de49345b2
+2160	3814	8013333366804014	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_renderer.c.o	59a8fc616882c6f
+2722	4085	8013333368038769	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_hash_table.c.o	54d02ec06ba94da1
+2278	4260	8013333369108499	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format_table.c.o	6ee52d7a36b66c65
+3606	4439	8013333377425950	winlator/CMakeFiles/winlator.dir/src/gpu_image.c.o	1dd6c016bde72d26
+3003	4609	8013333375324568	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format.c.o	ee21c6d6216da6dc
+3338	4769	8013333375174197	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug.c.o	6001a38aa0a65d0b
+406	4879	8013333363722563	winlator/CMakeFiles/winlator.dir/src/arrays.c.o	c1bbfc056e62d14e
+1221	4979	8013333364064461	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/texture_decoder.c.o	a63f029f8a4dc8fb
+4610	5174	8013333385290568	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_cpu_detect.c.o	413f7e52f63822d5
+3815	5350	8013333381252501	winlator/CMakeFiles/winlator.dir/src/drawable.c.o	c5fe066744b55369
+4771	5483	8013333387009470	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug_describe.c.o	a386bab8cf36f608
+4086	5582	8013333382729236	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_bitmask.c.o	46ca2901b5bc1a51
+4880	5682	8013333389451874	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_cache.c.o	bc5076babba8f363
+4261	5813	8013333384436467	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_math.c.o	6505714d432ff696
+1331	5988	8013333366351202	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/shader_inspector.c.o	34134c62ab6f054e
+5193	6281	8013333393104853	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_hash.c.o	f413ee034cd3ef71
+4440	6410	8013333387199452	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_surface.c.o	63c62eba0b82e2d1
+5355	6628	8013333395873260	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_dump.c.o	bb2191dd5bce75df
+5587	6721	8013333399059213	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_scan.c.o	ff7a78ab28a8cda6
+5814	6902	8013333398979244	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_info.c.o	eec1614e08b4ceba
+4981	7099	8013333392364064	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_build.c.o	f37aff5f1ac28930
+6012	7220	8013333403802609	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_parse.c.o	a3ba82e0858b858b
+6282	7308	8013333404688879	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_sanity.c.o	9dc3ee7102d6acb6
+6413	7391	8013333405648898	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_strings.c.o	21eb323cf8f51029
+6632	7477	8013333406020494	midihandler/CMakeFiles/midihandler.dir/midihandler.c.o	2fe0b75511edd97
+6722	7520	8013333406730102	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/os/os_misc.c.o	903b5ccd7a9d3185
+6903	7622	8013333408414780	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_iterate.c.o	404b094b64a44aeb
+5484	7716	8013333404206831	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_ureg.c.o	488593b406095208
+7103	7833	8013333409855189	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_util.c.o	33c2bccba8e6d6da
+7220	7960	8013333410611772	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_transform.c.o	c8d433b54b6894d8
+1773	8045	8013333409609963	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_renderer.c.o	539133f9e3a4ca5
+968	8166	8013333380228607	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vulkan_helper.c.o	4c750e38dd5b72ea
+5684	8331	8013333416883799	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_text.c.o	5bdc2bb4f0c9f6c1
+7718	8539	8013333417200347	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/elf_soname_patcher.cpp.o	ab4f944c08b09cb
+7479	8780	8013333418191768	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmidihandler.so	2f68176fb4cd9d96
+8169	8974	8013333421862006	libadrenotools/src/hook/CMakeFiles/file_redirect_hook.dir/file_redirect_hook.c.o	476e21bd14a97892
+8334	9076	8013333422624780	libadrenotools/src/hook/CMakeFiles/main_hook.dir/main_hook.c.o	58e0949b9aa25600
+7836	9173	8013333423748327	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/main.c.o	b9b8308ef0645810
+7521	9270	8013333423688299	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/android_linker_ns.cpp.o	f392ff3a83cbbf14
+8540	9307	8013333424487446	libadrenotools/src/hook/CMakeFiles/gsl_alloc_hook.dir/gsl_alloc_hook.c.o	33bbdb0063732d5d
+7309	9407	8013333424572694	libadrenotools/CMakeFiles/adrenotools.dir/src/driver.cpp.o	3c8aaa972024e98f
+7625	9498	8013333427014921	libadrenotools/src/hook/CMakeFiles/hook_impl.dir/hook_impl.cpp.o	49c7b8fd17cd2be4
+7963	9577	8013333428124222	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_context.c.o	375e32c755882e1
+8787	9683	8013333429344298	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_texture.c.o	c5fb96e9e7b4d7d4
+8046	9776	8013333431023865	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_renderer.c.o	75a91ce0cda64422
+7394	9883	8013333432033746	libadrenotools/CMakeFiles/adrenotools.dir/src/bcenabler.cpp.o	69e5686541c1ee2f
+9286	9955	8013333430711300	libadrenotools/lib/linkernsbypass/liblinkernsbypass.a	a9608acf374d97d1
+1853	9972	8013333423928322	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_shader.c.o	796ac673b1251209
+9309	10040	8013333433230935	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_formats.c.o	6bd1e65d211ca1f9
+9178	10153	8013333434622256	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_material.c.o	a0b5c6d99b07d315
+9413	10156	8013333434577089	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/attrib_stack.c.o	5c0a4f988e726a75
+9502	10179	8013333435723101	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_query.c.o	db6a66a6d8a06ab4
+3442	10340	8013333437017073	winlator/CMakeFiles/winlator.dir/src/gpu_helper.c.o	ca13ef24addb1947
+9885	10560	8013333439594023	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_vao.c.o	7224810f87a6ab05
+9777	10725	8013333441128934	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_buffer.c.o	6434efb9182983cd
+9955	10779	8013333439614030	libadrenotools/libadrenotools.a	c6b85d10d6759535
+9592	10914	8013333443074647	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/arb_program.c.o	98ab8c464768d0b7
+9973	10935	8013333442729732	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libhook_impl.so	348c36988db53b90
+10040	10983	8013333443625408	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_framebuffer.c.o	b49b2d79232e4cbc
+10341	11045	8013333444034189	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libwinlator.so	cd866cab1a3e55bc
+9684	11078	8013333444797336	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/compressed_texture.c.o	e5aec78c5f3db6f
+8975	11117	8013333445058366	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/request_handler.c.o	3584a5f08f0ad9bd
+10935	11575	8013333449743953	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgsl_alloc_hook.so	cec14081c45df027
+10955	11655	8013333450565344	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libfile_redirect_hook.so	e6b95bb86f4c2f
+10968	11658	8013333450576260	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmain_hook.so	97420b8abc08679f
+11045	11680	8013333450660825	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvirglrenderer.so	3589bff4ae97cc80
+9077	11729	8013333451285969	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_converter.c.o	3f1ea1f4299e9c46
+1417	12152	8013333455650971	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/timeline_semaphore.c.o	797baf1ea9bf7130
+11730	12641	8013333455866391	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgladiorenderer.so	bd9abe442558fe09
+890	12663	8013333457401136	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_context.c.o	73656754dec3f384
+754	12939	8013333455721105	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/main.c.o	7481bae9b851ad3b
+1514	13863	8013333472652157	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/async_pipeline_creator.c.o	d883652cafd28711
+821	23184	8013333565826038	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/request_handler.c.o	bb1c587041fe3dec
+23371	23690	8013333570916425	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvortekrenderer.so	d9fc7f11329ed516
+29	2071	8013337729630043	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_formats.c.o	9b191ed187dee568
+88	2220	8013337736249477	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_blitter.c.o	2247f9367468b975
+221	2403	8013337732130460	winlator/CMakeFiles/winlator.dir/src/xconnector_epoll.c.o	6ae74c08657c2f4f
+283	2593	8013337730442260	winlator/CMakeFiles/winlator.dir/src/sysvshared_memory.c.o	788c0876fa47f366
+362	2715	8013337735345118	winlator/CMakeFiles/winlator.dir/src/xinput_stream.c.o	581d9c8c63caf028
+466	3046	8013337734547722	winlator/CMakeFiles/winlator.dir/src/xoutput_stream.c.o	2163dea67ea93cb
+689	3333	8013337736368822	winlator/CMakeFiles/winlator.dir/src/ring_buffer.c.o	a9d2bfdc1787c48
+1280	3526	8013337743753686	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_object.c.o	fb3ed8922ba6be1a
+2076	3645	8013337756578207	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/xwindow_swapchain.c.o	f388299d646e8cf
+2595	3747	8013337756051508	virglrenderer/CMakeFiles/virglrenderer.dir/src/iov.c.o	554244bc572bd37e
+158	3887	8013337752931411	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_decode.c.o	f14c0d00823c22d1
+2716	4185	8013337760203266	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server.c.o	e15f9bc262afb979
+3649	4748	8013337767181217	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_shm.c.o	5ba1591232ca7ebe
+3396	5229	8013337769344356	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_object.c.o	7d4b157de49345b2
+4189	5745	8013337772886793	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_hash_table.c.o	54d02ec06ba94da1
+3750	5960	8013337772853424	virglrenderer/CMakeFiles/virglrenderer.dir/server/virgl_server_renderer.c.o	59a8fc616882c6f
+3889	6126	8013337774062492	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_texture.c.o	f45eeed6bc31e9d6
+4854	6437	8013337784140798	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format.c.o	ee21c6d6216da6dc
+1711	6681	8013337768177232	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/resource_memory.c.o	f4724325a5009e99
+6469	7373	8013337794100823	winlator/CMakeFiles/winlator.dir/src/drawable.c.o	c5fe066744b55369
+5746	7545	8013337790596285	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug.c.o	6001a38aa0a65d0b
+5231	7669	8013337792695712	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_format_table.c.o	6ee52d7a36b66c65
+1967	7885	8013337774484245	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/texture_decoder.c.o	a63f029f8a4dc8fb
+6129	8166	8013337796877494	winlator/CMakeFiles/winlator.dir/src/gpu_image.c.o	1dd6c016bde72d26
+543	8426	8013337780756707	winlator/CMakeFiles/winlator.dir/src/arrays.c.o	c1bbfc056e62d14e
+797	8715	8013337775505432	winlator/CMakeFiles/winlator.dir/src/wine_registry_editor.c.o	2e7ad889efcf5859
+6694	8996	8013337802794825	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_bitmask.c.o	46ca2901b5bc1a51
+7555	9136	8013337804255788	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_cpu_detect.c.o	413f7e52f63822d5
+7378	9274	8013337806691585	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_surface.c.o	63c62eba0b82e2d1
+7671	9721	8013337807330736	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_math.c.o	6505714d432ff696
+7896	10039	8013337810353104	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/util/u_debug_describe.c.o	a386bab8cf36f608
+9001	10326	8013337821590047	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_cache.c.o	bc5076babba8f363
+9302	10558	8013337826218981	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_parse.c.o	a3ba82e0858b858b
+8174	10761	8013337816038657	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/cso_cache/cso_hash.c.o	f413ee034cd3ef71
+8430	10932	8013337817584886	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_build.c.o	f37aff5f1ac28930
+9723	11093	8013337827492902	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_info.c.o	eec1614e08b4ceba
+1819	11309	8013337791029613	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/shader_inspector.c.o	34134c62ab6f054e
+10573	11477	8013337833604005	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_strings.c.o	21eb323cf8f51029
+9136	11632	8013337828034588	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_dump.c.o	bb2191dd5bce75df
+10763	11740	8013337836371477	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_sanity.c.o	9dc3ee7102d6acb6
+8731	11927	8013337830376497	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_ureg.c.o	488593b406095208
+10934	12139	8013337835700263	midihandler/CMakeFiles/midihandler.dir/midihandler.c.o	2fe0b75511edd97
+11102	12178	8013337838441991	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_iterate.c.o	404b094b64a44aeb
+11314	12406	8013337840152433	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_util.c.o	33c2bccba8e6d6da
+10341	12745	8013337834887553	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_scan.c.o	ff7a78ab28a8cda6
+11479	13222	8013337842134370	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_transform.c.o	c8d433b54b6894d8
+3527	13497	8013337835810120	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_renderer.c.o	539133f9e3a4ca5
+11635	13629	8013337843532396	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/os/os_misc.c.o	903b5ccd7a9d3185
+12141	14107	8013337854794880	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmidihandler.so	2f68176fb4cd9d96
+12180	14304	8013337863384124	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/android_linker_ns.cpp.o	f392ff3a83cbbf14
+12435	14401	8013337856182344	libadrenotools/lib/linkernsbypass/CMakeFiles/linkernsbypass.dir/elf_soname_patcher.cpp.o	ab4f944c08b09cb
+13308	14437	8013337860727699	libadrenotools/src/hook/CMakeFiles/main_hook.dir/main_hook.c.o	58e0949b9aa25600
+10076	14620	8013337855509898	virglrenderer/CMakeFiles/virglrenderer.dir/src/gallium/auxiliary/tgsi/tgsi_text.c.o	5bdc2bb4f0c9f6c1
+13498	14728	8013337864594531	libadrenotools/src/hook/CMakeFiles/file_redirect_hook.dir/file_redirect_hook.c.o	476e21bd14a97892
+13631	14950	8013337867427936	libadrenotools/src/hook/CMakeFiles/gsl_alloc_hook.dir/gsl_alloc_hook.c.o	33bbdb0063732d5d
+11747	15041	8013337863982377	libadrenotools/CMakeFiles/adrenotools.dir/src/driver.cpp.o	3c8aaa972024e98f
+1621	15221	8013337812886656	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vulkan_helper.c.o	4c750e38dd5b72ea
+14109	15427	8013337871465025	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/main.c.o	b9b8308ef0645810
+12747	15659	8013337876885367	libadrenotools/src/hook/CMakeFiles/hook_impl.dir/hook_impl.cpp.o	49c7b8fd17cd2be4
+14621	16366	8013337879074242	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_buffer.c.o	6434efb9182983cd
+14734	16570	8013337882410308	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_vao.c.o	7224810f87a6ab05
+11931	16724	8013337881640075	libadrenotools/CMakeFiles/adrenotools.dir/src/bcenabler.cpp.o	69e5686541c1ee2f
+14404	16816	8013337876041398	libadrenotools/lib/linkernsbypass/liblinkernsbypass.a	a9608acf374d97d1
+15223	16833	8013337885918802	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_formats.c.o	6bd1e65d211ca1f9
+14305	16853	8013337886123419	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_context.c.o	375e32c755882e1
+15441	17210	8013337887208582	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_texture.c.o	c5fb96e9e7b4d7d4
+15044	17498	8013337888372370	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_framebuffer.c.o	b49b2d79232e4cbc
+14952	17500	8013337891654487	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/arb_program.c.o	98ab8c464768d0b7
+14440	17502	8013337892629420	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_renderer.c.o	75a91ce0cda64422
+3078	17505	8013337872117847	virglrenderer/CMakeFiles/virglrenderer.dir/src/vrend_shader.c.o	796ac673b1251209
+16817	17800	8013337895645306	libadrenotools/libadrenotools.a	c6b85d10d6759535
+16726	17812	8013337898730748	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/attrib_stack.c.o	5c0a4f988e726a75
+16368	17982	8013337900681517	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_material.c.o	a0b5c6d99b07d315
+16834	18138	8013337900304085	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libhook_impl.so	348c36988db53b90
+16856	18239	8013337903325773	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/gl_query.c.o	db6a66a6d8a06ab4
+6007	18256	8013337902074525	winlator/CMakeFiles/winlator.dir/src/gpu_helper.c.o	ca13ef24addb1947
+18200	19430	8013337913072087	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgsl_alloc_hook.so	cec14081c45df027
+18181	19442	8013337913631850	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libfile_redirect_hook.so	e6b95bb86f4c2f
+18138	19456	8013337913492289	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libmain_hook.so	97420b8abc08679f
+17245	19472	8013337915699797	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/compressed_texture.c.o	e5aec78c5f3db6f
+18256	19493	8013337915323000	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libwinlator.so	cd866cab1a3e55bc
+15663	19810	8013337918802003	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/request_handler.c.o	3584a5f08f0ad9bd
+2222	20049	8013337921426746	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/timeline_semaphore.c.o	797baf1ea9bf7130
+19494	20495	8013337922545633	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvirglrenderer.so	3589bff4ae97cc80
+1412	20530	8013337924710030	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/vk_context.c.o	73656754dec3f384
+1133	20987	8013337923843759	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/main.c.o	7481bae9b851ad3b
+16572	21715	8013337938076941	gladiorenderer/CMakeFiles/gladiorenderer.dir/src/shader_converter.c.o	3f1ea1f4299e9c46
+21717	22367	8013337944610765	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libgladiorenderer.so	bd9abe442558fe09
+2404	23570	8013337956522731	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/async_pipeline_creator.c.o	d883652cafd28711
+976	36058	8013338081450418	vortekrenderer/CMakeFiles/vortekrenderer.dir/src/request_handler.c.o	bb1c587041fe3dec
+36256	36718	8013338088102049	D:/程序/RPG tool/RPGRenPyLocalizer/android_app/shell/app/build/intermediates/cxx/RelWithDebInfo/3m2l6s5o/obj/arm64-v8a/libvortekrenderer.so	d9fc7f11329ed516

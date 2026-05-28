@@ -31,7 +31,7 @@ export const useDataStore = defineStore('data', () => {
     }
     loading.value = true
     try {
-      const result = await dataApi.listRecords(category.value)
+      const result = await dataApi.listRecords(category.value, 5000)
       records.value = result.records || []
       cache.value = { ...cache.value, [category.value]: records.value }
       selectedKey.value = ''
@@ -40,5 +40,13 @@ export const useDataStore = defineStore('data', () => {
     }
   }
 
-  return { category, records, selectedKey, loading, groups, selected, load }
+  function reset() {
+    records.value = []
+    selectedKey.value = ''
+    cache.value = {}
+  }
+
+  uni.$on('rpgtl:project-changed', reset)
+
+  return { category, records, selectedKey, loading, groups, selected, load, reset }
 })

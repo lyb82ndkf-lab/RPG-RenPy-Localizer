@@ -1,0 +1,1 @@
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\build\intermediates\cxx\Debug\4g3m6g6l\obj\arm64-v8a

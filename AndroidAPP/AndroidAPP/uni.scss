@@ -10,7 +10,8 @@ $radius: 4rpx;
 $gap: 5rpx;
 
 .page {
-  height: 100vh;
+  min-height: 100vh;
+  height: 100%;
   overflow: hidden;
   padding: 4rpx;
   background:
@@ -84,9 +85,7 @@ $gap: 5rpx;
   border-radius: $radius;
   color: $color-ink;
   font-size: 16px;
-  transform: scale(0.82);
-  transform-origin: left center;
-  width: 122%;
+  width: 100%;
 }
 
 .muted {
@@ -114,6 +113,11 @@ $gap: 5rpx;
 scroll-view {
   contain: content;
   -webkit-overflow-scrolling: touch;
+}
+
+html, body, #app {
+  min-height: 100%;
+  height: 100%;
 }
 
 .game-card,

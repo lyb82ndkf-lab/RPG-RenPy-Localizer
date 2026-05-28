@@ -22,14 +22,14 @@ import DataEditor from '@/components/DataEditor.vue'
 import { switchTopPage } from '@/utils/navigation'
 import { TOP_NAV_ITEMS, isDataCategory } from '@/utils/top-nav'
 import { useDataStore } from '@/store/data'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 
 const data = useDataStore()
 const navItems = TOP_NAV_ITEMS
 
 function changeCategory(value) {
   data.category = value
-  data.load()
+  data.load(true)
 }
 
 function handleNav(key) {
@@ -42,7 +42,11 @@ function handleNav(key) {
 
 onLoad((query) => {
   if (query?.category && isDataCategory(String(query.category))) data.category = String(query.category)
-  data.load()
+  data.load(true)
+})
+
+onShow(() => {
+  data.load(true)
 })
 </script>
 
@@ -63,6 +67,7 @@ onLoad((query) => {
 }
 .left-pane {
   min-height: 0;
+  height: 100%;
 }
 .panel-head {
   justify-content: flex-end;

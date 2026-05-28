@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import concurrent.futures
 import ctypes
@@ -24,9 +24,9 @@ from tkinter import filedialog, messagebox, ttk
 
 from .detectors import detect_project
 from .models import DataRecord, MapDetail, MapRecord, ProjectInfo, SaveSlot, TranslationEntry
-from .renpy import RenPyService
+from .renpy import RenPyService, _append_live_log, _live_log_path
 from .rpgmaker import RPGMakerService
-from .storage import export_translation_pack, import_translation_pack, load_json
+from .storage import export_translation_pack, import_translation_pack, load_json, load_translation_pack_payload, translation_pack_signature
 from .ui_layout import DashboardLayoutController
 from .ui_theme import configure_app_style
 from .workspace import LibraryEntry, RecentTask, Workspace
@@ -43,6 +43,17 @@ SUCCESS = "#1f9d68"
 WARN = "#b7791f"
 BORDER = "#d6dfeb"
 TREE_RENDER_LIMIT = 1200
+GAME_CONTROL_TOKEN_PATTERN = re.compile(
+    r"""
+    \\[A-Za-z]+(?:\[[^\]\r\n]{0,80}\])?|
+    \\[{}\\$.\|!><\^]|
+    %\d+|
+    %[A-Za-z_][A-Za-z0-9_]*|
+    \{[A-Za-z_][A-Za-z0-9_.:-]*\}|
+    \[[A-Za-z_][A-Za-z0-9_.:-]*\]
+    """,
+    re.VERBOSE,
+)
 AI_PROVIDER_URLS = {
     "OpenAI": "https://platform.openai.com/api-keys",
     "Xiaomi Token Plan": "https://token-plan-sgp.xiaomimimo.com/",
@@ -62,8 +73,8 @@ class ToolkitApp:
             self.root.tk.call("tk", "scaling", 1.08)
         except tk.TclError:
             pass
-        self.root.geometry("1360x860")
-        self.root.minsize(1180, 740)
+        self.root.geometry("1056x636")
+        self.root.resizable(False, False)
         self.root.configure(bg=APP_BG)
 
         self.workspace = Workspace(self._project_root())
@@ -72,6 +83,9 @@ class ToolkitApp:
         self.translation_memory: dict[str, str] = self.workspace.load_translation_memory()
         self._tm_dirty: bool = False
         self._project_tm_keys: set[str] = set()
+        self._translation_memory_fuzzy_index: dict[int, list[tuple[str, str]]] | None = None
+        self._translation_tree_refresh_after_id: str | None = None
+        self._responsive_wrap_widgets: list[tuple[tk.Widget, int, int]] = []
 
         self.project: ProjectInfo | None = None
         self.game_process: subprocess.Popen[bytes] | None = None
@@ -111,7 +125,7 @@ class ToolkitApp:
         self.project_name_var = tk.StringVar(value="选择游戏")
         self.project_path_var = tk.StringVar(value="请选择游戏的 exe，或把 exe 拖入窗口。")
         self.filter_var = tk.StringVar()
-        self.translation_scope_var = tk.StringVar(value="全部文本")
+        self.translation_scope_var = tk.StringVar(value="仅对白/选项")
         self.translation_file_filter_var = tk.StringVar(value="全部文件")
         self.data_filter_var = tk.StringVar()
         self.save_slot_var = tk.StringVar()
@@ -120,6 +134,7 @@ class ToolkitApp:
         self.save_switch_filter_var = tk.StringVar()
         self.save_variable_filter_var = tk.StringVar()
         self.map_filter_var = tk.StringVar()
+        self.map_zoom_var = tk.StringVar(value="100%")
         self.target_var = tk.StringVar()
         self.translation_detail_var = tk.StringVar(value="选择一条文本后可在右侧编辑译文。")
         self.data_detail_var = tk.StringVar(value="选择一条数据后可在右侧进行修改。")
@@ -141,9 +156,11 @@ class ToolkitApp:
         if saved_provider != "百度翻译" and saved_model not in self._ai_model_options(saved_provider):
             saved_model = self._default_ai_model(saved_provider)
         self.ai_model_var = tk.StringVar(value=saved_model)
+        self.ai_concurrency_var = tk.IntVar(value=self._clamped_int(settings.get("ai_concurrency", 4), 1, 12, 4))
         self.ai_parallel_provider_vars: dict[str, tk.BooleanVar] = {}
         self.ai_status_var = tk.StringVar(value="AI 翻译未开始")
         self.ai_progress_var = tk.DoubleVar(value=0)
+        self.ai_custom_base_url_var = self.ai_base_url_var
         self.baidu_appid_var = tk.StringVar(value=settings.get("baidu_appid", ""))
         self.baidu_secret_var = tk.StringVar(value=settings.get("baidu_secret", ""))
         self.player_through_var = tk.BooleanVar(value=False)
@@ -181,6 +198,8 @@ class ToolkitApp:
         self._renpy_extracting = False
         self._renpy_extract_process: subprocess.Popen[bytes] | None = None
         self._renpy_extract_pid: int | None = None
+        self._renpy_realtime_stop: threading.Event | None = None
+        self._renpy_realtime_seen_sources: set[str] = set()
         self._project_load_token = 0
         self._data_cell_editor: ttk.Entry | None = None
 
@@ -317,9 +336,10 @@ class ToolkitApp:
         shell.grid_columnconfigure(1, weight=1)
         shell.grid_rowconfigure(0, weight=1)
 
-        nav = tk.Frame(shell, bg=NAV_BG, width=250)
+        nav = tk.Frame(shell, bg=NAV_BG, width=190)
         nav.grid(row=0, column=0, sticky="nsw")
         nav.grid_propagate(False)
+        self.nav_frame = nav
         self._build_nav(nav)
 
         main = tk.Frame(shell, bg=APP_BG)
@@ -327,24 +347,32 @@ class ToolkitApp:
         main.grid_rowconfigure(1, weight=1)
         main.grid_columnconfigure(0, weight=1)
 
-        header = tk.Frame(main, bg=APP_BG, padx=24, pady=18)
+        header = tk.Frame(main, bg=APP_BG, padx=18, pady=12)
         header.grid(row=0, column=0, sticky="ew")
         self._build_header(header)
 
-        self.content = tk.Frame(main, bg=APP_BG)
-        self.content.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 24))
+        self.content_shell = tk.Frame(main, bg=APP_BG)
+        self.content_shell.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 16))
+        self.content_shell.grid_rowconfigure(0, weight=1)
+        self.content_shell.grid_columnconfigure(0, weight=1)
+        self.content = tk.Frame(self.content_shell, bg=APP_BG)
+        self.content.grid(row=0, column=0, sticky="nsew")
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
 
         self.dashboard_view = self._build_dashboard_view(self.content)
+        self.overview_view = self._build_project_overview_view(self.content)
         self.translation_view = self._build_translation_view(self.content)
+        self.translation_config_view = self._build_translation_config_view(self.content)
         self.data_view = self._build_data_view(self.content)
         self.save_view = self._build_save_view(self.content)
         self.map_view = self._build_map_view(self.content)
         self.tools_view = self._build_tools_view(self.content)
         self._section_views = {
             "dashboard": self.dashboard_view,
+            "overview": self.overview_view,
             "translation": self.translation_view,
+            "translate_config": self.translation_config_view,
             "data": self.data_view,
             "save": self.save_view,
             "maps": self.map_view,
@@ -352,16 +380,18 @@ class ToolkitApp:
         }
 
     def _build_nav(self, parent: tk.Frame) -> None:
-        top = tk.Frame(parent, bg=NAV_BG, padx=18, pady=20)
+        top = tk.Frame(parent, bg=NAV_BG, padx=14, pady=14)
         top.pack(fill="x")
-        tk.Label(top, text="RPGRenPyLocalizer", bg=NAV_BG, fg="white", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
-        tk.Label(top, text="管理单机游戏项目、翻译文本、编辑数据并保存备份。", bg=NAV_BG, fg="#b4c5df", justify="left", wraplength=200).pack(anchor="w", pady=(8, 0))
+        tk.Label(top, text="RPGRenPyLocalizer", bg=NAV_BG, fg="white", font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tk.Label(top, text="项目加载、翻译、嵌入、备份。", bg=NAV_BG, fg="#b4c5df", justify="left", wraplength=170).pack(anchor="w", pady=(8, 0))
 
         menu = tk.Frame(parent, bg=NAV_BG, padx=12, pady=10)
         menu.pack(fill="x")
         for key, label in [
             ("dashboard", "游戏库"),
-            ("translation", "翻译工作台"),
+            ("overview", "项目总览"),
+            ("extract", "提取文本"),
+            ("translate_config", "翻译配置"),
             ("data", "数据编辑器"),
             ("save", "存档修改"),
             ("maps", "地图查看"),
@@ -377,18 +407,18 @@ class ToolkitApp:
                 fg="white",
                 activebackground=NAV_ACTIVE,
                 activeforeground="white",
-                font=("Microsoft YaHei UI", 11, "bold"),
-                padx=16,
-                pady=12,
+                font=("Microsoft YaHei UI", 10, "bold"),
+                padx=14,
+                pady=10,
                 command=lambda item=key: self._show_section(item),
             )
-            btn.pack(fill="x", pady=4)
+            btn.pack(fill="x", pady=3)
             self.nav_buttons[key] = btn
 
         bottom = tk.Frame(parent, bg=NAV_BG, padx=18, pady=18)
         bottom.pack(side="bottom", fill="x")
-        tk.Label(bottom, text="支持引擎", bg=NAV_BG, fg="#9eb4d3", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
-        tk.Label(bottom, text="RPG Maker MV/MZ\nRen'Py\nRPG Maker XP/VX/VX Ace", bg=NAV_BG, fg="#d7e2f1", justify="left").pack(anchor="w", pady=(8, 0))
+        tk.Label(bottom, text="支持引擎", bg=NAV_BG, fg="#9eb4d3", font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w")
+        tk.Label(bottom, text="RPG Maker MV/MZ\nRen'Py\nRPG Maker XP/VX/VX Ace", bg=NAV_BG, fg="#d7e2f1", justify="left", font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(8, 0))
 
     def _build_header(self, parent: tk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -396,20 +426,24 @@ class ToolkitApp:
         left = tk.Frame(parent, bg=APP_BG)
         left.grid(row=0, column=0, sticky="ew")
         left.grid_columnconfigure(0, weight=1)
-        tk.Label(left, textvariable=self.project_name_var, bg=APP_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 24, "bold")).pack(anchor="w")
-        tk.Label(left, textvariable=self.project_path_var, bg=APP_BG, fg=TEXT_MUTED, justify="left", wraplength=920).pack(anchor="w", pady=(6, 0))
+        tk.Label(left, textvariable=self.project_name_var, bg=APP_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 20, "bold")).pack(anchor="w")
+        self.project_path_label = tk.Label(left, textvariable=self.project_path_var, bg=APP_BG, fg=TEXT_MUTED, justify="left", wraplength=720, font=("Microsoft YaHei UI", 9))
+        self.project_path_label.pack(anchor="w", pady=(4, 0))
 
         path_row = tk.Frame(left, bg=APP_BG)
-        path_row.pack(fill="x", pady=(10, 0))
+        path_row.pack(fill="x", pady=(8, 0))
+        self.header_path_row = path_row
         path_row.grid_columnconfigure(1, weight=1)
         tk.Label(path_row, text="入口路径", bg=APP_BG, fg=TEXT_MUTED).pack(side="left")
         ttk.Entry(path_row, textvariable=self.path_var).pack(side="left", fill="x", expand=True, padx=(8, 8))
         ttk.Button(path_row, text="选择 exe", command=self.select_project).pack(side="left", padx=(0, 6))
         ttk.Button(path_row, text="载入", command=self.load_project).pack(side="left", padx=(6, 0))
-        ttk.Button(path_row, text="启动游戏", command=self.launch_current_game, style="Primary.TButton").pack(side="left", padx=(6, 0))
+        self.header_launch_button = ttk.Button(path_row, text="启动游戏", command=self.launch_or_realtime_game, style="Primary.TButton")
+        self.header_launch_button.pack(side="left", padx=(6, 0))
 
         badges = tk.Frame(left, bg=APP_BG)
-        badges.pack(anchor="w", pady=(10, 0))
+        badges.pack(anchor="w", pady=(8, 0))
+        self.header_badges = badges
         self._metric_badge(badges, "引擎", self.engine_var).pack(side="left")
         self._metric_badge(badges, "支持", self.support_var).pack(side="left", padx=8)
         self._metric_badge(badges, "运行", self.run_status_var).pack(side="left")
@@ -425,6 +459,21 @@ class ToolkitApp:
         )
         self._activity_bar.pack(fill="x")
         self._activity_count = 0  # 嵌套计数，>0 时显示动画
+
+    def _sync_header_visibility(self) -> None:
+        show_full = self.current_section == "dashboard"
+        for widget in (getattr(self, "project_path_label", None), getattr(self, "header_path_row", None), getattr(self, "header_badges", None)):
+            if not widget:
+                continue
+            if show_full:
+                if widget is getattr(self, "project_path_label", None):
+                    widget.pack(anchor="w", pady=(4, 0))
+                elif widget is getattr(self, "header_path_row", None):
+                    widget.pack(fill="x", pady=(8, 0))
+                else:
+                    widget.pack(anchor="w", pady=(8, 0))
+            else:
+                widget.pack_forget()
 
     def _start_activity(self) -> None:
         """启动全局脉冲动画（线程安全）。嵌套计数，多次调用只显示一次。"""
@@ -443,6 +492,48 @@ class ToolkitApp:
                 self._activity_bar.stop()
                 self._activity_frame.pack_forget()
         self.root.after(0, _do)
+
+    def _invalidate_translation_memory_index(self) -> None:
+        self._translation_memory_fuzzy_index = None
+
+    def _translation_memory_short_buckets(self) -> dict[int, list[tuple[str, str]]]:
+        if self._translation_memory_fuzzy_index is None:
+            buckets: dict[int, list[tuple[str, str]]] = {}
+            for source, target in self.translation_memory.items():
+                source = source.strip()
+                target = target.strip()
+                if not source or not target or len(source) > 20:
+                    continue
+                buckets.setdefault(len(source), []).append((source, target))
+            self._translation_memory_fuzzy_index = buckets
+        return self._translation_memory_fuzzy_index
+
+    def _schedule_translation_tree_refresh(self, delay_ms: int = 120) -> None:
+        after_id = self._translation_tree_refresh_after_id
+        if after_id:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+
+        def _do_refresh() -> None:
+            self._translation_tree_refresh_after_id = None
+            self._refresh_translation_tree()
+
+        self._translation_tree_refresh_after_id = self.root.after(delay_ms, _do_refresh)
+
+    def _track_wraplength(self, widget: tk.Widget, base: int, minimum: int = 180) -> None:
+        if not hasattr(widget, "keys"):
+            return
+        try:
+            if "wraplength" not in widget.keys():
+                return
+        except Exception:
+            return
+        self._responsive_wrap_widgets.append((widget, base, minimum))
+
+    def _setup_responsive_layout(self) -> None:
+        return
 
     def _metric_badge(self, parent: tk.Misc, title: str, variable: tk.StringVar) -> tk.Frame:
         frame = tk.Frame(parent, bg="#dbeafe", padx=10, pady=6)
@@ -466,9 +557,9 @@ class ToolkitApp:
         library = self._create_panel(grid)
         library.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         self._build_library_panel(library)
-        overview = self._create_panel(grid)
-        overview.grid(row=0, column=1, sticky="nsew")
-        self._build_overview_panel(overview)
+        recent = self._create_panel(grid)
+        recent.grid(row=0, column=1, sticky="nsew")
+        self._build_recent_status_panel(recent)
         narrow = self._create_panel(grid)
         narrow_content = tk.Frame(narrow, bg=PANEL_BG, padx=6, pady=10)
         narrow_content.pack(fill="both", expand=True)
@@ -476,7 +567,16 @@ class ToolkitApp:
         expand_handle.pack(pady=(0, 8))
         expand_handle.bind("<Button-1>", lambda _e: self.toggle_dashboard_library())
         tk.Label(narrow_content, text="游\n戏\n库", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 11, "bold"), justify="center").pack()
-        self._dashboard_split_controller = DashboardLayoutController(self.root, grid, library, overview, narrow, expand_handle, self.library_collapse_button)
+        self._dashboard_split_controller = DashboardLayoutController(self.root, grid, library, recent, narrow, expand_handle, self.library_collapse_button)
+        return frame
+
+    def _build_project_overview_view(self, parent: tk.Frame) -> tk.Frame:
+        frame = tk.Frame(parent, bg=APP_BG)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+        overview = self._create_panel(frame)
+        overview.grid(row=0, column=0, sticky="nsew")
+        self._build_overview_panel(overview, include_recent=False)
         return frame
 
     def _build_library_panel(self, parent: tk.Frame) -> None:
@@ -517,7 +617,7 @@ class ToolkitApp:
         ttk.Button(second, text="打开目录", command=self.open_selected_library_item, width=8).pack(side="left", padx=(0, 6))
         ttk.Button(second, text="移除", command=self.remove_selected_library_item, width=6).pack(side="left")
 
-    def _build_overview_panel(self, parent: tk.Frame) -> None:
+    def _build_overview_panel(self, parent: tk.Frame, include_recent: bool = True) -> None:
         content = tk.Frame(parent, bg=PANEL_BG, padx=18, pady=18)
         content.pack(fill="both", expand=True)
         tk.Label(content, text="项目总览", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
@@ -532,7 +632,7 @@ class ToolkitApp:
         quick = tk.LabelFrame(content, text="主要操作", bg=PANEL_BG, fg=TEXT_MAIN, padx=12, pady=10)
         quick.pack(fill="x")
         quick.grid_columnconfigure((0, 1, 2), weight=1)
-        ttk.Button(quick, text="翻译工作台", command=lambda: self._show_section("translation"), style="Primary.TButton", width=10).grid(row=0, column=0, sticky="ew")
+        ttk.Button(quick, text="提取文本", command=lambda: self._show_section("extract"), style="Primary.TButton", width=10).grid(row=0, column=0, sticky="ew")
         ttk.Button(quick, text="数据编辑器", command=lambda: self._show_section("data"), width=10).grid(row=0, column=1, sticky="ew", padx=8)
         ttk.Button(quick, text="连接实时游戏", command=self.refresh_runtime_state, style="Primary.TButton", width=12).grid(row=0, column=2, sticky="ew")
 
@@ -604,10 +704,20 @@ class ToolkitApp:
             tk.Label(box, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
             ttk.Entry(box, textvariable=var, width=5).pack(side="left", padx=(4, 0))
 
+        if include_recent:
+            self._build_recent_status_panel_content(content)
+
+    def _build_recent_status_panel(self, parent: tk.Frame) -> None:
+        content = tk.Frame(parent, bg=PANEL_BG, padx=18, pady=18)
+        content.pack(fill="both", expand=True)
+        tk.Label(content, text="最近任务 / 当前状态", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        self._build_recent_status_panel_content(content)
+
+    def _build_recent_status_panel_content(self, content: tk.Frame) -> None:
         recent_wrap = tk.Frame(content, bg=PANEL_BG)
         recent_wrap.pack(fill="both", expand=True, pady=(18, 0))
-        recent_wrap.grid_columnconfigure(0, weight=1)
-        recent_wrap.grid_columnconfigure(1, weight=1)
+        recent_wrap.grid_columnconfigure(0, weight=1, uniform="recent_columns")
+        recent_wrap.grid_columnconfigure(1, weight=1, uniform="recent_columns")
         recent_wrap.grid_rowconfigure(1, weight=1)
         tk.Label(recent_wrap, text="最近任务", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
         tk.Label(recent_wrap, text="当前状态", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=1, sticky="w", padx=(16, 0))
@@ -619,6 +729,7 @@ class ToolkitApp:
         self.status_text = tk.Text(recent_wrap, relief="flat", wrap="word", bg=PANEL_BG, fg=TEXT_MAIN)
         self.status_text.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
         self._set_status_text("请选择 exe 或将 exe 拖入窗口。")
+        self._track_wraplength(self.status_text, 520, 260)
 
     def _overview_metric(self, parent: tk.Frame, column: int, title: str, variable: tk.StringVar, bg: str, fg: str) -> None:
         card = tk.Frame(parent, bg=bg, padx=14, pady=14)
@@ -628,65 +739,102 @@ class ToolkitApp:
 
     def _build_translation_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid_columnconfigure(0, weight=6)
-        frame.grid_columnconfigure(1, weight=5)
+        frame.grid_columnconfigure(0, weight=7)
+        frame.grid_columnconfigure(1, weight=4)
         frame.grid_rowconfigure(0, weight=1)
         left = self._create_panel(frame)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         right = self._create_panel(frame)
         right.grid(row=0, column=1, sticky="nsew")
+        frame._left_panel = left  # type: ignore[attr-defined]
+        frame._right_panel = right  # type: ignore[attr-defined]
         self._build_translation_list(left)
         self._build_translation_editor(right)
+        self._track_wraplength(left, 460, 280)
+        self._track_wraplength(right, 420, 280)
         return frame
 
     def _build_translation_list(self, parent: tk.Frame) -> None:
-        content = tk.Frame(parent, bg=PANEL_BG, padx=16, pady=16)
+        content = tk.Frame(parent, bg=PANEL_BG, padx=10, pady=10)
         content.pack(fill="both", expand=True)
+        tk.Label(content, text="翻译工作台", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+        progress_wrap = tk.Frame(content, bg=PANEL_BG)
+        progress_wrap.pack(fill="x", pady=(6, 5))
+        self.translation_top_progress = ttk.Progressbar(progress_wrap, variable=self.ai_progress_var, maximum=100)
+        self.translation_top_progress.pack(fill="x")
+        top_status = tk.Label(content, textvariable=self.ai_status_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=480, font=("Microsoft YaHei UI", 8))
+        top_status.pack(fill="x", pady=(0, 5))
         head = tk.Frame(content, bg=PANEL_BG)
-        head.pack(fill="x")
-        tk.Label(head, text="翻译工作台", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(side="left")
-        ttk.Button(head, text="提取文本", command=self.extract_texts, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="翻译选中", command=self.translate_selected_with_ai, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="翻译全部", command=self.translate_with_ai, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="导出翻译包", command=self.export_pack, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="导入翻译包", command=self.import_pack, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(head, text="加载翻译到当前", command=self.load_runtime_translation, style="Primary.TButton", width=14).pack(side="right", padx=(0, 6))
-        self.embed_button = ttk.Button(head, text="嵌入游戏", command=self.embed_translation_permanently, style="Primary.TButton", width=10)
-        self.embed_button.pack(side="right", padx=(0, 6))
+        head.pack(fill="x", pady=(0, 5))
+        for index, (label, command, style) in enumerate(
+            (
+                ("提取", self.extract_texts, None),
+                ("翻译选中", self.translate_selected_with_ai, "Primary.TButton"),
+                ("翻译对白/选项", self.translate_with_ai, None),
+                ("导出", self.export_pack, None),
+                ("导入", self.import_pack, None),
+                ("加载到游戏", self.load_runtime_translation, "Primary.TButton"),
+                ("调试", self.show_renpy_live_debug, None),
+            )
+        ):
+            kwargs = {"style": style} if style else {}
+            button = ttk.Button(head, text=label, command=command, width=11 if label.startswith("翻译") else 8, **kwargs)
+            button.grid(row=index // 4, column=index % 4, sticky="ew", padx=(0 if index % 4 == 0 else 4, 0), pady=(0, 4))
+            head.grid_columnconfigure(index % 4, weight=1)
+            if label.startswith("翻译当前") or label.startswith("翻译仅") or label.startswith("翻译对白"):
+                self.translate_scope_button = button
+        self.embed_button = ttk.Button(head, text="嵌入", command=self.embed_translation_permanently, style="Primary.TButton", width=8)
+        self.embed_button.grid(row=1, column=3, sticky="ew", padx=(4, 0), pady=(0, 4))
         self._build_filter_row(content, self.filter_var, self._refresh_translation_tree)
 
         wrap = tk.Frame(content, bg=PANEL_BG)
         wrap.pack(fill="both", expand=True)
         scope_row = tk.Frame(content, bg=PANEL_BG)
-        scope_row.pack(fill="x", pady=(0, 10))
-        tk.Label(scope_row, text="翻译范围", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
-        scope_box = ttk.Combobox(scope_row, textvariable=self.translation_scope_var, values=("仅对白/选项", "数据库名称/说明", "系统/插件文本", "全部文本"), state="readonly")
+        scope_row.pack(fill="x", pady=(0, 6))
+        tk.Label(scope_row, text="范围", bg=PANEL_BG, fg=TEXT_MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        scope_box = ttk.Combobox(scope_row, textvariable=self.translation_scope_var, values=("仅对白/选项", "数据库名称/说明", "系统/插件文本", "全部文本"), state="readonly", width=13)
         scope_box.pack(side="left", padx=(8, 0))
         scope_box.bind("<<ComboboxSelected>>", self._on_translation_scope_change)
-        tk.Label(scope_row, text="文件", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(18, 0))
-        self.translation_file_box = ttk.Combobox(scope_row, textvariable=self.translation_file_filter_var, values=("全部文件",), state="readonly", width=24)
-        self.translation_file_box.pack(side="left", padx=(8, 0))
-        self.translation_file_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_translation_tree())
-        ttk.Button(scope_row, text="全选当前筛选", command=self.select_visible_translations).pack(side="left", padx=(6, 0))
+        tk.Label(scope_row, text="文件", bg=PANEL_BG, fg=TEXT_MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(10, 0))
+        self.translation_file_box = ttk.Combobox(scope_row, textvariable=self.translation_file_filter_var, values=("全部文件",), state="readonly", width=15)
+        self.translation_file_box.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.translation_file_box.bind("<<ComboboxSelected>>", lambda _event: self._schedule_translation_tree_refresh())
+        ttk.Button(scope_row, text="全选", command=self.select_visible_translations, width=5).pack(side="left", padx=(6, 0))
 
         columns = ("category", "file", "context", "source", "target")
-        self.translation_tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="extended")
-        for key, label, width in (("category", "类型", 78), ("file", "文件", 120), ("context", "上下文", 135), ("source", "原文", 360), ("target", "译文", 360)):
+        self.translation_tree = ttk.Treeview(wrap, columns=columns, show="headings", selectmode="extended", height=12)
+        for key, label, width in (("category", "类型", 52), ("file", "文件", 88), ("context", "上下文", 100), ("source", "原文", 250), ("target", "译文", 250)):
             self.translation_tree.heading(key, text=label)
             self.translation_tree.column(key, width=width, stretch=True)
         self._attach_tree_scrollbars(wrap, self.translation_tree)
         self.translation_tree.bind("<<TreeviewSelect>>", self._on_translation_select)
+        self._track_wraplength(self.translation_tree, 360, 260)
         self._set_translation_notice("请先选择或拖入游戏 exe。")
+        self._sync_translation_scope_button_text()
 
     def _build_translation_editor(self, parent: tk.Frame) -> None:
-        content = tk.Frame(parent, bg=PANEL_BG, padx=16, pady=16)
-        content.pack(fill="both", expand=True)
-        tk.Label(content, text="译文编辑", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(content, textvariable=self.translation_detail_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=480).pack(fill="x", pady=(10, 14))
+        canvas = tk.Canvas(parent, bg=PANEL_BG, bd=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        content = tk.Frame(canvas, bg=PANEL_BG, padx=10, pady=10)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def sync_scrollregion(_event: object | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window_id, width=max(1, canvas.winfo_width()))
+
+        content.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"))
+        tk.Label(content, text="译文编辑", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+        detail_label = tk.Label(content, textvariable=self.translation_detail_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=300, font=("Microsoft YaHei UI", 8))
+        detail_label.pack(fill="x", pady=(7, 8))
         tk.Label(content, text="当前译文", bg=PANEL_BG, fg=TEXT_MUTED).pack(anchor="w")
         target_wrap = tk.Frame(content, bg=PANEL_BG)
         target_wrap.pack(fill="x", pady=(4, 0))
-        self.target_text = tk.Text(target_wrap, height=2, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 11), undo=True)
+        self.target_text = tk.Text(target_wrap, height=2, wrap="word", bd=1, relief="solid", highlightthickness=0, font=("Microsoft YaHei UI", 9), undo=True)
         target_scroll = ttk.Scrollbar(target_wrap, orient="vertical", command=self.target_text.yview)
         self.target_text.configure(yscrollcommand=target_scroll.set)
         self.target_text.grid(row=0, column=0, sticky="nsew")
@@ -694,13 +842,14 @@ class ToolkitApp:
         target_wrap.grid_rowconfigure(0, weight=0)
         target_wrap.grid_columnconfigure(0, weight=1)
         buttons = tk.Frame(content, bg=PANEL_BG)
-        buttons.pack(fill="x", pady=(12, 0))
-        ttk.Button(buttons, text="更新当前条目", command=self.update_translation_target, style="Primary.TButton", width=10).pack(side="left")
-        ttk.Button(buttons, text="复制原文", command=self.copy_source_to_target, width=8).pack(side="left", padx=(6, 0))
-        ttk.Button(buttons, text="清空", command=self._clear_target_editor, width=6).pack(side="left", padx=(6, 0))
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="更新", command=self.update_translation_target, style="Primary.TButton", width=6).pack(side="left")
+        ttk.Button(buttons, text="复制原文", command=self.copy_source_to_target, width=7).pack(side="left", padx=(5, 0))
+        ttk.Button(buttons, text="清空", command=self._clear_target_editor, width=5).pack(side="left", padx=(5, 0))
+        return
 
-        ai = tk.LabelFrame(content, text="翻译服务", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
-        ai.pack(fill="x", pady=(18, 0))
+        ai = tk.LabelFrame(content, text="翻译服务", bg=PANEL_BG, fg=TEXT_MAIN, padx=8, pady=8)
+        ai.pack(fill="x", pady=(10, 0))
         ai.grid_columnconfigure(1, weight=1)
         tk.Label(ai, text="翻译渠道", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
         channel_box = ttk.Combobox(ai, textvariable=self.translation_channel_var, values=("AI 翻译", "百度 API 翻译"), state="readonly", width=18)
@@ -711,7 +860,7 @@ class ToolkitApp:
         self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.ai_settings_frame.grid_columnconfigure(1, weight=1)
         tk.Label(self.ai_settings_frame, text="AI 厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA"), state="readonly", width=20)
+        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API"), state="readonly", width=20)
         provider_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         provider_box.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
         self.ai_base_url_label = tk.Label(self.ai_settings_frame, text="Base URL", bg=PANEL_BG, fg=TEXT_MUTED)
@@ -759,21 +908,122 @@ class ToolkitApp:
         ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton", width=12).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.ai_progress = ttk.Progressbar(ai, variable=self.ai_progress_var, maximum=100)
         self.ai_progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        tk.Label(ai, textvariable=self.ai_status_var, bg=PANEL_BG, fg=TEXT_MUTED, wraplength=340, justify="left").grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self._refresh_translation_channel_ui()
+        self._refresh_ai_base_url_visibility(self.ai_provider_var.get().strip() or "OpenAI")
+
+    def _build_translation_config_view(self, parent: tk.Frame) -> tk.Frame:
+        frame = tk.Frame(parent, bg=APP_BG)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+        panel = self._create_panel(frame)
+        panel.grid(row=0, column=0, sticky="nsew")
+        canvas = tk.Canvas(panel, bg=PANEL_BG, bd=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(panel, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        content = tk.Frame(canvas, bg=PANEL_BG, padx=18, pady=18)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def sync_scrollregion(_event: object | None = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window_id, width=max(1, canvas.winfo_width()))
+
+        content.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(-1 if event.delta > 0 else 1, "units"))
+        self._build_translation_service_panel(content)
+        return frame
+
+    def _build_translation_service_panel(self, content: tk.Frame) -> None:
+        tk.Label(content, text="翻译配置", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tk.Label(content, textvariable=self.ai_status_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=720).pack(fill="x", pady=(8, 10))
+        ai = tk.LabelFrame(content, text="翻译服务", bg=PANEL_BG, fg=TEXT_MAIN, padx=12, pady=12)
+        ai.pack(fill="x")
+        ai.grid_columnconfigure(1, weight=1)
+        tk.Label(ai, text="翻译渠道", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        channel_box = ttk.Combobox(ai, textvariable=self.translation_channel_var, values=("AI 翻译", "百度 API 翻译"), state="readonly", width=18)
+        channel_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        channel_box.bind("<<ComboboxSelected>>", self._on_translation_channel_change)
+
+        self.ai_settings_frame = tk.Frame(ai, bg=PANEL_BG)
+        self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.ai_settings_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(self.ai_settings_frame, text="AI 厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API"), state="readonly", width=20)
+        provider_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        provider_box.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
+        self.ai_base_url_label = tk.Label(self.ai_settings_frame, text="Base URL", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_base_url_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.ai_base_url_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_base_url_var)
+        self.ai_base_url_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.xiaomi_plan_label = tk.Label(self.ai_settings_frame, text="小米类型", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.xiaomi_plan_label.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.xiaomi_plan_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.xiaomi_plan_type_var, values=("Token Plan", "普通 API Key"), state="readonly", width=18)
+        self.xiaomi_plan_box.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.xiaomi_plan_box.bind("<<ComboboxSelected>>", self._on_xiaomi_cluster_change)
+        self.xiaomi_cluster_label = tk.Label(self.ai_settings_frame, text="小米集群", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.xiaomi_cluster_label.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.xiaomi_cluster_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.xiaomi_cluster_var, values=("中国集群", "新加坡集群", "欧洲集群"), state="readonly", width=18)
+        self.xiaomi_cluster_box.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.xiaomi_cluster_box.bind("<<ComboboxSelected>>", self._on_xiaomi_cluster_change)
+        self.ai_api_key_label = tk.Label(self.ai_settings_frame, text="API Key", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_api_key_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*").grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_model_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_model_var, values=self._ai_model_options(), state="normal", width=24)
+        self.ai_model_label = tk.Label(self.ai_settings_frame, text="模型", bg=PANEL_BG, fg=TEXT_MUTED)
+        self.ai_model_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        self.ai_model_box.grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        tk.Label(self.ai_settings_frame, text="并行厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=6, column=0, sticky="nw", pady=(8, 0))
+        self.ai_parallel_frame = tk.Frame(self.ai_settings_frame, bg=PANEL_BG)
+        self.ai_parallel_frame.grid(row=6, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_parallel_hint_var = tk.StringVar(value="")
+        self.ai_parallel_hint = tk.Label(self.ai_settings_frame, textvariable=self.ai_parallel_hint_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=520)
+        self.ai_parallel_hint.grid(row=7, column=1, sticky="ew", padx=(8, 0))
+        tk.Label(self.ai_settings_frame, text="AI 并发数", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=8, column=0, sticky="w", pady=(10, 0))
+        concurrency_row = tk.Frame(self.ai_settings_frame, bg=PANEL_BG)
+        concurrency_row.grid(row=8, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
+        concurrency_row.grid_columnconfigure(0, weight=1)
+        ttk.Scale(concurrency_row, from_=1, to=12, variable=self.ai_concurrency_var, command=lambda _value: self._sync_ai_concurrency_label()).grid(row=0, column=0, sticky="ew")
+        self.ai_concurrency_label_var = tk.StringVar(value="")
+        tk.Label(concurrency_row, textvariable=self.ai_concurrency_label_var, bg=PANEL_BG, fg=TEXT_MUTED, width=6).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._sync_ai_concurrency_label()
+        self._refresh_parallel_provider_checks()
+
+        self.baidu_settings_frame = tk.Frame(ai, bg=PANEL_BG)
+        self.baidu_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.baidu_settings_frame.grid_columnconfigure(1, weight=1)
+        tk.Label(self.baidu_settings_frame, text="百度 AppID", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.baidu_settings_frame, textvariable=self.baidu_appid_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        tk.Label(self.baidu_settings_frame, text="百度 Secret", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(self.baidu_settings_frame, textvariable=self.baidu_secret_var, show="*").grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        action_row = tk.Frame(ai, bg=PANEL_BG)
+        action_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        action_row.grid_columnconfigure((0, 1), weight=1)
+        self.ai_provider_link = ttk.Button(action_row, text="打开 API 页面", command=self.open_ai_provider_page)
+        self.ai_provider_link.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(action_row, text="保存设置", command=self.save_ai_settings).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(ai, text="一键翻译全部", command=self.translate_with_ai, style="Primary.TButton", width=12).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.ai_progress = ttk.Progressbar(ai, variable=self.ai_progress_var, maximum=100)
+        self.ai_progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self._refresh_translation_channel_ui()
         self._refresh_ai_base_url_visibility(self.ai_provider_var.get().strip() or "OpenAI")
 
     def _build_data_view(self, parent: tk.Frame) -> tk.Frame:
         frame = tk.Frame(parent, bg=APP_BG)
-        frame.grid_columnconfigure(0, weight=2)
-        frame.grid_columnconfigure(1, weight=5)
+        frame.grid_columnconfigure(0, weight=6, uniform="data_columns")
+        frame.grid_columnconfigure(1, weight=4, uniform="data_columns")
         frame.grid_rowconfigure(0, weight=1)
         left = self._create_panel(frame)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         right = self._create_panel(frame)
         right.grid(row=0, column=1, sticky="nsew")
+        frame._left_panel = left  # type: ignore[attr-defined]
+        frame._right_panel = right  # type: ignore[attr-defined]
         self._build_data_list(left)
         self._build_data_editor(right)
+        self._track_wraplength(left, 360, 240)
+        self._track_wraplength(right, 360, 240)
         return frame
 
     def _build_data_list(self, parent: tk.Frame) -> None:
@@ -785,6 +1035,7 @@ class ToolkitApp:
         ttk.Button(head, text="刷新数据", command=self.load_data_records, width=7).pack(side="left", padx=(12, 0))
         ttk.Button(head, text="保存修改", command=self.save_selected_record, style="Primary.TButton", width=8).pack(side="right")
         self._build_filter_row(content, self.data_filter_var, self._refresh_data_tree)
+        self._track_wraplength(content, 420, 240)
 
         category_wrap = tk.Frame(content, bg=PANEL_BG)
         category_wrap.pack(fill="x", pady=(0, 10))
@@ -837,8 +1088,12 @@ class ToolkitApp:
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         right = self._create_panel(frame)
         right.grid(row=0, column=1, sticky="nsew")
+        frame._left_panel = left  # type: ignore[attr-defined]
+        frame._right_panel = right  # type: ignore[attr-defined]
         self._build_save_left(left)
         self._build_save_right(right)
+        self._track_wraplength(left, 360, 240)
+        self._track_wraplength(right, 360, 240)
         return frame
 
     def _build_save_left(self, parent: tk.Frame) -> None:
@@ -864,35 +1119,6 @@ class ToolkitApp:
         tk.Label(content, textvariable=self.auto_backup_status_var, bg=PANEL_BG, fg=TEXT_MUTED, justify="left", wraplength=320).pack(fill="x", pady=(6, 0))
         ttk.Button(content, text="安装实时组件并连接", command=self.install_bridge_and_connect, style="Primary.TButton", width=14).pack(fill="x", pady=(12, 0))
         ttk.Button(content, text="刷新实时状态", command=self.refresh_runtime_state, width=12).pack(fill="x", pady=(8, 0))
-
-        gold = tk.LabelFrame(content, text="常用修改", bg=PANEL_BG, fg=TEXT_MAIN, padx=10, pady=10)
-        gold.pack(fill="x", pady=(18, 0))
-        tk.Label(gold, text="金币", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        ttk.Entry(gold, textvariable=self.save_gold_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        ttk.Button(gold, text="999999", command=lambda: self.quick_set_gold(999999), width=8).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        tk.Label(gold, text="批量物品数量", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(gold, textvariable=self.item_amount_var).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Button(gold, text="全物品/装备", command=self.quick_max_items, width=10).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Checkbutton(gold, text="穿墙", variable=self.player_through_var, command=self.apply_player_through).grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(gold, text="上帝模式", variable=self.god_mode_var, command=self.apply_runtime_options).grid(row=4, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        ttk.Checkbutton(gold, text="自动战斗", variable=self.auto_battle_var, command=self.apply_runtime_options).grid(row=5, column=0, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(gold, text="解锁 CG", variable=self.unlock_cg_var, command=self.apply_runtime_options).grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        ttk.Button(gold, text="战斗胜利", command=lambda: self.runtime_battle_result("win")).grid(row=6, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(gold, text="逃跑", command=lambda: self.runtime_battle_result("escape")).grid(row=6, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-        tk.Label(gold, text="游戏/战斗/移动倍率", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        speed_row = tk.Frame(gold, bg=PANEL_BG)
-        speed_row.grid(row=8, column=0, columnspan=2, sticky="ew")
-        for label, var in (("游戏", self.game_speed_var), ("移动", self.move_speed_var), ("战斗", self.battle_speed_var)):
-            tk.Label(speed_row, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
-            ttk.Entry(speed_row, textvariable=var, width=4).pack(side="left", padx=(4, 8))
-        utility_row = tk.Frame(gold, bg=PANEL_BG)
-        utility_row.grid(row=10, column=0, columnspan=2, sticky="ew")
-        for label, var in (("经验", self.exp_rate_var), ("自动保存", self.auto_save_interval_var), ("字体", self.font_size_var)):
-            tk.Label(utility_row, text=label, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left")
-            ttk.Entry(utility_row, textvariable=var, width=5).pack(side="left", padx=(4, 8))
-        ttk.Button(utility_row, text="经验倍率到全队", command=self.apply_exp_rate_to_party).pack(side="left", padx=(8, 0))
-        tk.Label(gold, text="修改金币、倍率、字体等数值后会自动应用；物品数量请在右侧列表双击修改。", bg=PANEL_BG, fg=TEXT_MUTED, wraplength=300, justify="left").grid(row=12, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        gold.grid_columnconfigure(1, weight=1)
 
     def _build_save_right(self, parent: tk.Frame) -> None:
         content = tk.Frame(parent, bg=PANEL_BG, padx=16, pady=16)
@@ -928,6 +1154,10 @@ class ToolkitApp:
         tk.Label(row, text="地图查看", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(side="left")
         ttk.Button(row, text="刷新地图", command=self.load_maps).pack(side="left", padx=(12, 0))
         tk.Label(row, textvariable=self.map_status_var, bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(12, 0))
+        tk.Label(row, text="地图缩放", bg=PANEL_BG, fg=TEXT_MUTED).pack(side="left", padx=(18, 4))
+        self.map_zoom_box = ttk.Combobox(row, textvariable=self.map_zoom_var, values=("50%", "75%", "100%", "125%", "150%", "200%"), state="readonly", width=7)
+        self.map_zoom_box.pack(side="left")
+        self.map_zoom_box.bind("<<ComboboxSelected>>", lambda _event: self._draw_map_canvas())
         left = self._create_panel(frame)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         right = self._create_panel(frame)
@@ -963,6 +1193,7 @@ class ToolkitApp:
         right_content.pack(fill="both", expand=True)
         tk.Label(right_content, text="地图与事件", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         self._build_filter_row(right_content, self.map_filter_var, self._refresh_map_tree)
+        self._track_wraplength(right_content, 420, 240)
         wrap = tk.Frame(right_content, bg=PANEL_BG)
         wrap.pack(fill="both", expand=True)
         columns = ("id", "name", "display", "size", "tileset", "events", "file")
@@ -1048,11 +1279,13 @@ class ToolkitApp:
         return tk.Frame(parent, bg=PANEL_BG, bd=1, relief="solid", highlightthickness=0)
 
     def _show_section(self, section: str) -> None:
+        view_section = {"extract": "translation"}.get(section, section)
         self.current_section = section
+        self._sync_header_visibility()
         for key, btn in self.nav_buttons.items():
             btn.configure(bg=NAV_ACTIVE if key == section else NAV_BG)
         for key, view in self._section_views.items():
-            if key == section:
+            if key == view_section:
                 view.grid(row=0, column=0, sticky="nsew")
             else:
                 view.grid_remove()
@@ -1061,15 +1294,30 @@ class ToolkitApp:
                 self._set_status_text(f"当前项目：{self.project.root}\n可直接切换到翻译工作台或数据编辑器。")
             else:
                 self._set_status_text("请先选择游戏 exe，加载后会自动加入游戏库。")
-        elif section == "translation":
+        elif section == "overview":
+            if not self.project:
+                self._set_status_text("请先在游戏库加载项目，再查看项目总览。")
+            else:
+                self._set_status_text(f"项目总览已打开：{self.project.root.name}")
+        elif section in {"translation", "extract"}:
             if not self.project:
                 self._set_status_text("请先加载项目，再进入翻译工作台。")
             elif self._supports_full_editing(self.project):
-                if not self.translation_entries:
-                    self.extract_texts(silent=True)
-                self._set_status_text(f"翻译工作台已打开，当前共有 {len(self.translation_entries)} 条可编辑文本。")
+                if section == "extract":
+                    self.translation_scope_var.set("仅对白/选项")
+                    self._sync_translation_scope_button_text()
+                    self._set_status_text("正在重新读取游戏目录并提取文本，不再自动套用旧缓存。")
+                    self.extract_texts(silent=False)
+                else:
+                    if self.translation_scope_var.get() == "全部文本":
+                        self.translation_scope_var.set("仅对白/选项")
+                    self._sync_translation_scope_button_text()
+                    self._refresh_translation_tree()
+                    self._set_status_text(f"翻译工作台已打开，当前共有 {len(self.translation_entries)} 条可编辑文本。没有文本时请先点击“提取”。")
             else:
                 self._set_status_text(f"{self.project.engine} 当前仅识别项目与启动入口，完整翻译待后续兼容。")
+        elif section == "translate_config":
+            self._set_status_text("翻译配置已打开。API Key 会保存到当前用户配置目录，不会写入发布包。")
         elif section == "data":
             if not self.project:
                 self._set_status_text("请先加载项目，再进入数据编辑器。")
@@ -1184,6 +1432,7 @@ class ToolkitApp:
         self.engine_var.set(self.project.engine)
         self.support_var.set(self._support_status_for(self.project))
         self.run_status_var.set("未启动")
+        self._sync_header_launch_button()
         self._refresh_engine_specific_navigation()
         if self._supports_full_editing(self.project):
             self.translation_status_var.set("待加载")
@@ -1191,8 +1440,7 @@ class ToolkitApp:
             self.save_status_var.set("待刷新")
             self.map_status_var.set("待刷新")
             self.root.after(120, lambda: self._prepare_and_extract_texts())
-            self.root.after(260, lambda: self.load_data_records(silent=True))
-            self.root.after(420, lambda: self.refresh_save_slots(silent=True))
+            # 数据和存档延迟到进入对应页面再加载，保持载入项目时更轻快。
         else:
             self.translation_entries = []
             self.translation_map = {}
@@ -1279,6 +1527,7 @@ class ToolkitApp:
     def _finish_prepare_and_extract(self, stats: dict | None, error: Exception | None) -> None:
         if error is not None:
             self._set_status_text(f"Ren'Py 资源准备失败：{error}")
+            self.ai_progress_var.set(0)
             self.extract_texts(silent=True)
             return
         stats = stats or {}
@@ -1287,6 +1536,7 @@ class ToolkitApp:
             "正在继续提取文本……"
         )
         self.ai_status_var.set("Ren'Py 资源准备完成，正在提取文本……")
+        self.ai_progress_var.set(0)
         self.extract_texts(silent=True)
 
     def extract_texts(self, silent: bool = False, allow_runtime_extract: bool = True) -> None:
@@ -1333,12 +1583,14 @@ class ToolkitApp:
         self._stop_activity()
         self.translation_entries = entries
         self.translation_map = {entry.entry_id: entry for entry in self.translation_entries}
-        self._load_project_translation_cache(silent=True)
         self.translation_status_var.set(f"{len(self.translation_entries)} 条")
         if self.project.engine == "Ren'Py":
-            self.translation_scope_var.set("全部文本")
+            self.translation_scope_var.set("仅对白/选项")
+            self._sync_translation_scope_button_text()
+        self._load_project_translation_cache()
         self._refresh_translation_file_filter()
         self._refresh_translation_tree()
+        self._select_first_translation_entry()
         should_runtime_extract = (
             allow_runtime_extract
             and self.project.engine == "Ren'Py"
@@ -1362,6 +1614,18 @@ class ToolkitApp:
             self._set_status_text(f"已提取 {len(self.translation_entries)} 条文本。")
         self._save_project_translation_cache()
 
+    def _select_first_translation_entry(self) -> None:
+        if not hasattr(self, "translation_tree"):
+            return
+        item_ids = [item for item in self.translation_tree.get_children() if item != "__notice__"]
+        if not item_ids:
+            return
+        first = item_ids[0]
+        self.translation_tree.selection_set(first)
+        self.translation_tree.focus(first)
+        self.translation_tree.see(first)
+        self._on_translation_select(None)
+
     def _start_renpy_runtime_extraction(self, service: RenPyService, auto_trigger: bool = False) -> None:
         if self._renpy_extracting:
             self._set_status_text("Ren'Py 深度提取已经在进行中，请在窗口选择器中刷新并确认真正的游戏窗口。")
@@ -1379,10 +1643,10 @@ class ToolkitApp:
         self._set_translation_notice(notice)
         self._renpy_extracting = True
         self.ai_progress_var.set(5)
-        self.ai_status_var.set("Ren'Py 深度提取准备中：正在启动游戏，请在窗口选择器中确认真正的游戏窗口。")
+        self.ai_status_var.set("Ren'Py 深度提取准备中：正在启动游戏并等待导出文本。")
         self._set_status_text(
             f"已安装 Ren'Py 深度提取脚本：{extractor.name}\n"
-            "正在启动游戏并打开窗口选择器。请等游戏真正进入主窗口后，点击刷新并确认选择。"
+            "正在启动游戏并等待引擎导出文本。窗口选择器只是辅助确认；即使跳过也会继续等待导出文件。"
         )
         if not self._choose_or_start_renpy_extract_target():
             self._renpy_extracting = False
@@ -1397,7 +1661,7 @@ class ToolkitApp:
                 self.run_status_var.set("已启动")
                 self._set_status_text(
                     f"已启动游戏用于文本提取：{launcher.name}\n"
-                    "窗口选择器已经打开。等加载动画结束、真正游戏窗口出现后，点击刷新并确认选择。"
+                    "正在等待 Ren'Py 写出文本。可在窗口选择器中确认游戏窗口，也可以直接跳过继续等待。"
                 )
             except Exception as exc:
                 self._set_status_text(f"Ren'Py 深度提取需要启动游戏，但启动失败：{exc}")
@@ -1410,10 +1674,9 @@ class ToolkitApp:
             self._set_status_text(f"已选择游戏窗口：{selected.get('title', '')}\n现在开始等待 Ren'Py 导出游戏文本。")
             self._begin_renpy_extract_wait()
             return True
-        self._renpy_extracting = False
-        self._close_renpy_extract_process()
-        self._set_status_text("已取消窗口选择，暂不开始深度提取。可在翻译工作台点击“提取文本”重新开始。")
-        return False
+        self._set_status_text("未选择窗口，已继续等待 Ren'Py 导出文本。请让游戏启动到标题画面或主菜单。")
+        self._begin_renpy_extract_wait()
+        return True
 
     def _begin_renpy_extract_wait(self) -> None:
         self._renpy_extracting = True
@@ -1561,7 +1824,7 @@ class ToolkitApp:
         dialog.geometry("620x320")
         tk.Label(
             dialog,
-            text="游戏正在启动。等真正的游戏窗口出现后点“刷新窗口”，选中它，再确认开始提取文本。",
+            text="游戏正在启动。可选中真正的游戏窗口以便工具结束后自动关闭它；如果看不到窗口，可点“跳过并继续等待”。",
             bg=PANEL_BG,
             fg=TEXT_MAIN,
             font=("Microsoft YaHei UI", 11, "bold"),
@@ -1599,7 +1862,7 @@ class ToolkitApp:
         buttons.pack(fill="x", padx=14, pady=12)
         ttk.Button(buttons, text="确认选择并开始提取", command=choose, style="Primary.TButton").pack(side="left")
         ttk.Button(buttons, text="刷新窗口", command=refresh).pack(side="left", padx=8)
-        ttk.Button(buttons, text="取消", command=skip).pack(side="left", padx=8)
+        ttk.Button(buttons, text="跳过并继续等待", command=skip).pack(side="left", padx=8)
         refresh()
         self.root.wait_window(dialog)
         return result
@@ -1647,7 +1910,7 @@ class ToolkitApp:
         self.translation_entries = list(self.translation_map.values())
         self.translation_status_var.set(f"{len(self.translation_entries)} 条")
         self._refresh_translation_file_filter()
-        self._refresh_translation_tree()
+        self._schedule_translation_tree_refresh()
         self._save_project_translation_cache()
         if self.project:
             self._append_recent_task("导入翻译包", self.project.root, self.project.engine)
@@ -1696,7 +1959,7 @@ class ToolkitApp:
             translations = {
                 entry_id: entry
                 for entry_id, entry in self.translation_map.items()
-                if entry.target.strip() and entry.category not in {"system", "plugin"}
+                if entry.target.strip() and (project.engine == "Ren'Py" or entry.category not in {"system", "plugin"})
             }
             if not translations:
                 self.root.after(0, lambda: messagebox.showinfo("提示", "当前没有填写译文。请先手动编辑、导入翻译包，或使用 AI 一键翻译。"))
@@ -1713,6 +1976,12 @@ class ToolkitApp:
             time.sleep(0)
             start = time.time()
             updated = service.apply_translations(translations)
+            if updated <= 0:
+                self.root.after(0, self._clear_project_translation_state)
+                raise RuntimeError(
+                    "没有任何文本被写入游戏文件。可能是当前译文来自旧提取结果、游戏数据已变化，或译文条目的路径无法匹配当前游戏。"
+                    "工具已自动清空当前项目的旧翻译缓存和工作痕迹。请重新点击“提取文本”，再重新翻译/导入后嵌入。"
+                )
             elapsed = time.time() - start
             self.root.after(0, lambda u=updated, e=elapsed: self.ai_status_var.set(f"嵌入完成：{u} 处（耗时 {e:.1f} 秒）"))
             self.root.after(0, lambda: self.ai_progress_var.set(90))
@@ -1739,19 +2008,143 @@ class ToolkitApp:
             self.embed_button.configure(state="normal")
         self.root.after(500, self.refresh_backups)
         self._append_recent_task("嵌入翻译", self.project.root, self.project.engine)
-        self._set_status_text(f"已将翻译嵌入游戏数据：{updated} 处。原文件已自动备份。")
-        messagebox.showinfo("完成", f"已将翻译嵌入游戏数据：{updated} 处。\n原文件已自动备份。")
+        restart_hint = "如果游戏已经打开，请完全关闭游戏后重新启动；已经运行中的游戏通常不会重新读取刚写入的数据文件。"
+        local_report = self._local_embed_validation_report(project)
+        detail = f"已将翻译嵌入游戏数据：{updated} 处。原文件已自动备份。\n{restart_hint}\n\n本地校验：{local_report}"
+        self._set_status_text(detail)
+        messagebox.showinfo("完成", detail)
+        if messagebox.askyesno("AI 抽样校验", "是否用当前配置的大模型抽样校验嵌入后的文本？\n\n会抽取少量译文，重点检查标点、控制符、引号和可能导致脚本报错的问题。"):
+            self._start_embed_ai_validation(project)
+
+    def _local_embed_validation_report(self, project: ProjectInfo) -> str:
+        issues: list[str] = []
+        for entry in self.translation_entries:
+            if not entry.target.strip():
+                continue
+            if not self._translation_preserves_control_tokens(entry.source, entry.target):
+                issues.append(f"{entry.file}: 控制符/占位符不一致")
+            if not self._balanced_translation_punctuation(entry.target):
+                issues.append(f"{entry.file}: 括号或引号疑似不成对")
+            if len(issues) >= 5:
+                break
+        try:
+            if project.engine == "RPG Maker MV/MZ" and project.data_dir:
+                checked = 0
+                for json_path in sorted(project.data_dir.glob("*.json")):
+                    if json_path.name not in {"Actors.json", "Armors.json", "Classes.json", "Enemies.json", "Items.json", "MapInfos.json", "Skills.json", "States.json", "Weapons.json", "System.json", "CommonEvents.json"} and not json_path.stem.startswith("Map"):
+                        continue
+                    try:
+                        load_json(json_path)
+                        checked += 1
+                    except Exception as exc:
+                        issues.append(f"{json_path.name}: {exc}")
+                        if len(issues) >= 5:
+                            break
+                return f"JSON 可读取，检查 {checked} 个文件。" if not issues else "发现可能问题：" + "；".join(issues[:5])
+            if project.engine == "Ren'Py" and project.scripts_dir:
+                checked = 0
+                for path in sorted(project.scripts_dir.glob("zz_rpgrtl_*.rpy")):
+                    text = path.read_text(encoding="utf-8")
+                    checked += 1
+                    if text.count('"""') % 2 != 0 or text.count("'''") % 2 != 0:
+                        issues.append(f"{path.name}: 三引号数量异常")
+                return f"生成脚本可读取，检查 {checked} 个文件。" if not issues else "发现可能问题：" + "；".join(issues[:5])
+        except Exception as exc:
+            return f"校验失败：{exc}"
+        return "未发现明显文件结构问题。"
+
+    @staticmethod
+    def _balanced_translation_punctuation(text: str) -> bool:
+        pairs = (("(", ")"), ("[", "]"), ("{", "}"), ("（", "）"), ("「", "」"), ("『", "』"), ("《", "》"))
+        for left, right in pairs:
+            if text.count(left) != text.count(right):
+                return False
+        for quote in ('"', "'"):
+            if text.count(quote) % 2 != 0:
+                return False
+        return True
+
+    def _start_embed_ai_validation(self, project: ProjectInfo) -> None:
+        samples = self._embed_validation_samples(limit=32)
+        if not samples:
+            messagebox.showinfo("AI 校验", "没有可用于抽样校验的译文。")
+            return
+        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
+        if provider == "百度翻译":
+            messagebox.showinfo("AI 校验", "百度翻译接口不适合做质量校验，请切换到 AI 翻译厂商后再试。")
+            return
+        api_key = self.ai_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("缺少 API Key", "请先在翻译配置里填写 AI API Key。")
+            return
+        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+        base_url = self.ai_base_url_var.get().strip()
+        self._start_activity()
+        self.ai_status_var.set("正在进行 AI 抽样校验...")
+        threading.Thread(target=self._embed_ai_validation_worker, args=(samples, provider, api_key, model, base_url, project), daemon=True).start()
+
+    def _embed_validation_samples(self, limit: int = 32) -> list[TranslationEntry]:
+        entries = [entry for entry in self.translation_entries if entry.source.strip() and entry.target.strip() and self._translation_preserves_control_tokens(entry.source, entry.target)]
+        if len(entries) <= limit:
+            return entries
+        step = max(1, len(entries) // limit)
+        return entries[::step][:limit]
+
+    def _embed_ai_validation_worker(self, samples: list[TranslationEntry], provider: str, api_key: str, model: str, base_url: str, project: ProjectInfo) -> None:
+        try:
+            result = self._request_embed_validation(samples, provider, api_key, model, base_url)
+        except Exception as exc:
+            self.root.after(0, lambda err=exc: messagebox.showerror("AI 校验失败", str(err)))
+            self.root.after(0, self._stop_activity)
+            return
+        def finish() -> None:
+            self._stop_activity()
+            self.ai_status_var.set("AI 抽样校验完成。")
+            self._set_status_text(f"AI 抽样校验完成：\n{result}")
+            messagebox.showinfo("AI 抽样校验", result)
+        self.root.after(0, finish)
+
+    def _request_embed_validation(self, samples: list[TranslationEntry], provider: str, api_key: str, model: str, base_url: str) -> str:
+        system_prompt = (
+            "你是游戏本地化 QA。检查译文是否可能导致游戏脚本或显示报错，重点关注标点、引号、括号、控制符、变量占位符是否破坏。"
+            "只输出合法 JSON 对象，格式为 {\"report\":\"简短中文报告\"}。如果没有明显问题，report 写：未发现明显高风险问题。"
+        )
+        user_prompt = json.dumps(
+            {
+                "task": "qa_embedded_game_translation_samples",
+                "rules": ["不要重新翻译", "检查标点/引号/括号/控制符/变量占位符", "指出具体 id 和风险", "只返回 JSON 对象"],
+                "samples": [
+                    {"id": entry.entry_id, "file": entry.file, "source": entry.source, "target": entry.target}
+                    for entry in samples
+                ],
+            },
+            ensure_ascii=False,
+        )
+        if provider == "DeepSeek":
+            raw = self._request_deepseek_translations(api_key, model, system_prompt, user_prompt)
+        elif provider == "Xiaomi Token Plan":
+            raw = self._request_xiaomi_token_plan_translations(api_key, self._normalize_xiaomi_model(model), system_prompt, user_prompt, base_url)
+        elif provider == "Doubao":
+            raw = self._request_doubao_translations(api_key, self._normalize_doubao_model(model), system_prompt, user_prompt)
+        elif provider == "GLM":
+            raw = self._request_glm_translations(api_key, model, system_prompt, user_prompt)
+        elif provider == "NVIDIA":
+            raw = self._request_nvidia_translations(api_key, model, system_prompt, user_prompt, base_url)
+        else:
+            raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt, base_url)
+        report = str(raw.get("report", "")).strip()
+        return report or "\n".join(f"{key}: {value}" for key, value in raw.items()) or "未发现明显高风险问题。"
 
     def load_runtime_translation(self) -> None:
         if not self.project:
             messagebox.showerror("错误", "请先加载项目。")
             return
+        if self.project.engine == "Ren'Py":
+            self._load_renpy_runtime_translation()
+            return
         targets = {entry.source: entry.target for entry in self.translation_map.values() if entry.source.strip() and entry.target.strip()}
         if not targets:
             messagebox.showinfo("提示", "当前没有可加载的译文。请先导入翻译包、手动编辑或使用 AI 翻译。")
-            return
-        if self.project.engine == "Ren'Py":
-            self._load_renpy_runtime_translation()
             return
         try:
             self._ensure_runtime_bridge_matches_project()
@@ -1760,32 +2153,188 @@ class ToolkitApp:
             messagebox.showerror("加载失败", self._runtime_error_message(exc))
             return
         self.runtime_connected = True
-        self.runtime_status_var.set(f"实时翻译已加载：{result.get('count', len(targets))} 条")
+        loaded_count = int(result.get("count", len(targets)) or 0)
+        applied_count = int(result.get("applied", 0) or 0)
+        status = f"实时翻译已加载：{loaded_count} 条"
+        if applied_count:
+            status += f"，已刷新当前已载入文本 {applied_count} 处"
+        self.runtime_status_var.set(status)
         self._save_project_translation_cache()
-        self._set_status_text("已把翻译表加载到当前运行中的游戏。新的文本绘制会使用译文；已绘制在屏幕上的旧文字可能需要刷新窗口/推进对话。")
+        detail = (
+            f"已把翻译表加载到当前运行中的游戏：{loaded_count} 条。\n"
+            f"游戏端已立即刷新当前已载入文本 {applied_count} 处。"
+        )
+        if applied_count == 0:
+            detail += "\n如果当前画面没有变化，请推进对话、切换一次地图/菜单，或从本工具重新启动游戏让实时组件加载最新补丁。"
+        else:
+            detail += "\n已绘制在屏幕上的少量旧文字仍可能需要推进对话或刷新窗口。"
+        self._set_status_text(detail)
+        messagebox.showinfo("已加载", detail)
 
     def launch_translated_runtime(self) -> None:
         self.load_runtime_translation()
 
     def _load_renpy_runtime_translation(self) -> None:
         service = self._get_service()
-        if not hasattr(service, "build_runtime_translation_patch"):
-            messagebox.showinfo("提示", "当前 Ren'Py 项目暂不支持运行时翻译补丁。")
+        if not hasattr(service, "install_live_translation_bridge") or not hasattr(service, "write_live_translation_table"):
+            messagebox.showinfo("提示", "当前 Ren'Py 项目暂不支持实时翻译桥接。")
             return
+        translations = dict(self.translation_map)
+        self._start_activity()
+        self.runtime_status_var.set("正在生成 Ren'Py 翻译文件...")
+        self._set_status_text("正在后台写入 Ren'Py 原生翻译文件和实时桥接，请稍候。")
+        threading.Thread(target=self._renpy_runtime_translation_worker, args=(service, translations), daemon=True).start()
+
+    def _renpy_runtime_translation_worker(self, service: object, translations: dict[str, TranslationEntry]) -> None:
         try:
-            patch_path, count = service.build_runtime_translation_patch(self.translation_map)
+            native_count = service.apply_translations(translations) if hasattr(service, "apply_translations") else 0
+            bridge_path = service.install_live_translation_bridge(clear_seen=True)
+            table_path, count = service.write_live_translation_table(translations)
         except Exception as exc:
-            messagebox.showerror("加载失败", f"生成 Ren'Py 临时翻译补丁失败：{exc}")
+            self.root.after(0, lambda err=exc: self._handle_renpy_runtime_translation_error(err))
             return
+        self.root.after(0, lambda bp=bridge_path, tp=table_path, nc=native_count, c=count: self._finish_renpy_runtime_translation(bp, tp, nc, c))
+
+    def _handle_renpy_runtime_translation_error(self, exc: Exception) -> None:
+        self._stop_activity()
+        self.runtime_status_var.set("Ren'Py 翻译加载失败")
+        messagebox.showerror("加载失败", f"生成 Ren'Py 翻译文件或实时桥接失败：{exc}")
+
+    def _finish_renpy_runtime_translation(self, bridge_path: Path, table_path: Path, native_count: int, count: int) -> None:
+        self._stop_activity()
         self._save_project_translation_cache()
-        self._append_recent_task("加载运行时翻译", self.project.root, self.project.engine)
-        self._set_status_text(f"已生成 Ren'Py 临时翻译补丁：{patch_path.name}，共 {count} 条。\n正在启动游戏，启动后的文本会优先显示译文。")
+        self._append_recent_task("加载 Ren'Py 翻译", self.project.root, self.project.engine)
+        self.runtime_status_var.set(f"Ren'Py 翻译已准备：原生 {native_count} 条 / 实时 {count} 条")
+        self._set_status_text(
+            f"已写入 Ren'Py 原生翻译文件：{native_count} 条\n"
+            f"已安装 Ren'Py 实时桥接：{bridge_path.name}\n"
+            f"已写入实时翻译表：{table_path.name}，共 {count} 条。\n"
+            "正在启动游戏。优先由 Ren'Py 原生翻译系统加载译文，实时桥接仅作为调试和兜底。"
+        )
         self.launch_current_game()
         messagebox.showinfo(
             "已启动游戏",
-            f"已为 Ren'Py 生成临时翻译补丁并启动游戏：{count} 条。\n\n"
-            "这是临时加载方案；删除 game 目录中的 zz_rpgrtl_runtime_translation.rpy 后，游戏会恢复原文。",
+            f"已为 Ren'Py 写入原生翻译并启动游戏：原生 {native_count} 条，实时 {count} 条。\n\n"
+            "这会写入本工具生成的 tl/schinese 翻译文件、语言启动脚本和实时桥接脚本；原始脚本会先备份。\n"
+            "如果当前译文为 0 条，桥接仍会实时捕获游戏文本供调试查看。\n"
+            "如果当前画面没立刻变化，请确认已关闭旧游戏进程并由本工具重新启动。",
         )
+
+    def show_renpy_live_debug(self) -> None:
+        if not self.project:
+            messagebox.showerror("错误", "请先加载项目。")
+            return
+        if self.project.engine != "Ren'Py":
+            messagebox.showinfo("提示", "实时文本调试仅用于 Ren'Py 项目。")
+            return
+        self._refresh_renpy_live_debug_dialog()
+
+    def _refresh_renpy_live_debug_dialog(self, dialog: tk.Toplevel | None = None) -> None:
+        if not self.project or self.project.engine != "Ren'Py":
+            return
+        service = self._get_service()
+        if hasattr(service, "start_live_bridge_server"):
+            service.start_live_bridge_server(clear_events=False)
+        entries = service.read_live_debug_entries(300) if hasattr(service, "read_live_debug_entries") else []
+        if dialog is None:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Ren'Py 实时翻译调试")
+            dialog.geometry("920x520")
+            dialog.configure(bg=PANEL_BG)
+            dialog.transient(self.root)
+            header = tk.Frame(dialog, bg=PANEL_BG, padx=12, pady=10)
+            header.pack(fill="x")
+            tk.Label(
+                header,
+                text="显示 Ren'Py 对话/选项捕获、实时翻译队列状态和真正写入游戏桥接表的中文替换。",
+                bg=PANEL_BG,
+                fg=TEXT_MAIN,
+                justify="left",
+            ).pack(side="left", fill="x", expand=True)
+            ttk.Button(header, text="刷新", command=lambda d=dialog: self._refresh_renpy_live_debug_dialog(d), width=8).pack(side="right")
+            status_var = tk.StringVar(value="实时状态读取中...")
+            tk.Label(dialog, textvariable=status_var, bg=PANEL_BG, fg=TEXT_MUTED, anchor="w", padx=12).pack(fill="x", pady=(0, 6))
+            dialog._rpgrtl_status_var = status_var  # type: ignore[attr-defined]
+            columns = ("kind", "matched", "source", "displayed", "target")
+            tree = ttk.Treeview(dialog, columns=columns, show="headings", height=16)
+            for key, label, width in (("kind", "事件", 84), ("matched", "状态", 64), ("source", "捕获原文", 260), ("displayed", "显示前文本", 200), ("target", "替换中文", 260)):
+                tree.heading(key, text=label)
+                tree.column(key, width=width, stretch=True)
+            ybar = ttk.Scrollbar(dialog, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=ybar.set)
+            tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=(0, 12))
+            ybar.pack(side="right", fill="y", padx=(0, 12), pady=(0, 12))
+            dialog._rpgrtl_tree = tree  # type: ignore[attr-defined]
+        tree = getattr(dialog, "_rpgrtl_tree", None)
+        if tree is None:
+            return
+        status_var = getattr(dialog, "_rpgrtl_status_var", None)
+        if status_var is not None:
+            realtime_running = self._renpy_realtime_stop is not None and not self._renpy_realtime_stop.is_set()
+            cache_count = len(self._load_renpy_realtime_cache()) if self.project and self.project.engine == "Ren'Py" else 0
+            bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
+            bridge_count = int(bridge_status.get("translation_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+            seen_count = int(bridge_status.get("seen_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+            last_event = bridge_status.get("last_event", {}) if isinstance(bridge_status, dict) else {}
+            last_kind = str(last_event.get("kind", "") or "-") if isinstance(last_event, dict) else "-"
+            status_var.set(
+                f"实时后台：{'运行中' if realtime_running else '未启动'} | "
+                f"桥接表：{bridge_count} 条 | 实时缓存：{cache_count} 条 | 已见文本：{seen_count} 条 | 最新状态：{last_kind} | 日志：{_live_log_path().name}"
+            )
+        for item in tree.get_children():
+            tree.delete(item)
+        if not entries:
+            tree.insert("", "end", values=("等待", "无事件", "尚未捕获到文本。请使用顶部“实时游戏翻译”启动并推进 Ren'Py 对话/选项。", "", ""))
+            return
+        for payload in reversed(entries):
+            kind = str(payload.get("kind", "") or payload.get("event", ""))
+            source = str(payload.get("source", ""))
+            displayed = str(payload.get("displayed", ""))
+            target = str(payload.get("target", ""))
+            matched = "命中" if payload.get("matched") else "未命中"
+            if kind == "realtime_queued":
+                matched = "排队"
+            elif kind == "realtime_requesting":
+                matched = "请求中"
+            elif kind == "realtime_translated":
+                matched = "命中"
+            elif kind == "realtime_empty":
+                matched = "空返回"
+            elif kind == "realtime_failed":
+                matched = "失败"
+            elif kind == "realtime_started":
+                matched = "已启动"
+            elif kind == "realtime_scan":
+                matched = "扫描"
+            elif kind == "realtime_cached_applied":
+                matched = "缓存已应用"
+            elif kind == "realtime_cached_variant":
+                matched = "缓存变体命中"
+            elif kind == "realtime_idle":
+                matched = "空闲"
+            elif kind == "realtime_skip_seen":
+                matched = "跳过"
+            elif kind == "realtime_response":
+                matched = "响应"
+            elif kind == "realtime_written":
+                matched = "已写入"
+            elif kind == "realtime_worker_exception":
+                matched = "后台异常"
+            elif kind == "live_pulled":
+                matched = "游戏已拉取"
+            elif kind == "live_replaced":
+                matched = "游戏已替换"
+            elif kind == "live_replace_failed":
+                matched = "游戏替换失败"
+            elif kind == "live_bridge_loaded":
+                matched = "游戏桥接已加载"
+            if kind == "boot":
+                matched = "已连接"
+            if payload.get("error"):
+                matched = "错误"
+                source = str(payload.get("error", ""))
+            tree.insert("", "end", values=(kind, matched, source, displayed, target))
+        dialog.after(1200, lambda d=dialog: self._refresh_renpy_live_debug_dialog(d) if getattr(d, "winfo_exists", lambda: False)() else None)
 
     def save_ai_settings(self) -> None:
         settings = self.workspace.load_settings()
@@ -1821,6 +2370,7 @@ class ToolkitApp:
         settings["baidu_secret"] = self.baidu_secret_var.get().strip()
         settings["xiaomi_plan_type"] = self.xiaomi_plan_type_var.get().strip() or "Token Plan"
         settings["xiaomi_cluster"] = self.xiaomi_cluster_var.get().strip() or "新加坡集群"
+        settings["ai_concurrency"] = self._ai_concurrency()
         settings["ai_parallel_providers"] = self._selected_parallel_providers()
         self.workspace.save_settings(settings)
         self._refresh_parallel_provider_checks()
@@ -1836,6 +2386,16 @@ class ToolkitApp:
 
     def _selected_parallel_providers(self) -> list[str]:
         return [provider for provider, var in self.ai_parallel_provider_vars.items() if var.get()]
+
+    def _ai_concurrency(self) -> int:
+        value = self._clamped_int(self.ai_concurrency_var.get(), 1, 12, 4)
+        if self.ai_concurrency_var.get() != value:
+            self.ai_concurrency_var.set(value)
+        return value
+
+    def _sync_ai_concurrency_label(self) -> None:
+        if hasattr(self, "ai_concurrency_label_var"):
+            self.ai_concurrency_label_var.set(f"{self._ai_concurrency()} 路")
 
     def _refresh_parallel_provider_checks(self) -> None:
         if not hasattr(self, "ai_parallel_frame"):
@@ -1855,7 +2415,7 @@ class ToolkitApp:
         current_key = self.ai_api_key_var.get().strip()
         configured = [
             provider
-            for provider in ("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA")
+            for provider in ("OpenAI", "Custom OpenAI API", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA")
             if (provider == current_provider and current_key) or str(keys.get(provider, "")).strip()
         ]
         for child in self.ai_parallel_frame.winfo_children():
@@ -1909,6 +2469,8 @@ class ToolkitApp:
             if provider == "Xiaomi Token Plan":
                 model = self._normalize_xiaomi_model(model)
             self.ai_model_var.set(model)
+        if provider == "Custom OpenAI API" and not self.ai_base_url_var.get().strip():
+            self.ai_base_url_var.set("https://api.openai.com/v1")
         if hasattr(self, "ai_provider_link") and not self._using_baidu_channel():
             self.ai_provider_link.configure(text=self._provider_link_label(provider))
         self._refresh_ai_base_url_visibility(provider)
@@ -1969,13 +2531,15 @@ class ToolkitApp:
             return self._xiaomi_cluster_base_url(self.xiaomi_cluster_var.get().strip() or "新加坡集群", "openai")
         if provider == "NVIDIA":
             return "https://integrate.api.nvidia.com/v1"
+        if provider == "Custom OpenAI API":
+            return "https://api.openai.com/v1"
         return ""
 
     def _refresh_ai_base_url_visibility(self, provider: str | None = None) -> None:
         provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
         if not hasattr(self, "ai_base_url_label") or not hasattr(self, "ai_base_url_entry"):
             return
-        if provider in {"NVIDIA", "Xiaomi Token Plan"}:
+        if provider in {"NVIDIA", "Xiaomi Token Plan", "Custom OpenAI API"}:
             self.ai_base_url_label.grid()
             self.ai_base_url_entry.grid()
             if provider == "Xiaomi Token Plan":
@@ -2015,51 +2579,160 @@ class ToolkitApp:
             messagebox.showerror("错误", "请先加载项目。")
             return
         if not self.translation_entries:
-            self.extract_texts(silent=True)
+            self._set_status_text("当前还没有提取文本，已开始提取。提取结果出现后再点击翻译。")
+            self.extract_texts(silent=False)
+            return
         base_pending = [
             entry
             for entry in self.translation_entries
-            if self._translation_entry_visible(entry) and entry.source.strip() and not entry.target.strip()
+            if self._translation_entry_visible(entry) and entry.source.strip()
         ]
-        pending = [entry for entry in base_pending if self._is_likely_dialogue_text(entry)]
-        skipped_non_dialogue = len(base_pending) - len(pending)
-        empty_message = f"当前范围“{self.translation_scope_var.get()}”没有需要 AI 翻译的空译文。"
+        untranslated = [entry for entry in base_pending if not entry.target.strip()]
+        skipped_translated = len(base_pending) - len(untranslated)
+        pending = [entry for entry in untranslated if self._is_translatable_source_entry(entry)]
+        skipped_non_dialogue = len(untranslated) - len(pending)
+        empty_message = f"当前范围“{self.translation_scope_var.get()}”没有需要翻译的空译文。"
+        if skipped_translated:
+            empty_message += f"\n已跳过 {skipped_translated} 条已有译文。"
         if skipped_non_dialogue:
             empty_message += f"\n已自动跳过 {skipped_non_dialogue} 条非对白或异常文本。"
-        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue)
+        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue, use_memory=True)
 
     def translate_selected_with_ai(self) -> None:
         if not self.project:
             messagebox.showerror("错误", "请先加载项目。")
             return
+        if not self.translation_entries:
+            self._set_status_text("当前还没有提取文本，已开始提取。提取结果出现后再点击翻译选中。")
+            self.extract_texts(silent=False)
+            return
         base_pending = [
             entry
             for entry in self._selected_translation_entries()
-            if entry.source.strip() and not entry.target.strip()
+            if entry.source.strip()
         ]
-        pending = [entry for entry in base_pending if self._is_likely_dialogue_text(entry)]
-        skipped_non_dialogue = len(base_pending) - len(pending)
-        empty_message = "选中的文本都已翻译，或没有可翻译原文。"
+        untranslated = [entry for entry in base_pending if not entry.target.strip()]
+        skipped_translated = len(base_pending) - len(untranslated)
+        pending = [entry for entry in untranslated if self._is_translatable_selected_entry(entry)]
+        skipped_non_dialogue = len(untranslated) - len(pending)
+        empty_message = "选中的文本没有需要翻译的空译文。"
+        if skipped_translated:
+            empty_message += f"\n已跳过 {skipped_translated} 条已有译文。"
         if skipped_non_dialogue:
             empty_message += f"\n已自动跳过 {skipped_non_dialogue} 条非对白或异常文本。"
-        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue)
+        self._start_ai_translation(pending, empty_message, skipped_non_dialogue=skipped_non_dialogue, use_memory=True)
 
-    def _start_ai_translation(self, pending: list[TranslationEntry], empty_message: str, skipped_non_dialogue: int = 0) -> None:
+    def _is_translatable_selected_entry(self, entry: TranslationEntry) -> bool:
+        return self._is_translatable_source_entry(entry)
+
+    def _is_translatable_source_entry(self, entry: TranslationEntry) -> bool:
+        source = entry.source.strip()
+        if not source:
+            return False
+        if self._control_token_fingerprint(source):
+            return True
+        if self._looks_like_non_dialogue_translation(source):
+            return False
+        return True
+
+    def _start_ai_translation(self, pending: list[TranslationEntry], empty_message: str, skipped_non_dialogue: int = 0, use_memory: bool = True) -> None:
         if not pending:
             messagebox.showinfo("提示", empty_message)
             return
         self._start_activity()
-        cache_hits = self._apply_translation_memory(pending)
-        request_entries = self._unique_ai_requests([entry for entry in pending if not entry.target.strip()])
-        if not request_entries:
-            self._save_project_translation_cache()
-            self._refresh_translation_tree()
-            done = sum(1 for item in self.translation_entries if item.target.strip())
-            self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
-            messagebox.showinfo("提示", f"当前需要翻译的文本都已从全局缓存命中：{cache_hits} 条。")
-            return
         self.save_ai_settings()
         self.ai_progress_var.set(0)
+        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
+        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+        if provider == "百度翻译":
+            appid = self.baidu_appid_var.get().strip()
+            secret = self.baidu_secret_var.get().strip()
+            if not appid or not secret:
+                self._stop_activity()
+                messagebox.showerror("缺少百度翻译参数", "请先填写百度翻译的 AppID 和 Secret Key。")
+                return
+            mode = "缓存与去重" if use_memory else "强制重译去重"
+            self.ai_status_var.set(f"准备百度翻译：共 {len(pending)} 条，正在整理{mode}。")
+            self._set_status_text(f"百度翻译准备中：共 {len(pending)} 条，正在整理{mode}。")
+            self._prepare_translation_requests(
+                pending,
+                lambda prepared_pending, request_entries, cache_hits: self._start_baidu_translation_worker(
+                    prepared_pending,
+                    request_entries,
+                    appid,
+                    secret,
+                    cache_hits,
+                    empty_message,
+                    skipped_non_dialogue,
+                ),
+                use_memory=use_memory,
+            )
+            return
+        api_key = self.ai_api_key_var.get().strip()
+        if not api_key:
+            self._stop_activity()
+            messagebox.showerror("缺少 API Key", "请先在右侧 AI 翻译设置里输入 API Key。")
+            return
+        provider_configs = self._active_ai_provider_configs(provider, api_key, model)
+        if not provider_configs:
+            self._stop_activity()
+            messagebox.showerror("缺少 API Key", "并行厂商都没有可用 API Key。请先分别选择厂商并保存 API Key。")
+            return
+        providers_text = "、".join(config["provider"] for config in provider_configs)
+        mode = "缓存与去重" if use_memory else "强制重译去重"
+        self.ai_status_var.set(f"准备并行翻译：{providers_text}，共 {len(pending)} 条，正在整理{mode}。")
+        self._set_status_text(f"AI 翻译准备中：{providers_text}，共 {len(pending)} 条，正在整理{mode}。")
+        self._prepare_translation_requests(
+            pending,
+            lambda prepared_pending, request_entries, cache_hits: self._start_ai_translation_worker(
+                prepared_pending,
+                request_entries,
+                provider_configs,
+                cache_hits,
+                empty_message,
+                skipped_non_dialogue,
+            ),
+            use_memory=use_memory,
+        )
+
+    def _prepare_translation_requests(self, pending: list[TranslationEntry], on_ready, use_memory: bool = True) -> None:
+        def worker() -> None:
+            try:
+                cache_hits = self._apply_translation_memory(pending) if use_memory else 0
+                request_entries = self._unique_ai_requests([entry for entry in pending if not entry.target.strip()])
+            except Exception as exc:
+                self.root.after(0, lambda err=exc: self._handle_translation_prepare_error(err))
+                return
+            self.root.after(0, lambda p=pending, r=request_entries, c=cache_hits: on_ready(p, r, c))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_translation_prepare_error(self, exc: Exception) -> None:
+        self._stop_activity()
+        self.ai_status_var.set(f"AI 翻译准备失败：{exc}")
+        messagebox.showerror("AI 翻译失败", str(exc))
+
+    def _start_ai_translation_worker(
+        self,
+        pending: list[TranslationEntry],
+        request_entries: list[TranslationEntry],
+        provider_configs: list[dict[str, str]],
+        cache_hits: int,
+        empty_message: str,
+        skipped_non_dialogue: int,
+    ) -> None:
+        if not request_entries:
+            self._save_project_translation_cache()
+            self._schedule_translation_tree_refresh()
+            done = sum(1 for item in self.translation_entries if item.target.strip())
+            self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
+            self.ai_progress_var.set(100)
+            self._stop_activity()
+            if cache_hits:
+                messagebox.showinfo("提示", f"当前需要翻译的文本都已从全局缓存命中：{cache_hits} 条。")
+            else:
+                messagebox.showinfo("提示", empty_message)
+            return
         saved = len(pending) - len(request_entries)
         suffix_parts = []
         if saved:
@@ -2068,42 +2741,48 @@ class ToolkitApp:
             suffix_parts.append(f"全局缓存命中 {cache_hits} 条")
         if skipped_non_dialogue:
             suffix_parts.append(f"已跳过 {skipped_non_dialogue} 条非对白/异常文本")
-        suffix = f"，{'，'.join(suffix_parts)}" if suffix_parts else ""
-        self.ai_status_var.set(f"准备 AI 翻译：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，动态编排批次{suffix}。")
-        self._set_status_text(f"AI 翻译开始：共 {len(pending)} 条，实际请求 {len(request_entries)} 条，动态编排批次{suffix}。")
-        provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
-        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
-        if provider == "百度翻译":
-            appid = self.baidu_appid_var.get().strip()
-            secret = self.baidu_secret_var.get().strip()
-            if not appid or not secret:
-                messagebox.showerror("缺少百度翻译参数", "请先填写百度翻译的 AppID 和 Secret Key。")
-                return
-            threading.Thread(target=self._baidu_translate_all_worker, args=(pending, request_entries, appid, secret), daemon=True).start()
-            return
-        api_key = self.ai_api_key_var.get().strip()
-        if not api_key:
-            messagebox.showerror("缺少 API Key", "请先在右侧 AI 翻译设置里输入 API Key。")
-            return
-        provider_configs = self._active_ai_provider_configs(provider, api_key, model)
-        if not provider_configs:
-            messagebox.showerror("缺少 API Key", "并行厂商都没有可用 API Key。请先分别选择厂商并保存 API Key。")
-            return
+        suffix = f"，{'；'.join(suffix_parts)}" if suffix_parts else ""
         providers_text = "、".join(config["provider"] for config in provider_configs)
-        self.ai_status_var.set(f"准备并行翻译：{providers_text}，共 {len(request_entries)} 条。")
+        concurrency = self._ai_concurrency()
+        self.ai_status_var.set(f"准备并行翻译：{providers_text}，并发 {concurrency}，共 {len(request_entries)} 条，动态编排批次{suffix}。")
+        self._set_status_text(f"AI 翻译开始：{providers_text}，并发 {concurrency}，共 {len(request_entries)} 条，动态编排批次{suffix}。")
         threading.Thread(target=self._ai_translate_all_worker, args=(pending, request_entries, provider_configs), daemon=True).start()
 
-    @staticmethod
-    def _normalize_cache_key(source: str, category: str = "") -> str:
-        """归一化缓存键：小写、统一空白。
-        menu/system/ui 类文本额外去掉首尾标点并加前缀做上下文分片。
-        对白类文本保留所有标点，因为问号/感叹号/省略号影响翻译语义。"""
-        normalized = source.strip().lower()
-        normalized = re.sub(r'\s+', ' ', normalized)
-        if category and category in ("menu", "system", "ui"):
-            normalized = normalized.strip('.,!?;:\'"。，！？；：、""''·…—·')
-            return f"[{category}]{normalized}"
-        return normalized
+    def _start_baidu_translation_worker(
+        self,
+        pending: list[TranslationEntry],
+        request_entries: list[TranslationEntry],
+        appid: str,
+        secret: str,
+        cache_hits: int,
+        empty_message: str,
+        skipped_non_dialogue: int,
+    ) -> None:
+        if not request_entries:
+            self._save_project_translation_cache()
+            self._schedule_translation_tree_refresh()
+            done = sum(1 for item in self.translation_entries if item.target.strip())
+            self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已译 {done}")
+            self.ai_progress_var.set(100)
+            self._stop_activity()
+            if cache_hits:
+                messagebox.showinfo("提示", f"当前需要翻译的文本都已从全局缓存命中：{cache_hits} 条。")
+            else:
+                messagebox.showinfo("提示", empty_message)
+            return
+        saved = len(pending) - len(request_entries)
+        suffix_parts = []
+        if saved:
+            suffix_parts.append(f"已合并 {saved} 条重复原文")
+        if cache_hits:
+            suffix_parts.append(f"全局缓存命中 {cache_hits} 条")
+        if skipped_non_dialogue:
+            suffix_parts.append(f"已跳过 {skipped_non_dialogue} 条非对白/异常文本")
+        suffix = f"，{'；'.join(suffix_parts)}" if suffix_parts else ""
+        concurrency = self._ai_concurrency()
+        self.ai_status_var.set(f"准备百度翻译：并发 {concurrency}，共 {len(request_entries)} 条，动态编排批次{suffix}。")
+        self._set_status_text(f"百度翻译开始：并发 {concurrency}，共 {len(request_entries)} 条，动态编排批次{suffix}。")
+        threading.Thread(target=self._baidu_translate_all_worker, args=(pending, request_entries, appid, secret), daemon=True).start()
 
     def _apply_translation_memory(self, entries: list[TranslationEntry]) -> int:
         hits = 0
@@ -2124,12 +2803,20 @@ class ToolkitApp:
                     entry.target = cached
                     hits += 1
                     continue
-            # 3. 模糊匹配（短文本编辑距离 ≤ 1，主要针对 UI/系统文本的微小差异）
-            fuzzy = self._fuzzy_match_short_text(entry.source.strip())
-            if fuzzy:
-                entry.target = fuzzy
-                hits += 1
         return hits
+
+    @staticmethod
+    def _normalize_cache_key(source: str, category: str = "") -> str:
+        text = source.strip()
+        if not text:
+            return ""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = text.strip()
+        if category:
+            return f"{category.strip().lower()}::{text}"
+        return text
 
     @staticmethod
     def _edit_distance(s1: str, s2: str) -> int:
@@ -2151,15 +2838,14 @@ class ToolkitApp:
         source = source.strip()
         if not source or len(source) > 20:
             return None
-        # 只检查长度差 ≤ 1 的缓存键
         source_lower = source.lower()
-        for cached_source, cached_target in self.translation_memory.items():
-            if abs(len(cached_source) - len(source)) > 1:
-                continue
-            if cached_source == source:
-                continue
-            if self._edit_distance(source_lower, cached_source.lower()) <= max_distance:
-                return cached_target
+        buckets = self._translation_memory_short_buckets()
+        for length in (len(source) - 1, len(source), len(source) + 1):
+            for cached_source, cached_target in buckets.get(length, []):
+                if cached_source == source:
+                    continue
+                if self._edit_distance(source_lower, cached_source.lower()) <= max_distance:
+                    return cached_target
         return None
 
     def _remember_translations(self, entries: list[TranslationEntry]) -> int:
@@ -2175,6 +2861,8 @@ class ToolkitApp:
                 self._project_tm_keys.add(norm_key)
                 added += 1
                 self._tm_dirty = True
+        if added:
+            self._invalidate_translation_memory_index()
         return added
 
     def _load_project_tm(self) -> None:
@@ -2192,6 +2880,7 @@ class ToolkitApp:
                 overlap += 1
         if overlap:
             self.ai_status_var.set(f"已叠加项目级翻译缓存：{overlap} 条")
+            self._invalidate_translation_memory_index()
 
     def _flush_translation_memory(self) -> None:
         """延迟持久化 — 只在有脏数据时一次性写盘。
@@ -2288,12 +2977,15 @@ class ToolkitApp:
         total = len(request_entries)
         translated = 0
         completed = 0
+        failed_batches = 0
+        last_error = ""
         pending_by_source: dict[str, list[TranslationEntry]] = {}
         for entry in pending_entries:
             pending_by_source.setdefault(entry.source.strip(), []).append(entry)
 
         def apply_batch(batch: list[TranslationEntry], translations: dict[str, str]) -> int:
             count = 0
+            memory_changed = False
             for entry in batch:
                 value = translations.get(entry.entry_id, "").strip()
                 if value:
@@ -2306,32 +2998,58 @@ class ToolkitApp:
                     self.translation_memory[norm_key] = value
                     self._project_tm_keys.add(norm_key)
                     self._tm_dirty = True
+                    memory_changed = True
+            if memory_changed:
+                self._invalidate_translation_memory_index()
             return count
 
         try:
             batches = self._build_token_aware_batches(request_entries)
-            max_workers = min(4, max(1, len(batches)))
+            batch_count = len(batches)
+            max_workers = min(self._ai_concurrency(), max(1, batch_count))
+            next_batch_index = 0
+            completed_batches = 0
+            last_cache_save = time.monotonic()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-                future_map = {
-                    pool.submit(self._request_ai_translations, batch, config["api_key"], config["model"], config["provider"], config.get("base_url", "")): (index + 1, len(batches), batch, config)
-                    for index, batch in enumerate(batches)
-                    for config in (provider_configs[index % len(provider_configs)],)
-                }
-                for future in concurrent.futures.as_completed(future_map):
-                    batch_index, batch_count, batch, config = future_map[future]
-                    provider_name = config["provider"]
-                    self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name: self.ai_status_var.set(f"{p} 正在翻译第 {b}/{c} 批..."))
-                    try:
-                        translations = future.result()
-                    except Exception as exc:
-                        self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name, e=exc: self.ai_status_var.set(f"{p} 第 {b}/{c} 批失败，正在拆分重试：{e}"))
-                        translations = self._retry_ai_batch(batch, config)
-                    translated += apply_batch(batch, translations)
-                    completed += len(batch)
-                    progress = min(100, (completed / total) * 100)
-                    self._save_project_translation_cache()
-                    self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
-                    self.root.after(0, self._refresh_translation_tree)
+                future_map: dict[concurrent.futures.Future, tuple[int, int, list[TranslationEntry], dict[str, str]]] = {}
+
+                def submit_next_batch() -> None:
+                    nonlocal next_batch_index
+                    if next_batch_index >= batch_count:
+                        return
+                    batch = batches[next_batch_index]
+                    config = provider_configs[next_batch_index % len(provider_configs)]
+                    batch_index = next_batch_index + 1
+                    next_batch_index += 1
+                    future = pool.submit(self._request_ai_translations, batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""))
+                    future_map[future] = (batch_index, batch_count, batch, config)
+
+                for _ in range(max_workers):
+                    submit_next_batch()
+                while future_map:
+                    done_futures, _pending_futures = concurrent.futures.wait(future_map, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for future in done_futures:
+                        batch_index, batch_count, batch, config = future_map.pop(future)
+                        provider_name = config["provider"]
+                        self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name: self.ai_status_var.set(f"{p} 正在翻译第 {b}/{c} 批..."))
+                        try:
+                            translations = future.result()
+                        except Exception as exc:
+                            failed_batches += 1
+                            last_error = str(exc)
+                            self.root.after(0, lambda b=batch_index, c=batch_count, p=provider_name: self.ai_status_var.set(f"{p} 第 {b}/{c} 批失败，正在补救重试..."))
+                            translations = self._retry_ai_batch(batch, config, exc)
+                        translated += apply_batch(batch, translations)
+                        completed += len(batch)
+                        completed_batches += 1
+                        progress = min(100, (completed / total) * 100)
+                        now = time.monotonic()
+                        if completed == total or completed_batches % 8 == 0 or now - last_cache_save >= 8:
+                            self._save_project_translation_cache()
+                            last_cache_save = now
+                        self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
+                        self.root.after(0, self._schedule_translation_tree_refresh)
+                        submit_next_batch()
         except Exception as exc:
             self.root.after(0, lambda: self.ai_status_var.set(f"AI 翻译失败：{exc}"))
             self.root.after(0, lambda: messagebox.showerror("AI 翻译失败", str(exc)))
@@ -2345,27 +3063,45 @@ class ToolkitApp:
             self._stop_activity()
             remembered = self._remember_translations(self.translation_entries)
             self._flush_translation_memory()
-            self._refresh_translation_tree()
+            self._schedule_translation_tree_refresh()
             self.ai_progress_var.set(100)
-            self.ai_status_var.set(f"一键翻译完成：新增 {translated} 条，实际请求 {total} 条，缓存更新 {remembered} 条，当前已译 {done}/{len(self.translation_entries)}。")
+            if translated == 0 and failed_batches:
+                self.ai_status_var.set(f"AI 翻译失败：已请求 {total} 条，但没有写入译文。最后错误：{last_error[:180]}")
+            elif translated == 0:
+                self.ai_status_var.set(f"AI 翻译完成但没有写入译文：实际请求 {total} 条。可能是返回为空、译文破坏控制符，或模型把内容判为非对白。")
+            else:
+                self.ai_status_var.set(f"AI 翻译完成：新增 {translated} 条，实际请求 {total} 条，缓存更新 {remembered} 条，当前已译 {done}/{len(self.translation_entries)}。")
             self._save_project_translation_cache()
             if self.project:
                 self._append_recent_task("AI 一键翻译", self.project.root, self.project.engine)
             self._set_status_text("AI 翻译完成，译文已自动保存到当前游戏目录内的工作文件夹。")
         self.root.after(0, finish)
 
-    def _retry_ai_batch(self, batch: list[TranslationEntry], config: dict[str, str]) -> dict[str, str]:
+    def _retry_ai_batch(self, batch: list[TranslationEntry], config: dict[str, str], reason: Exception | None = None) -> dict[str, str]:
         if not batch:
             return {}
-        if len(batch) <= 10:
+        if reason is not None and self._looks_like_provider_rejection(str(reason)):
             try:
-                return self._request_ai_translations(batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""))
+                return self._request_ai_translations(batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""), sanitize_for_provider=True)
             except Exception:
-                return {}
+                pass
+        if len(batch) <= 10:
+            if len(batch) == 1:
+                try:
+                    return self._request_ai_translations(batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""), sanitize_for_provider=True)
+                except Exception:
+                    try:
+                        return self._request_ai_translations(batch, config["api_key"], config["model"], config["provider"], config.get("base_url", ""))
+                    except Exception:
+                        return {}
+            result: dict[str, str] = {}
+            for entry in batch:
+                result.update(self._retry_ai_batch([entry], config, reason))
+            return result
         mid = len(batch) // 2
         result: dict[str, str] = {}
-        result.update(self._retry_ai_batch(batch[:mid], config))
-        result.update(self._retry_ai_batch(batch[mid:], config))
+        result.update(self._retry_ai_batch(batch[:mid], config, reason))
+        result.update(self._retry_ai_batch(batch[mid:], config, reason))
         return result
 
     def _baidu_translate_all_worker(self, pending_entries: list[TranslationEntry], request_entries: list[TranslationEntry], appid: str, secret: str) -> None:
@@ -2378,33 +3114,58 @@ class ToolkitApp:
 
         try:
             batches = [request_entries[start : start + 100] for start in range(0, total, 100)]
-            max_workers = min(3, max(1, len(batches)))
+            batch_count = len(batches)
+            max_workers = min(self._ai_concurrency(), max(1, batch_count))
+            next_batch_index = 0
+            completed_batches = 0
+            last_cache_save = time.monotonic()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-                future_map = {
-                    pool.submit(self._request_baidu_translations, batch, appid, secret): (index + 1, len(batches), batch)
-                    for index, batch in enumerate(batches)
-                }
-                for future in concurrent.futures.as_completed(future_map):
-                    batch_index, batch_count, batch = future_map[future]
-                    self.root.after(0, lambda b=batch_index, c=batch_count: self.ai_status_var.set(f"正在使用百度翻译，第 {b}/{c} 批，每批最多 100 条..."))
-                    try:
-                        translations = future.result()
-                    except Exception as exc:
-                        self.root.after(0, lambda b=batch_index, c=batch_count, e=exc: self.ai_status_var.set(f"百度第 {b}/{c} 批失败，正在跳过：{e}"))
-                        translations = {}
-                    for entry in batch:
-                        value = translations.get(entry.entry_id, "").strip()
-                        if value:
-                            for related in pending_by_source.get(entry.source.strip(), [entry]):
-                                if not related.target.strip():
-                                    related.target = value
-                                    translated += 1
-                            self.translation_memory[entry.source.strip()] = value
-                    completed += len(batch)
-                    progress = min(100, (completed / total) * 100)
-                    self._save_project_translation_cache()
-                    self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
-                    self.root.after(0, self._refresh_translation_tree)
+                future_map: dict[concurrent.futures.Future, tuple[int, int, list[TranslationEntry]]] = {}
+
+                def submit_next_batch() -> None:
+                    nonlocal next_batch_index
+                    if next_batch_index >= batch_count:
+                        return
+                    batch = batches[next_batch_index]
+                    batch_index = next_batch_index + 1
+                    next_batch_index += 1
+                    future = pool.submit(self._request_baidu_translations, batch, appid, secret)
+                    future_map[future] = (batch_index, batch_count, batch)
+
+                for _ in range(max_workers):
+                    submit_next_batch()
+                while future_map:
+                    done_futures, _pending_futures = concurrent.futures.wait(future_map, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for future in done_futures:
+                        batch_index, batch_count, batch = future_map.pop(future)
+                        self.root.after(0, lambda b=batch_index, c=batch_count: self.ai_status_var.set(f"正在使用百度翻译，第 {b}/{c} 批，每批最多 100 条..."))
+                        try:
+                            translations = future.result()
+                        except Exception as exc:
+                            self.root.after(0, lambda b=batch_index, c=batch_count, e=exc: self.ai_status_var.set(f"百度第 {b}/{c} 批失败，正在跳过：{e}"))
+                            translations = {}
+                        memory_changed = False
+                        for entry in batch:
+                            value = translations.get(entry.entry_id, "").strip()
+                            if value:
+                                for related in pending_by_source.get(entry.source.strip(), [entry]):
+                                    if not related.target.strip():
+                                        related.target = value
+                                        translated += 1
+                                self.translation_memory[entry.source.strip()] = value
+                                memory_changed = True
+                        if memory_changed:
+                            self._invalidate_translation_memory_index()
+                        completed += len(batch)
+                        completed_batches += 1
+                        progress = min(100, (completed / total) * 100)
+                        now = time.monotonic()
+                        if completed == total or completed_batches % 8 == 0 or now - last_cache_save >= 8:
+                            self._save_project_translation_cache()
+                            last_cache_save = now
+                        self.root.after(0, lambda value=progress: self.ai_progress_var.set(value))
+                        self.root.after(0, self._schedule_translation_tree_refresh)
+                        submit_next_batch()
         except Exception as exc:
             self.root.after(0, lambda: self.ai_status_var.set(f"百度翻译失败：{exc}"))
             self.root.after(0, lambda: messagebox.showerror("百度翻译失败", str(exc)))
@@ -2418,7 +3179,7 @@ class ToolkitApp:
             self._stop_activity()
             remembered = self._remember_translations(self.translation_entries)
             self._flush_translation_memory()
-            self._refresh_translation_tree()
+            self._schedule_translation_tree_refresh()
             self.ai_progress_var.set(100)
             self.ai_status_var.set(f"百度翻译完成：新增 {translated} 条，实际请求 {total} 条，缓存更新 {remembered} 条，当前已译 {done}/{len(self.translation_entries)}。")
             self._save_project_translation_cache()
@@ -2427,20 +3188,22 @@ class ToolkitApp:
             self._set_status_text("百度翻译完成，译文已自动保存到当前游戏目录内的工作文件夹。")
         self.root.after(0, finish)
 
-    def _request_ai_translations(self, entries: list[TranslationEntry], api_key: str, model: str, provider: str, base_url: str = "") -> dict[str, str]:
+    def _request_ai_translations(self, entries: list[TranslationEntry], api_key: str, model: str, provider: str, base_url: str = "", sanitize_for_provider: bool = False) -> dict[str, str]:
         key_map = {str(index): entry.entry_id for index, entry in enumerate(entries, start=1)}
+        prompt_entries = [self._sanitize_entry_for_provider(entry) if sanitize_for_provider else entry for entry in entries]
         system_prompt = (
             "你是专业游戏本地化译者。只翻译真正的游戏对白、台词、选项、菜单说明或叙述文本。"
             "如果输入更像文件路径、图片名、资源名、URL、脚本代码、变量名、乱码、纯符号串、调试信息或其他非对白内容，"
             "请在对应 id 的值里返回空字符串，表示跳过，不要改写。"
-            "保留控制符、变量占位符、转义符、颜色代码、换行标记和人名格式。"
+            "文本中可能包含 RPG Maker/Ren'Py 控制符或占位符，例如 \\C[0]、\\V[1]、\\N[2]、\\I[64]、\\{、\\}、%1、{player}、[name]。"
+            "这些不是代码错误，必须照常翻译周围可读文字，但所有控制符、变量占位符、转义符、颜色代码、换行标记和人名格式必须原样保留，数量、顺序和大小写都不要变。"
             "只输出合法 JSON 对象，例如 {\"1\":\"译文\",\"2\":\"\"}。"
             "JSON 语法必须使用英文双引号、英文冒号和英文逗号；不要使用中文引号、中文冒号、书名号、数组外壳、Markdown 或解释。"
         )
         user_prompt = json.dumps(
             {
                 "task": "translate_to_simplified_chinese",
-                "rule": "only_translate_dialogue_like_text; return empty string for non-dialogue or garbled content",
+                "rule": "translate dialogue-like text even when it contains game control codes; preserve all control codes/placeholders byte-for-byte; return empty string for non-dialogue or garbled content",
                 "format": {"id": "translated text"},
                 "entries": [
                     {
@@ -2450,7 +3213,7 @@ class ToolkitApp:
                         "type": entry.category,
                         "source": entry.source,
                     }
-                    for index, entry in enumerate(entries, start=1)
+                    for index, entry in enumerate(prompt_entries, start=1)
                 ],
             },
             ensure_ascii=False,
@@ -2466,7 +3229,7 @@ class ToolkitApp:
         elif provider == "NVIDIA":
             raw = self._request_nvidia_translations(api_key, model, system_prompt, user_prompt, base_url)
         else:
-            raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt)
+            raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt, base_url)
         result: dict[str, str] = {}
         for key, value in raw.items():
             if key not in key_map:
@@ -2476,6 +3239,8 @@ class ToolkitApp:
                 continue
             source_entry = entries[int(key) - 1] if key.isdigit() and 1 <= int(key) <= len(entries) else None
             if source_entry and not self._is_likely_dialogue_text(source_entry):
+                continue
+            if source_entry and not self._translation_preserves_control_tokens(source_entry.source, text):
                 continue
             if self._looks_like_non_dialogue_translation(text):
                 continue
@@ -2487,23 +3252,40 @@ class ToolkitApp:
         lowered = text.strip().lower()
         if not lowered:
             return True
-        if any(token in lowered for token in (".png", ".jpg", ".jpeg", ".webp", ".ogg", ".wav", ".mp3", ".json", ".rpyc", ".rpa", ".exe", "http://", "https://")):
+        if re.fullmatch(r"https?://\S+|www\.\S+", lowered):
+            return True
+        if re.fullmatch(r"\S+\.(?:png|jpe?g|webp|ogg|wav|mp3|json|rpyc|rpa|exe)", lowered):
             return True
         if re.fullmatch(r"[\W_]+", lowered):
             return True
         return False
 
-    def _request_openai_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, str]:
+    @staticmethod
+    def _control_token_fingerprint(text: str) -> list[str]:
+        return [match.group(0) for match in GAME_CONTROL_TOKEN_PATTERN.finditer(text)]
+
+    def _translation_preserves_control_tokens(self, source: str, target: str) -> bool:
+        source_tokens = self._control_token_fingerprint(source)
+        if not source_tokens:
+            return True
+        target_tokens = self._control_token_fingerprint(target)
+        if len(source_tokens) != len(target_tokens):
+            return False
+        return source_tokens == target_tokens
+
+    def _request_openai_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str, base_url: str = "") -> dict[str, str]:
         payload = {
             "model": model,
-            "input": [
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "text": {"format": {"type": "json_object"}},
+            "response_format": {"type": "json_object"},
+            "stream": False,
         }
+        endpoint = self._chat_completions_url(base_url.strip() or self.ai_base_url_var.get().strip() or "https://api.openai.com/v1")
         request = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
+            endpoint,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -2518,7 +3300,9 @@ class ToolkitApp:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenAI API 返回错误：{exc.code}\n{detail}") from exc
         payload = json.loads(raw)
-        text = self._extract_response_text(payload)
+        text = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            text = self._extract_response_text(payload)
         parsed = self._load_llm_json(text, "OpenAI")
         if not isinstance(parsed, dict):
             raise RuntimeError("AI 返回内容不是 JSON 对象。")
@@ -2800,6 +3584,8 @@ class ToolkitApp:
         candidate = text.strip()
         if not candidate:
             raise RuntimeError(f"{provider} 没有返回可解析内容。")
+        if ToolkitApp._looks_like_provider_rejection(candidate):
+            raise RuntimeError(f"{provider} 拒绝了该批文本，已自动补救重试。")
         if candidate.startswith("```"):
             candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
             candidate = re.sub(r"\s*```$", "", candidate).strip()
@@ -2822,6 +3608,35 @@ class ToolkitApp:
         if not isinstance(parsed, dict):
             raise RuntimeError(f"{provider} 返回内容不是 JSON 对象。")
         return parsed
+
+    @staticmethod
+    def _looks_like_provider_rejection(text: str) -> bool:
+        lowered = text.strip().lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "considered high risk",
+                "request was rejected",
+                "content policy",
+                "safety policy",
+                "risk control",
+                "high risk",
+            )
+        )
+
+    @staticmethod
+    def _sanitize_entry_for_provider(entry: TranslationEntry) -> TranslationEntry:
+        source = entry.source
+        source = re.sub(r"\[([^\]]+)\]\(https?://[^\)]+\)", r"\1", source)
+        source = re.sub(r"https?://\S+", "[LINK]", source)
+        return TranslationEntry(
+            entry_id=entry.entry_id,
+            source=source,
+            target=entry.target,
+            file=entry.file,
+            context=entry.context,
+            category=entry.category,
+        )
 
     @staticmethod
     def _parse_llm_loose_json(text: str) -> dict[str, str]:
@@ -2949,7 +3764,12 @@ class ToolkitApp:
 
     def _selected_translation_entries(self) -> list[TranslationEntry]:
         entries: list[TranslationEntry] = []
-        for item_id in self.translation_tree.selection():
+        item_ids = list(self.translation_tree.selection())
+        if not item_ids:
+            focus = self.translation_tree.focus()
+            if focus:
+                item_ids.append(focus)
+        for item_id in item_ids:
             if item_id == "__notice__":
                 continue
             entry_id = self.translation_view_id_map.get(item_id, item_id)
@@ -2986,13 +3806,27 @@ class ToolkitApp:
         if not path:
             return
         try:
-            export_translation_pack(path, self.project.engine, self.translation_entries)
+            export_translation_pack(path, self.project.engine, self.translation_entries, self._project_translation_signature())
         except Exception as exc:
             self.ai_status_var.set(f"自动保存翻译缓存失败：{exc}")
 
     def _load_project_translation_cache(self, silent: bool = True) -> None:
         path = self._project_translation_cache_path()
         if not path or not path.exists():
+            return
+        try:
+            payload = load_translation_pack_payload(path)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("读取失败", f"无法读取自动翻译缓存：{exc}")
+            return
+        if payload.get("signature") and payload.get("signature") != self._project_translation_signature():
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            if not silent:
+                self.ai_status_var.set("已清理过期的项目翻译缓存。")
             return
         try:
             loaded = import_translation_pack(path)
@@ -3009,6 +3843,64 @@ class ToolkitApp:
         if applied:
             self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 已载入缓存 {applied}")
             self.ai_status_var.set(f"已自动载入上次翻译缓存：{applied} 条。")
+
+    def _clear_project_translation_state(self) -> None:
+        if not self.project:
+            return
+        removed = self._clear_project_translation_artifacts(remove_cache=True)
+        self.workspace.delete_project_translation_memory(self.project.root)
+        self.translation_entries = []
+        self.translation_map = {}
+        self.translation_view_id_map = {}
+        self.translation_status_var.set("0 条")
+        self.ai_status_var.set("已清空当前项目翻译缓存与工作痕迹。")
+        self._set_translation_notice("已清空当前项目的翻译痕迹，请重新提取文本。")
+        self._schedule_translation_tree_refresh()
+        self._append_recent_task("清空翻译缓存", self.project.root, self.project.engine)
+        if removed:
+            self._set_status_text(f"已清空当前项目翻译痕迹：{removed} 处。现在可以像新项目一样重新提取和翻译。")
+        else:
+            self._set_status_text("当前项目翻译痕迹已是空状态。")
+
+    def _project_translation_signature(self) -> str:
+        if not self.project:
+            return ""
+        return translation_pack_signature(self.project.engine, self.translation_entries)
+
+    def _clear_project_translation_artifacts(self, remove_cache: bool = True) -> int:
+        if not self.project:
+            return 0
+        removed = 0
+        paths = []
+        workspace = self._project_workspace_dir()
+        if workspace:
+            paths.append(workspace / "autosave_translation.json")
+            paths.append(workspace / "renpy_extracted.json")
+            paths.append(workspace / "runtime_patch")
+        if self.project.engine == "Ren'Py":
+            paths.extend([
+                self.project.root / "game" / "zz_rpgrtl_runtime_translation.rpy",
+                self.project.root / "game" / "zz_rpgrtl_embedded_translation.rpy",
+            ])
+        for path in paths:
+            try:
+                if not path.exists():
+                    continue
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                removed += 1
+            except Exception:
+                continue
+        if remove_cache:
+            project_tm = self.workspace.load_project_translation_memory(self.project.root)
+            for key in set(project_tm) | set(self._project_tm_keys):
+                self.translation_memory.pop(key, None)
+            self._project_tm_keys.clear()
+            self._tm_dirty = False
+            self._invalidate_translation_memory_index()
+        return removed
 
     def load_data_records(self, silent: bool = False) -> None:
         if not self.project:
@@ -3651,6 +4543,14 @@ class ToolkitApp:
             return fallback
         return max(minimum, min(maximum, number))
 
+    @staticmethod
+    def _clamped_int(value: object, minimum: int, maximum: int, fallback: int) -> int:
+        try:
+            number = int(float(str(value)))
+        except (TypeError, ValueError):
+            return fallback
+        return max(minimum, min(maximum, number))
+
     def _on_save_switch_edit(self, _event: object | None = None) -> None:
         selection = self.save_switches_tree.selection()
         if not selection:
@@ -3928,7 +4828,13 @@ class ToolkitApp:
             return
         width = max(1, detail.record.width)
         height = max(1, detail.record.height)
-        tile = max(8, min(24, int(640 / max(width, height, 1))))
+        zoom_text = self.map_zoom_var.get().strip().rstrip("%")
+        try:
+            zoom = max(0.5, min(2.0, float(zoom_text) / 100))
+        except ValueError:
+            zoom = 1.0
+        base_tile = max(8, min(24, int(640 / max(width, height, 1))))
+        tile = max(4, min(48, int(base_tile * zoom)))
         self.map_tile_size = tile
         event_positions = {(event.x, event.y) for event in detail.events}
         transfer_positions = {(event.x, event.y) for event in detail.events if event.transfers}
@@ -4234,14 +5140,324 @@ class ToolkitApp:
             except Exception as exc:
                 self.runtime_status_var.set(f"实时组件安装失败：{exc}")
         self.game_process = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
+        _append_live_log("tool", "launch_game", {"launcher": str(launcher), "project": str(self.project.root), "engine": self.project.engine})
         self.run_status_var.set("已启动")
         self._touch_library_entry(self.project)
         self._append_recent_task("启动游戏", self.project.root, self.project.engine)
         self._set_status_text(f"已启动游戏：{launcher.name}\n项目已自动加入游戏库。")
         self._refresh_library()
-        for delay in (1800, 3600, 6000, 9000, 13000):
-            self.root.after(delay, lambda: self.refresh_runtime_state(silent=True))
+        if self.project.engine == "RPG Maker MV/MZ":
+            for delay in (1800, 3600, 6000, 9000, 13000):
+                self.root.after(delay, lambda: self.refresh_runtime_state(silent=True))
         self._show_section("dashboard")
+
+    def launch_or_realtime_game(self) -> None:
+        if self.project and self.project.engine == "Ren'Py":
+            self.start_renpy_realtime_game_translation()
+            return
+        self.launch_current_game()
+
+    def _sync_header_launch_button(self) -> None:
+        button = getattr(self, "header_launch_button", None)
+        if not button:
+            return
+        if self.project and self.project.engine == "Ren'Py":
+            button.configure(text="实时游戏翻译", command=self.start_renpy_realtime_game_translation)
+        else:
+            button.configure(text="启动游戏", command=self.launch_current_game)
+
+    def start_renpy_realtime_game_translation(self) -> None:
+        if not self.project or self.project.engine != "Ren'Py":
+            self.launch_current_game()
+            return
+        service = self._get_service()
+        if not hasattr(service, "install_live_translation_bridge") or not hasattr(service, "write_live_translation_table"):
+            messagebox.showinfo("提示", "当前 Ren'Py 项目暂不支持实时游戏翻译。")
+            return
+        provider_config = self._renpy_realtime_provider_config()
+        if provider_config is None:
+            return
+        self._start_activity()
+        self.runtime_status_var.set("正在准备 Ren'Py 实时游戏翻译...")
+        self._set_status_text("正在后台写入 Ren'Py 原生翻译、安装实时桥接并加载实时翻译缓存，请稍候。")
+        translations = dict(self.translation_map)
+        threading.Thread(target=self._prepare_renpy_realtime_game_translation_worker, args=(service, provider_config, translations), daemon=True).start()
+
+    def _prepare_renpy_realtime_game_translation_worker(self, service: object, provider_config: dict[str, str], translations: dict[str, TranslationEntry]) -> None:
+        try:
+            native_count = service.apply_translations(translations) if hasattr(service, "apply_translations") else 0
+            service.install_live_translation_bridge(clear_seen=True)
+            cache = self._load_renpy_realtime_cache()
+            service.write_live_translation_table(self._renpy_realtime_entries(cache))
+            _append_live_log("tool", "prepare_realtime_done", {"cache_count": len(cache), "native_count": native_count})
+        except Exception as exc:
+            _append_live_log("tool", "prepare_realtime_failed", {"error": str(exc)})
+            self.root.after(0, lambda err=exc: self._handle_renpy_realtime_prepare_error(err))
+            return
+        self.root.after(0, lambda c=cache, n=native_count: self._finish_renpy_realtime_game_translation(service, provider_config, c, n))
+
+    def _handle_renpy_realtime_prepare_error(self, exc: Exception) -> None:
+        self._stop_activity()
+        self.runtime_status_var.set("Ren'Py 实时游戏翻译准备失败")
+        messagebox.showerror("实时翻译失败", f"启动 Ren'Py 实时翻译桥接失败：{exc}")
+
+    def _finish_renpy_realtime_game_translation(self, service: object, provider_config: dict[str, str], cache: dict[str, str], native_count: int = 0) -> None:
+        self._stop_activity()
+        if self._renpy_realtime_stop:
+            self._renpy_realtime_stop.set()
+        self._renpy_realtime_stop = threading.Event()
+        self._renpy_realtime_seen_sources = set(cache)
+        threading.Thread(target=self._renpy_realtime_worker, args=(service, provider_config, self._renpy_realtime_stop), daemon=True).start()
+        _append_live_log("tool", "realtime_worker_started", {"cache_count": len(cache), "provider": provider_config.get("provider", "")})
+        if hasattr(service, "append_live_debug_event"):
+            service.append_live_debug_event("realtime_started", "实时游戏翻译", f"后台已启动，缓存 {len(cache)} 条", "", False)
+        self.runtime_status_var.set(f"Ren'Py 实时游戏翻译已启动：原生 {native_count} 条 / 实时缓存 {len(cache)} 条")
+        self._set_status_text("Ren'Py 实时游戏翻译已启动：已先写入原生翻译，再实时捕获新文本、翻译、写入实时 JSON，并刷新游戏桥接表。")
+        self.launch_current_game()
+
+    def _renpy_realtime_provider_config(self) -> dict[str, str] | None:
+        if self._using_baidu_channel():
+            appid = self.baidu_appid_var.get().strip()
+            secret = self.baidu_secret_var.get().strip()
+            if not appid or not secret:
+                messagebox.showerror("缺少百度翻译参数", "请先填写百度翻译的 AppID 和 Secret Key。")
+                return None
+            return {"provider": "百度翻译", "appid": appid, "secret": secret}
+        provider = self.ai_provider_var.get().strip() or "OpenAI"
+        model = self.ai_model_var.get().strip() or self._default_ai_model(provider)
+        api_key = self.ai_api_key_var.get().strip()
+        configs = self._active_ai_provider_configs(provider, api_key, model)
+        if not configs:
+            messagebox.showerror("缺少 API Key", "请先在 AI 翻译设置里输入可用 API Key。")
+            return None
+        return dict(configs[0])
+
+    def _renpy_realtime_cache_path(self) -> Path | None:
+        if not self.project:
+            return None
+        work_dir = self.project.root / ".rpgrtl_workspace"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        return work_dir / "renpy_realtime_translation.json"
+
+    def _load_renpy_realtime_cache(self) -> dict[str, str]:
+        path = self._renpy_realtime_cache_path()
+        if not path or not path.exists():
+            return {}
+        try:
+            payload = load_json(path)
+        except Exception:
+            return {}
+        raw = payload.get("translations", {}) if isinstance(payload, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(source): str(target) for source, target in raw.items() if str(source).strip() and str(target).strip()}
+
+    def _save_renpy_realtime_cache(self, cache: dict[str, str]) -> None:
+        path = self._renpy_realtime_cache_path()
+        if not path:
+            return
+        payload = {"version": 1, "updated_at": time.time(), "translations": dict(sorted(cache.items()))}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
+    def _renpy_realtime_entries(self, cache: dict[str, str]) -> dict[str, TranslationEntry]:
+        entries: dict[str, TranslationEntry] = {}
+        for entry_id, entry in self.translation_map.items():
+            if entry.source.strip() and entry.target.strip():
+                entries[entry_id] = entry
+        for index, (source, target) in enumerate(cache.items()):
+            entries.setdefault(
+                f"renpy_realtime::{index}",
+                TranslationEntry(entry_id=f"renpy_realtime::{index}", source=source, target=target, file="renpy_realtime_translation.json", context="realtime", category="dialogue"),
+            )
+        return entries
+
+    def _renpy_realtime_worker(self, service: object, provider_config: dict[str, str], stop_event: threading.Event) -> None:
+        cache = self._load_renpy_realtime_cache()
+        ordered_sources = self._renpy_realtime_ordered_sources()
+        cached_applied_sources: set[str] = set()
+        last_scan_report = 0.0
+        last_idle_report = 0.0
+        last_skip_report = 0.0
+        while not stop_event.is_set():
+            try:
+                events = service.read_live_debug_entries(2000) if hasattr(service, "read_live_debug_entries") else []
+                changed = False
+                candidates = [
+                    event
+                    for event in events
+                    if str(event.get("source", "") or "").strip()
+                    and not str(event.get("target", "") or "").strip()
+                    and str(event.get("kind", "") or "") in {"prefix_suffix", "do_display", "do_display_raw", "do_display_displayed", "display_say", "show_display_say", "choice", "menu_choice", "text_render"}
+                    and not str(event.get("kind", "") or "").startswith("realtime_")
+                    and not str(event.get("kind", "") or "").startswith("live_")
+                    and not str(event.get("source", "") or "").strip().startswith("live_")
+                ]
+                now = time.monotonic()
+                if candidates and hasattr(service, "append_live_debug_event") and now - last_scan_report >= 5:
+                    last_scan_report = now
+                    latest_source = str(candidates[-1].get("source", "") or "").strip()
+                    _append_live_log("tool", "realtime_scan", {"candidate_count": len(candidates), "latest_source": latest_source[:180]})
+                    service.append_live_debug_event("realtime_scan", latest_source or "实时扫描", f"发现未命中 {len(candidates)} 条，优先处理最新文本", "", False)
+                if not candidates and hasattr(service, "append_live_debug_event") and now - last_idle_report >= 5:
+                    last_idle_report = now
+                    bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
+                    translation_count = bridge_status.get("translation_count", 0) if isinstance(bridge_status, dict) else 0
+                    seen_count = bridge_status.get("seen_count", 0) if isinstance(bridge_status, dict) else 0
+                    service.append_live_debug_event("realtime_idle", "实时后台空闲", f"暂无未命中候选；桥接表 {translation_count} 条，已见文本 {seen_count} 条", "", False)
+                for event in reversed(candidates):
+                    source = str(event.get("source", "") or "").strip()
+                    displayed = str(event.get("displayed", "") or source).strip()
+                    kind = str(event.get("kind", "") or "")
+                    if not source or source == "hook_status":
+                        continue
+                    cached_source, target = self._renpy_realtime_cached_match(source, displayed, cache)
+                    if target:
+                        first_cached_application = source not in cached_applied_sources
+                        if first_cached_application and hasattr(service, "merge_live_translation"):
+                            cached_applied_sources.add(source)
+                            _append_live_log("tool", "realtime_cached_applied", {"source": source[:180], "target": target[:180]})
+                            service.merge_live_translation(source, target, kind="realtime_cached_applied")
+                        if first_cached_application and cached_source != source and hasattr(service, "append_live_debug_event"):
+                            service.append_live_debug_event("realtime_cached_variant", source, f"用缓存变体命中：{cached_source}", target, True)
+                        continue
+                    if source in self._renpy_realtime_seen_sources:
+                        if hasattr(service, "append_live_debug_event") and now - last_skip_report >= 5:
+                            last_skip_report = now
+                            service.append_live_debug_event("realtime_skip_seen", source, "已在本轮实时队列中处理过，避免重复请求", "", False)
+                        continue
+                    if self._looks_like_non_dialogue_translation(source):
+                        continue
+                    priority_sources = self._renpy_realtime_priority_sources(source, ordered_sources, cache)
+                    for item in priority_sources:
+                        self._renpy_realtime_seen_sources.add(item)
+                    if hasattr(service, "append_live_debug_event"):
+                        _append_live_log("tool", "realtime_requesting", {"source": source[:180], "count": len(priority_sources), "provider": provider_config.get("provider", "")})
+                        service.append_live_debug_event("realtime_queued", source, f"已加入实时翻译队列：{len(priority_sources)} 条", "", False)
+                        provider_name = provider_config.get("provider", "AI")
+                        service.append_live_debug_event("realtime_requesting", source, f"正在请求 {provider_name}，本批 {len(priority_sources)} 条", "", False)
+                    try:
+                        translations = self._renpy_realtime_translate_sources(priority_sources, provider_config)
+                    except Exception as exc:
+                        for item in priority_sources:
+                            self._renpy_realtime_seen_sources.discard(item)
+                        if hasattr(service, "append_live_debug_event"):
+                            _append_live_log("tool", "realtime_failed", {"source": source[:180], "error": str(exc)})
+                            service.append_live_debug_event("realtime_failed", source, "AI/翻译接口请求失败", str(exc), False)
+                        continue
+                    translated_count = sum(1 for item in priority_sources if translations.get(item, "").strip())
+                    if hasattr(service, "append_live_debug_event"):
+                        _append_live_log("tool", "realtime_response", {"source": source[:180], "translated_count": translated_count, "requested_count": len(priority_sources)})
+                        service.append_live_debug_event("realtime_response", source, f"接口已返回：{translated_count}/{len(priority_sources)} 条有效译文", "", translated_count > 0)
+                    for item in priority_sources:
+                        target = translations.get(item, "").strip()
+                        if not target:
+                            self._renpy_realtime_seen_sources.discard(item)
+                            if hasattr(service, "append_live_debug_event"):
+                                service.append_live_debug_event("realtime_empty", item, "AI 未返回译文，或译文被安全过滤", "", False)
+                            continue
+                        cache[item] = target
+                        changed = True
+                        if hasattr(service, "merge_live_translation"):
+                            service.merge_live_translation(item, target)
+                        self.root.after(0, lambda s=item, t=target: self._apply_renpy_realtime_translation_to_table(s, t))
+                if changed:
+                    self._save_renpy_realtime_cache(cache)
+                    if hasattr(service, "write_live_translation_table"):
+                        _path, count = service.write_live_translation_table(self._renpy_realtime_entries(cache))
+                        _append_live_log("tool", "realtime_written", {"bridge_count": count, "cache_count": len(cache)})
+                        if hasattr(service, "append_live_debug_event"):
+                            service.append_live_debug_event("realtime_written", "实时桥接表", f"已写入桥接表 {count} 条，实时缓存 {len(cache)} 条", "", True)
+                    self.root.after(0, lambda c=len(cache): self.runtime_status_var.set(f"Ren'Py 实时游戏翻译运行中：缓存 {c} 条"))
+            except Exception as exc:
+                if hasattr(service, "append_live_debug_event"):
+                    _append_live_log("tool", "realtime_worker_exception", {"error": str(exc)})
+                    service.append_live_debug_event("realtime_worker_exception", "实时后台异常", str(exc), "", False)
+                self.root.after(0, lambda err=exc: self.runtime_status_var.set(f"Ren'Py 实时游戏翻译异常：{err}"))
+            stop_event.wait(1.0)
+
+    def _renpy_realtime_ordered_sources(self) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for entry in self.translation_entries:
+            source = entry.source.strip()
+            if not source or source in seen:
+                continue
+            if entry.category not in {"dialogue", "choice"}:
+                continue
+            seen.add(source)
+            ordered.append(source)
+        return ordered
+
+    def _renpy_realtime_priority_sources(self, source: str, ordered_sources: list[str], cache: dict[str, str]) -> list[str]:
+        result = [source]
+        try:
+            index = ordered_sources.index(source)
+        except ValueError:
+            return result
+        for item in ordered_sources[index + 1 : index + 51]:
+            if item in cache or item in self._renpy_realtime_seen_sources:
+                continue
+            if self._looks_like_non_dialogue_translation(item):
+                continue
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _renpy_realtime_cached_match(source: str, displayed: str, cache: dict[str, str]) -> tuple[str, str]:
+        seen: set[str] = set()
+        for value in (source, displayed):
+            if not value:
+                continue
+            stripped = value.strip()
+            variants = [value, stripped, re.sub(r"\{[^}]*\}", "", stripped).strip(), re.sub(r"\s+", " ", stripped)]
+            if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+                variants.append(stripped[1:-1])
+            for variant in variants:
+                if not variant or variant in seen:
+                    continue
+                seen.add(variant)
+                target = str(cache.get(variant, "") or "").strip()
+                if target:
+                    return variant, target
+        return "", ""
+
+    def _renpy_realtime_translate_sources(self, sources: list[str], provider_config: dict[str, str]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        pending: list[TranslationEntry] = []
+        for index, source in enumerate(sources, start=1):
+            cached = self.translation_memory.get(source.strip(), "").strip()
+            if cached:
+                result[source] = cached
+                continue
+            pending.append(TranslationEntry(entry_id=f"renpy_realtime::{index}", source=source, category="dialogue"))
+        if not pending:
+            return result
+        if provider_config.get("provider") == "百度翻译":
+            raw = self._request_baidu_translations(pending, provider_config["appid"], provider_config["secret"])
+        else:
+            raw = self._request_ai_translations(pending, provider_config.get("api_key", ""), provider_config.get("model", ""), provider_config.get("provider", "OpenAI"), provider_config.get("base_url", ""))
+        memory_changed = False
+        for index, entry in enumerate(pending, start=1):
+            target = str(raw.get(entry.entry_id, "") or raw.get(str(index), "") or "").strip()
+            if not target:
+                continue
+            result[entry.source] = target
+            self.translation_memory[entry.source.strip()] = target
+            memory_changed = True
+        if memory_changed:
+            self._invalidate_translation_memory_index()
+            self._tm_dirty = True
+            self._flush_translation_memory()
+        return result
+
+    def _apply_renpy_realtime_translation_to_table(self, source: str, target: str) -> None:
+        for entry in self.translation_entries:
+            if entry.source == source:
+                entry.target = target
+                self.translation_map[entry.entry_id] = entry
+                self._schedule_translation_tree_refresh()
+                self._save_project_translation_cache()
+                return
 
     def prepare_local_env(self) -> None:
         project_root = self._project_root()
@@ -4404,10 +5620,13 @@ class ToolkitApp:
                     self.translation_view_id_map[view_id] = entry.entry_id
                     self.translation_tree.insert("", "end", iid=view_id, values=(self._translation_category_label(entry.category), entry.file, entry.context, entry.source, entry.target))
                     inserted += 1
+        self.translation_status_var.set(f"{len(self.translation_entries)} 条 / 当前 {matched} 条")
         if not inserted and self.translation_entries:
             self._set_translation_notice("当前筛选条件下没有匹配文本。")
         elif matched > TREE_RENDER_LIMIT:
             self.translation_detail_var.set(f"当前匹配 {matched} 条，已先显示前 {inserted} 条。可输入关键词缩小范围，界面会更流畅。")
+        elif matched:
+            self.translation_detail_var.set(f"当前范围显示 {matched} 条。选择文本后可在右侧编辑或点击“翻译选中”。")
 
     def _refresh_translation_file_filter(self) -> None:
         files = sorted({entry.file for entry in self.translation_entries if entry.file})
@@ -4429,13 +5648,27 @@ class ToolkitApp:
         return True
 
     def _on_translation_scope_change(self, _event: object | None = None) -> None:
+        self._sync_translation_scope_button_text()
+        self._schedule_translation_tree_refresh()
         if self.translation_scope_var.get() in {"系统/插件文本", "全部文本"} and self.project and self.project.engine == "RPG Maker MV/MZ":
             messagebox.showwarning(
                 "高风险翻译范围",
                 "系统/插件文本通常包含脚本、插件参数、引擎关键字段。\n\n"
                 "误翻译或嵌入后可能导致游戏启动失败。建议只翻译对白/选项，除非你明确知道这些字段可以改。",
             )
-        self._refresh_translation_tree()
+
+    def _sync_translation_scope_button_text(self) -> None:
+        button = getattr(self, "translate_scope_button", None)
+        if not button:
+            return
+        scope = self.translation_scope_var.get().strip() or "仅对白/选项"
+        labels = {
+            "仅对白/选项": "翻译仅对白/选项",
+            "数据库名称/说明": "翻译数据库",
+            "系统/插件文本": "翻译系统/插件",
+            "全部文本": "翻译全部文本",
+        }
+        button.configure(text=labels.get(scope, f"翻译{scope}"))
 
     def _has_risky_system_plugin_targets(self) -> bool:
         if not self.project or self.project.engine != "RPG Maker MV/MZ":
@@ -4444,11 +5677,11 @@ class ToolkitApp:
 
     def _translation_entry_in_scope(self, entry: TranslationEntry) -> bool:
         scope = self.translation_scope_var.get()
-        if scope == "仅对白/选项":
-            return entry.category == "dialogue"
-        if scope == "数据库名称/说明":
+        if scope.startswith("仅对白"):
+            return entry.category in {"dialogue", "choice"}
+        if scope.startswith("数据库"):
             return entry.category == "database"
-        if scope == "系统/插件文本":
+        if scope.startswith("系统"):
             return entry.category in {"system", "plugin"}
         return True
 
@@ -4456,6 +5689,7 @@ class ToolkitApp:
     def _translation_category_label(category: str) -> str:
         return {
             "dialogue": "对白",
+            "choice": "选项",
             "event": "事件",
             "database": "数据库",
             "system": "系统",
@@ -4481,22 +5715,26 @@ class ToolkitApp:
         if not text:
             return False
         lowered = text.lower()
-        if any(token in lowered for token in (".png", ".jpg", ".jpeg", ".webp", ".webm", ".ogg", ".mp3", ".wav", ".mp4", ".json", ".rpyc", ".rpa", ".exe", "http://", "https://", "www.")):
+        if re.fullmatch(r"https?://\S+|www\.\S+", lowered):
             return False
-        if "\\" in text or "/" in text:
-            if re.search(r"[a-zA-Z]:\\|\\\\|/|\\.", text):
+        if re.fullmatch(r"\S+\.(?:png|jpe?g|webp|webm|ogg|mp3|wav|mp4|json|rpyc|rpa|exe)", lowered):
+            return False
+        if ("\\" in text or "/" in text) and not ToolkitApp._control_token_fingerprint(text):
+            if re.fullmatch(r"[a-zA-Z]:\\\S+|\\\\\S+|(?:\.?\.?/)?[\w .-]+(?:/[\w .-]+)+", text):
                 return False
         if len(text) < 2:
             return False
         if re.fullmatch(r"[\W_]+", text):
             return False
-        if entry.category != "dialogue" and len(text) < 3:
+        if entry.category not in {"dialogue", "choice"} and len(text) < 3:
             return False
+        if len(ToolkitApp._control_token_fingerprint(text)) > 0:
+            return True
+        if re.search(r"[A-Za-z\u4e00-\u9fff]", text):
+            return True
         if text.count("{") != text.count("}") or text.count("[") != text.count("]"):
             return False
-        if not any("\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" or ch.isalpha() for ch in text):
-            return False
-        return True
+        return False
 
     def _refresh_data_tree(self) -> None:
         needle = self.data_filter_var.get().strip().lower()
@@ -4920,3 +6158,4 @@ def main(initial_path: str | Path | None = None) -> None:
     root = tk.Tk()
     ToolkitApp(root, initial_path=initial_path)
     root.mainloop()
+

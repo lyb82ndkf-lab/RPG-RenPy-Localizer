@@ -28,6 +28,9 @@ import android.webkit.WebChromeClient
 import android.webkit.ConsoleMessage
 import androidx.documentfile.provider.DocumentFile
 import com.rpgrtl.shell.databinding.ActivityMainBinding
+import com.rpgrtl.shell.wine.WineEngineBridge
+import com.rpgrtl.shell.wine.WineDisplayActivity
+import com.rpgrtl.shell.wine.WineSaveService
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -43,7 +46,9 @@ import org.json.JSONObject
 class MainActivity : Activity() {
     private lateinit var binding: ActivityMainBinding
     private val pickGameFolderRequest = 7101
+    private val pickGameExeRequest = 7102
     private var lastTreeUri: Uri? = null
+    private var lastExeUri: Uri? = null
     private var gameTreeRoot: DocumentFile? = null
     private var gameVirtualBase = ""
     private var lastGameUrl = ""
@@ -64,6 +69,12 @@ class MainActivity : Activity() {
     private var gameToolbarExpanded = false
     private var touchBlockerView: View? = null
     private var touchBlocked = false
+    private var externalSourceApp = ""
+    private var externalContainerId = -1
+    private var externalContainerName = ""
+    private var externalGameTitle = ""
+    private var externalGamePath = ""
+    private var externalTargetPage = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         createStartMs = System.nanoTime()
@@ -71,6 +82,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        consumeExternalLaunchIntent(intent)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enterImmersiveMode()
         setupWebView(binding.webView, exposeBridge = true)
@@ -83,6 +95,15 @@ class MainActivity : Activity() {
         loadToolPage()
         Log.d("PERF", "onCreate -> loadToolPage: ${(System.nanoTime() - createStartMs) / 1_000_000}ms")
         requestStartupPermissions()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeExternalLaunchIntent(intent)
+        if (!externalGamePath.isBlank() || externalContainerId >= 0 || externalContainerName.isNotBlank()) {
+            notifyWeb("Connected from Winlator: ${externalGameTitle.ifBlank { externalContainerName.ifBlank { "game" } }}")
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -147,6 +168,28 @@ class MainActivity : Activity() {
         if (!Settings.canDrawOverlays(this)) notifyWeb("HUD uses in-game overlay; floating-window permission is optional.")
     }
 
+    private fun consumeExternalLaunchIntent(intent: Intent?) {
+        if (intent == null) return
+        externalSourceApp = intent.getStringExtra("source_app") ?: externalSourceApp
+        externalContainerId = intent.getIntExtra("container_id", externalContainerId)
+        externalContainerName = intent.getStringExtra("container_name") ?: externalContainerName
+        externalGameTitle = intent.getStringExtra("game_title") ?: externalGameTitle
+        externalGamePath = intent.getStringExtra("game_path") ?: externalGamePath
+        externalTargetPage = intent.getStringExtra("target_page") ?: externalTargetPage
+        val extras = JSONObject().apply {
+            put("source_app", externalSourceApp)
+            put("container_id", externalContainerId)
+            put("container_name", externalContainerName)
+            put("game_title", externalGameTitle)
+            put("game_path", externalGamePath)
+            put("target_page", externalTargetPage)
+        }
+        getPreferences(Context.MODE_PRIVATE)
+            .edit()
+            .putString("external_launch_context", extras.toString())
+            .apply()
+    }
+
     private fun setupWebView(webView: WebView, exposeBridge: Boolean) {
         with(webView.settings) {
             javaScriptEnabled = true
@@ -202,6 +245,7 @@ class MainActivity : Activity() {
         if (binding.webView.url.isNullOrBlank()) {
             binding.webView.loadUrl("file:///android_asset/mobile_ui/index.html")
         }
+        pushExternalLaunchContext()
         reflowWebViewSoon()
         binding.webView.postDelayed({ preloadGameIfReady() }, 3000)
     }
@@ -439,10 +483,39 @@ class MainActivity : Activity() {
         startActivityForResult(intent, pickGameFolderRequest)
     }
 
+    fun pickGameExe() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf(
+                    "application/x-msdownload",
+                    "application/x-msdos-program",
+                    "application/octet-stream"
+                )
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(intent, pickGameExeRequest)
+    }
+
     fun selectGameFolder(uriText: String): String {
+        return selectGamePath(uriText)
+    }
+
+    fun selectGamePath(uriText: String): String {
         return try {
             val uri = Uri.parse(uriText)
-            lastTreeUri = uri
+            if (isLikelyExeUri(uriText)) {
+                lastExeUri = uri
+                lastTreeUri = null
+            } else {
+                lastTreeUri = uri
+                lastExeUri = null
+            }
             cachedEntryPath = ""
             gameTreeRoot = null
             gameVirtualBase = ""
@@ -453,7 +526,8 @@ class MainActivity : Activity() {
             gameFileIndex = emptyMap()
             getPreferences(Context.MODE_PRIVATE)
                 .edit()
-                .putString("last_game_tree_uri", uri.toString())
+                .putString("last_game_tree_uri", lastTreeUri?.toString().orEmpty())
+                .putString("last_game_exe_uri", lastExeUri?.toString().orEmpty())
                 .remove("last_rpg_entry_path")
                 .apply()
             JSONObject().put("ok", true).toString()
@@ -515,6 +589,18 @@ class MainActivity : Activity() {
     }
 
     fun scanSelectedGame() {
+        scanSelectedGamePath("")
+    }
+
+    fun scanSelectedGamePath(uriText: String) {
+        if (uriText.isNotBlank()) {
+            selectGamePath(uriText)
+        }
+        val exeUri = lastExeUri
+        if (exeUri != null) {
+            dispatchProjectScanned(scanSingleExe(exeUri))
+            return
+        }
         val uri = lastTreeUri
         if (uri == null) {
             notifyWeb("Please select a game folder first.")
@@ -611,15 +697,34 @@ class MainActivity : Activity() {
         }
     }
 
-    fun androidDataRecords(category: String, limit: Int): String {
+    fun androidDataRecords(requestJson: String): String {
+        val request = try {
+            JSONObject(requestJson)
+        } catch (_: Throwable) {
+            JSONObject().put("category", requestJson)
+        }
+        val category = request.optString("category", "")
+        val limit = request.optInt("limit", Int.MAX_VALUE).let { if (it <= 0) Int.MAX_VALUE else it }
         return cachedAndroidRpgResult("records:$category:$limit") { service ->
             service.dataRecords(category, limit)
         }
     }
 
+    fun androidDataRecords(category: String, limit: Int): String {
+        return androidDataRecords(JSONObject().put("category", category).put("limit", limit).toString())
+    }
+
     fun androidUpdateRecord(recordJson: String, newValue: String): String {
+        apiCache.clear()
         return androidRpgServiceResult { service ->
             service.updateRecord(recordJson, newValue)
+        }
+    }
+
+    fun androidSaveTranslationEntries(requestJson: String): String {
+        apiCache.clear()
+        return androidRpgServiceResult { service ->
+            service.saveTranslationEntries(requestJson)
         }
     }
 
@@ -636,21 +741,37 @@ class MainActivity : Activity() {
     }
 
     fun androidSaveSlots(): String {
+        if (isWineContext()) {
+            return WineSaveService(this).saveSlots(externalContainerId, externalGamePath).toString()
+        }
         return cachedAndroidRpgResult("saveSlots") { service ->
             service.saveSlots()
         }
     }
 
     fun androidCreateSaveBackup(): String {
+        if (isWineContext()) {
+            return WineSaveService(this).createBackup(externalContainerId, externalGamePath).toString()
+        }
         return androidRpgServiceResult { service ->
             service.createSaveBackup()
         }
     }
 
     fun androidBackups(): String {
+        if (isWineContext()) {
+            return WineSaveService(this).backups(externalContainerId, externalGamePath).toString()
+        }
         return cachedAndroidRpgResult("backups") { service ->
             service.backups()
         }
+    }
+
+    fun androidGetSavePath(): String {
+        if (isWineContext()) {
+            return WineSaveService(this).savePath(externalContainerId, externalGamePath).toString()
+        }
+        return androidRpgServiceResult { service -> service.savePath() }
     }
 
     fun saveAiSettings(json: String): String {
@@ -690,6 +811,7 @@ class MainActivity : Activity() {
     }
 
     fun runtimeStatus(): String {
+        wineRuntimeBridge()?.let { return it.status().toString() }
         val script = """
             (function(){
               try {
@@ -704,6 +826,17 @@ class MainActivity : Activity() {
     }
 
     fun runtimeCheat(action: String, value: String): String {
+        wineRuntimeBridge()?.let { bridge ->
+            val mapped = when (action) {
+                "gold" -> "setGold"
+                "hp" -> "setHp"
+                "mp" -> "setMp"
+                "tp" -> "setTp"
+                "through" -> "noclip"
+                else -> action
+            }
+            return bridge.command(mapped, value).toString()
+        }
         val safeAction = escapeJs(action)
         val safeValue = escapeJs(value)
         val script = """
@@ -717,6 +850,27 @@ class MainActivity : Activity() {
             })();
         """.trimIndent()
         return evalGameJson(script)
+    }
+
+    fun androidRuntimeEval(script: String): String {
+        wineRuntimeBridge()?.let { bridge ->
+            return bridge.evaluate(script).toString()
+        }
+        val wrapped = """
+            (function(){
+              try {
+                return JSON.stringify({ok:true,value:(function(){ return ($script); })()});
+              } catch(e) {
+                return JSON.stringify({ok:false,error:String(e)});
+              }
+            })();
+        """.trimIndent()
+        return evalGameJson(wrapped)
+    }
+
+    private fun wineRuntimeBridge(): com.rpgrtl.shell.wine.RuntimeBridge? {
+        if (externalSourceApp != "rpgtl_wine" || externalContainerId < 0) return null
+        return WineDisplayActivity.runtimeBridgeFor(externalContainerId)
     }
 
     fun injectCheatScript() {
@@ -767,13 +921,25 @@ class MainActivity : Activity() {
             val uri = lastTreeUri ?: throw IllegalStateException("Please select a game folder first.")
             val source = DocumentFile.fromTreeUri(this, uri)
                 ?: throw IllegalStateException("Cannot read selected folder.")
-            block(AndroidRpgMakerService(this, source)).toString()
+            block(AndroidRpgMakerService(this, source, externalServiceContext())).toString()
         } catch (error: Throwable) {
             JSONObject()
                 .put("ok", false)
                 .put("error", error.message ?: error.javaClass.simpleName)
                 .toString()
         }
+    }
+
+    private fun isWineContext(): Boolean {
+        return externalSourceApp == "rpgtl_wine" && externalContainerId >= 0
+    }
+
+    private fun externalServiceContext(): JSONObject {
+        return JSONObject()
+            .put("source_app", externalSourceApp)
+            .put("container_id", externalContainerId)
+            .put("container_name", externalContainerName)
+            .put("game_path", externalGamePath)
     }
 
     private fun cachedAndroidRpgResult(cacheKey: String, block: (AndroidRpgMakerService) -> JSONObject): String {
@@ -861,8 +1027,9 @@ class MainActivity : Activity() {
             when (mode) {
                 "compat" -> {
                     userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
+                    // Desktop UA helps compatibility, but overview mode makes many games render zoomed-in on phones.
+                    useWideViewPort = false
+                    loadWithOverviewMode = false
                     cacheMode = WebSettings.LOAD_DEFAULT
                     layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
                 }
@@ -880,25 +1047,45 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Android API but fine for this minimal shell prototype.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != pickGameFolderRequest || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val flags = data.flags and (
             Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-        contentResolver.takePersistableUriPermission(uri, flags)
-        lastTreeUri = uri
-        getPreferences(Context.MODE_PRIVATE)
-            .edit()
-            .putString("last_game_tree_uri", uri.toString())
-            .apply()
-        dispatchFolderPicked(uri)
+        runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
+        when (requestCode) {
+            pickGameFolderRequest -> {
+                lastTreeUri = uri
+                lastExeUri = null
+                getPreferences(Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_game_tree_uri", uri.toString())
+                    .putString("last_game_exe_uri", "")
+                    .apply()
+                dispatchFolderPicked(uri)
+            }
+            pickGameExeRequest -> {
+                lastExeUri = uri
+                lastTreeUri = null
+                getPreferences(Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_game_tree_uri", "")
+                    .putString("last_game_exe_uri", uri.toString())
+                    .apply()
+                dispatchExePicked(uri)
+            }
+        }
     }
 
     private fun restoreLastTreeUri() {
         val raw = getPreferences(Context.MODE_PRIVATE).getString("last_game_tree_uri", "") ?: ""
         if (raw.isNotBlank()) {
             lastTreeUri = Uri.parse(raw)
+        }
+        val exeRaw = getPreferences(Context.MODE_PRIVATE).getString("last_game_exe_uri", "") ?: ""
+        if (exeRaw.isNotBlank()) {
+            lastExeUri = Uri.parse(exeRaw)
         }
         cachedEntryPath = getPreferences(Context.MODE_PRIVATE).getString("last_rpg_entry_path", "") ?: ""
     }
@@ -910,6 +1097,15 @@ class MainActivity : Activity() {
             null
         )
         scanSelectedGame()
+    }
+
+    private fun dispatchExePicked(uri: Uri) {
+        val escaped = escapeJs(uri.toString())
+        binding.webView.evaluateJavascript(
+            "window.onAndroidGameExePicked && window.onAndroidGameExePicked('$escaped')",
+            null
+        )
+        dispatchProjectScanned(scanSingleExe(uri))
     }
 
     fun dispatchRestoredFolderIfAny() {
@@ -935,6 +1131,16 @@ class MainActivity : Activity() {
                 null
             )
         }
+    }
+
+    private fun pushExternalLaunchContext() {
+        val context = getPreferences(Context.MODE_PRIVATE).getString("external_launch_context", "") ?: ""
+        if (context.isBlank()) return
+        val escaped = escapeJs(context)
+        binding.webView.evaluateJavascript(
+            "window.onAndroidExternalLaunchContext && window.onAndroidExternalLaunchContext(JSON.parse('$escaped'));window.onAndroidOpenToolPage&&window.onAndroidOpenToolPage(JSON.parse('$escaped').target_page||'')",
+            null
+        )
     }
 
     private fun nextRunSession(): Int {
@@ -1048,7 +1254,19 @@ class MainActivity : Activity() {
         enterImmersiveMode()
         val target = if (gameViewActive) binding.gameWebView else binding.webView
         target.postDelayed({
-            target.evaluateJavascript("document.body&&document.body.style&&(document.body.style.display='');", null)
+            target.evaluateJavascript(
+                """
+                (function(){
+                  if(document.body && document.body.style){
+                    document.body.style.display = '';
+                    document.body.style.zoom = '1';
+                  }
+                  window.dispatchEvent(new Event('resize'));
+                  document.dispatchEvent(new Event('resize'));
+                })();
+                """.trimIndent(),
+                null
+            )
         }, 100)
     }
 
@@ -1439,6 +1657,29 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    fun androidLaunchGame(backend: String): String {
+        val normalized = backend.lowercase()
+        if (normalized.contains("wine")) {
+            val targetExe = lastExeUri ?: findSelectedExeUri()
+            val title = externalGameTitle.ifBlank { targetExe?.let { displayNameForUri(it) }.orEmpty() }
+            return WineEngineBridge(this).launch(targetExe, title).toString()
+        }
+        runOnUiThread {
+            when {
+                normalized.contains("ren") -> launchRenpyGame()
+                normalized.contains("exe") ||
+                    normalized.contains("windows") ||
+                    normalized.contains("wine") ||
+                    normalized.contains("compatible") -> launchExeWithExternalRunner()
+                else -> launchSelectedGame()
+            }
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("backend", normalized.ifBlank { "rpgmaker-webview" })
+            .toString()
+    }
+
     private fun restoreGamePathIndex(uri: Uri?) {
         val uriText = uri?.toString() ?: return
         val prefs = getPreferences(Context.MODE_PRIVATE)
@@ -1711,6 +1952,7 @@ class MainActivity : Activity() {
         stats.put("name", root.name ?: "Selected folder")
         stats.put("engine", engine)
         stats.put("exe", firstExe)
+        stats.put("backend", if (engine == "Windows exe / compatible runner") "wine" else "webview")
         stats.put("rpgEntry", rpgEntry)
         stats.put("renpyEntry", renpyEntry)
         stats.put("fileCount", fileCount)
@@ -1739,6 +1981,52 @@ class MainActivity : Activity() {
             buildGameFileIndex(root, uri)
         }
         return stats
+    }
+
+    private fun scanSingleExe(uri: Uri): JSONObject {
+        val name = displayNameForUri(uri).ifBlank { "Windows EXE" }
+        val highlights = JSONArray()
+            .put(JSONObject().put("label", "Executable").put("value", name))
+            .put(JSONObject().put("label", "Backend").put("value", "Wine + Box64"))
+        val advice = "Windows EXE selected. It will launch through RPGTL Wine/Box64."
+        return JSONObject()
+            .put("uri", uri.toString())
+            .put("root", uri.toString())
+            .put("name", name)
+            .put("engine", "Windows exe / Wine backend")
+            .put("exe", uri.toString())
+            .put("backend", "wine")
+            .put("fileCount", 1)
+            .put("dirCount", 0)
+            .put("mapCount", 0)
+            .put("dataFileCount", 0)
+            .put("scriptCount", 0)
+            .put("textHintCount", 0)
+            .put("highlights", highlights)
+            .put("note", advice)
+            .put("launchAdvice", advice)
+    }
+
+    private fun findSelectedExeUri(): Uri? {
+        lastExeUri?.let { return it }
+        val root = lastTreeUri?.let { DocumentFile.fromTreeUri(this, it) } ?: return null
+        return findFirstExe(root)?.uri
+    }
+
+    private fun displayNameForUri(uri: Uri): String {
+        val document = DocumentFile.fromSingleUri(this, uri)
+        val fromDocument = document?.name.orEmpty()
+        if (fromDocument.isNotBlank()) return fromDocument
+        val decoded = runCatching { Uri.decode(uri.lastPathSegment ?: "") }.getOrDefault(uri.lastPathSegment ?: "")
+        return decoded.substringAfterLast('/').substringAfterLast(':').ifBlank { uri.toString() }
+    }
+
+    private fun isLikelyExeUri(value: String): Boolean {
+        val lower = value.lowercase()
+        return lower.endsWith(".exe") ||
+            lower.contains(".exe?") ||
+            lower.contains("%2eexe") ||
+            lower.contains("application/x-msdownload")
     }
 
     private fun findRpgMakerEntry(root: File): File? {

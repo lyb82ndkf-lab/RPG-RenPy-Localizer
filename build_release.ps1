@@ -26,10 +26,18 @@ if (Test-Path $Dist) {
 }
 
 $Launcher = Join-Path $Root "main.py"
+$StaticDir = Join-Path $Root "static"
+
+if (!(Test-Path $StaticDir)) {
+    New-Item -ItemType Directory -Path $StaticDir -Force | Out-Null
+}
 
 & $Python -m PyInstaller `
     --noconsole `
     --clean `
+    --collect-submodules toolkit `
+    --collect-submodules tkinter `
+    --add-data "$StaticDir;static" `
     --name "RPGRenPyLocalizer" `
     --distpath $Dist `
     --workpath (Join-Path $Root "build") `

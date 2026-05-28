@@ -10,8 +10,10 @@ export interface DataRecord {
   location?: string
 }
 
-export function listRecords(category = '', limit = 500) {
-  if (isAndroidShell()) return Promise.resolve(shellJson<{ records: DataRecord[] }>('androidDataRecords', category, limit))
+export function listRecords(category = '', limit = 5000) {
+  if (isAndroidShell()) {
+    return Promise.resolve(shellJson<{ records: DataRecord[] }>('androidDataRecords', JSON.stringify({ category, limit })))
+  }
   const query = category ? `&category=${encodeURIComponent(category)}` : ''
   return request<{ records: DataRecord[] }>(`/api/records?limit=${limit}${query}`)
 }

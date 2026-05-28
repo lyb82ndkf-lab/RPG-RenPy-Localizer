@@ -1,7 +1,22 @@
-import { isAndroidShell, pickShellFolder } from './shell-bridge'
+import { isAndroidShell, pickShellExe, pickShellFolder } from './shell-bridge'
 
 export function pickGamePath(): Promise<string> {
   if (isAndroidShell()) return pickShellFolder()
+  return new Promise((resolve) => {
+    uni.chooseFile({
+      count: 1,
+      type: 'all',
+      success: (res: any) => {
+        const file = res.tempFiles?.[0]
+        resolve(file?.path || file?.name || '')
+      },
+      fail: () => resolve(''),
+    })
+  })
+}
+
+export function pickGameExe(): Promise<string> {
+  if (isAndroidShell()) return pickShellExe()
   return new Promise((resolve) => {
     uni.chooseFile({
       count: 1,

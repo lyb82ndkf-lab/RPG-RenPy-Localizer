@@ -1,0 +1,95 @@
+{
+  "buildFiles": [
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\gladiorenderer\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\libadrenotools\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\libadrenotools\\lib\\linkernsbypass\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\libadrenotools\\src\\hook\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\midihandler\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\virglrenderer\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\vortekrenderer\\CMakeLists.txt",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\src\\main\\cpp\\winlator\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "D:\\Android SDK\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\.cxx\\RelWithDebInfo\\3m2l6s5o\\arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "D:\\Android SDK\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\.cxx\\RelWithDebInfo\\3m2l6s5o\\arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "file_redirect_hook::@78f430b088191d943664": {
+      "artifactName": "file_redirect_hook",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libfile_redirect_hook.so",
+      "runtimeFiles": []
+    },
+    "midihandler::@c28c5e188eb6c5cbe448": {
+      "artifactName": "midihandler",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libmidihandler.so",
+      "runtimeFiles": []
+    },
+    "virglrenderer::@b02222b02b17b4412ae0": {
+      "artifactName": "virglrenderer",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libvirglrenderer.so",
+      "runtimeFiles": []
+    },
+    "adrenotools::@610204f4c562aadf23cb": {
+      "artifactName": "adrenotools",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\.cxx\\RelWithDebInfo\\3m2l6s5o\\arm64-v8a\\libadrenotools\\libadrenotools.a",
+      "runtimeFiles": []
+    },
+    "gladiorenderer::@68bae0731d827b04443f": {
+      "artifactName": "gladiorenderer",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libgladiorenderer.so",
+      "runtimeFiles": []
+    },
+    "linkernsbypass::@5407b3deb09cd7052cda": {
+      "artifactName": "linkernsbypass",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\.cxx\\RelWithDebInfo\\3m2l6s5o\\arm64-v8a\\libadrenotools\\lib\\linkernsbypass\\liblinkernsbypass.a",
+      "runtimeFiles": []
+    },
+    "winlator::@24ed85a0dee10927067c": {
+      "artifactName": "winlator",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libwinlator.so",
+      "runtimeFiles": []
+    },
+    "hook_impl::@78f430b088191d943664": {
+      "artifactName": "hook_impl",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libhook_impl.so",
+      "runtimeFiles": []
+    },
+    "vortekrenderer::@5c43feac295472031f72": {
+      "artifactName": "vortekrenderer",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libvortekrenderer.so",
+      "runtimeFiles": []
+    },
+    "gsl_alloc_hook::@78f430b088191d943664": {
+      "artifactName": "gsl_alloc_hook",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libgsl_alloc_hook.so",
+      "runtimeFiles": []
+    },
+    "main_hook::@78f430b088191d943664": {
+      "artifactName": "main_hook",
+      "abi": "arm64-v8a",
+      "output": "D:\\程序\\RPG tool\\RPGRenPyLocalizer\\android_app\\shell\\app\\build\\intermediates\\cxx\\RelWithDebInfo\\3m2l6s5o\\obj\\arm64-v8a\\libmain_hook.so",
+      "runtimeFiles": []
+    }
+  }
+}

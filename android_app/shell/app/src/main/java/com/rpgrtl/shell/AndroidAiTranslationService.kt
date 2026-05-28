@@ -10,6 +10,16 @@ import java.net.URL
 
 class AndroidAiTranslationService {
     fun translate(request: JSONObject): JSONObject {
+        return try {
+            translateUnsafe(request)
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun translateUnsafe(request: JSONObject): JSONObject {
         val settings = request.optJSONObject("settings") ?: JSONObject()
         val entries = request.optJSONArray("entries") ?: JSONArray()
         if (entries.length() == 0) {
@@ -68,9 +78,9 @@ class AndroidAiTranslationService {
         val payload = JSONObject()
             .put("model", model)
             .put("messages", messages)
-            .put("temperature", 0.2)
-            .put("top_p", 0.9)
-            .put("max_tokens", 8192)
+            .put("temperature", settings.optDouble("temperature", 0.2))
+            .put("top_p", settings.optDouble("top_p", 0.9))
+            .put("max_tokens", settings.optInt("max_tokens", 8192))
 
         val raw = postJson(endpoint, provider, apiKey, payload)
         val content = JSONObject(raw)
@@ -82,13 +92,20 @@ class AndroidAiTranslationService {
         val translatedObject = parseTranslatedObject(extractJsonObject(content))
         val translations = JSONArray()
         for ((number, entryId) in keyByNumber) {
-            if (!translatedObject.has(number)) continue
-            val target = translatedObject.optString(number, "").trim()
+            val source = sourceByEntryId[entryId] ?: ""
+            val zeroBased = (number.toIntOrNull()?.minus(1))?.toString().orEmpty()
+            val target = when {
+                translatedObject.has(number) -> translatedObject.optString(number, "")
+                translatedObject.has(zeroBased) -> translatedObject.optString(zeroBased, "")
+                translatedObject.has(entryId) -> translatedObject.optString(entryId, "")
+                translatedObject.has(source) -> translatedObject.optString(source, "")
+                else -> ""
+            }.trim()
             if (target.isBlank()) continue
             translations.put(
                 JSONObject()
                     .put("entry_id", entryId)
-                    .put("source", sourceByEntryId[entryId] ?: "")
+                    .put("source", source)
                     .put("target", target)
             )
         }

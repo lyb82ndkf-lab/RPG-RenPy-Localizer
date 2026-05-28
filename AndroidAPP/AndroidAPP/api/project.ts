@@ -9,7 +9,7 @@ export interface ProjectInfo {
 }
 
 export function loadProject(path: string) {
-  if (isAndroidShell()) return scanShellProject()
+  if (isAndroidShell()) return scanShellProject(path)
   return request<{ project: ProjectInfo; summary: Record<string, any> }>('/api/project/load', {
     method: 'POST',
     data: { path },

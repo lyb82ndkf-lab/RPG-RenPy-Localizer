@@ -3,16 +3,20 @@
     <TopNav :items="navItems" current="settings" @change="goPage" />
     <view class="settings-grid">
       <view class="panel">
+        <view class="panel-head">启动设置</view>
         <view class="panel-body column">
-          <view class="launch-box">
-            <view class="row">
-              <button class="button secondary" :class="{ active: launch.renderMode === 'fast' }" @tap="setMode('fast')">快速模式</button>
-              <button class="button secondary" :class="{ active: launch.renderMode === 'compat' }" @tap="setMode('compat')">兼容模式</button>
-              <label class="check"><checkbox :checked="launch.translationInject" @tap="toggleInject" />VFS 翻译注入</label>
-            </view>
-            <view class="status">{{ modeHint }}</view>
+          <view class="row wrap">
+            <button class="button secondary" :class="{ active: launch.renderMode === 'fast' }" @tap="setMode('fast')">快速模式</button>
+            <button class="button secondary" :class="{ active: launch.renderMode === 'compat' }" @tap="setMode('compat')">兼容模式</button>
           </view>
+          <label class="check"><checkbox :checked="launch.translationInject" @tap="toggleInject" />VFS 翻译注入</label>
+          <view class="status">{{ modeHint }}</view>
+        </view>
+      </view>
 
+      <view class="panel">
+        <view class="panel-head">虚拟按键预览</view>
+        <view class="panel-body column">
           <VirtualController
             :buttons="buttons"
             :selected-id="selectedId"
@@ -27,16 +31,29 @@
       </view>
 
       <view class="panel">
+        <view class="panel-head">按键属性</view>
         <view class="panel-body column">
           <button class="button" @tap="addButton">新增按键</button>
           <view v-if="selected" class="column">
-            <input class="input" v-model="selected.label" placeholder="显示文字" />
-            <input class="input" v-model.number="selected.keyCode" type="number" placeholder="键盘 KeyCode" />
-            <input class="input" v-model.number="selected.size" type="number" placeholder="大小" />
-            <input class="input" v-model.number="selected.opacity" type="digit" placeholder="透明度 0-1" />
+            <label class="field">
+              <text>显示文字</text>
+              <input class="input" v-model="selected.label" placeholder="例如 A / B / Ctrl" />
+            </label>
+            <label class="field">
+              <text>键盘 KeyCode</text>
+              <input class="input" v-model.number="selected.keyCode" type="number" placeholder="Enter=13 Esc=27" />
+            </label>
+            <label class="field">
+              <text>按钮大小 {{ selected.size }}</text>
+              <slider :value="selected.size" min="34" max="150" step="1" show-value @change="selected.size = $event.detail.value" />
+            </label>
+            <label class="field">
+              <text>透明度 {{ Math.round((selected.opacity || 0) * 100) }}%</text>
+              <slider :value="Math.round((selected.opacity || 0.65) * 100)" min="10" max="100" step="1" show-value @change="selected.opacity = $event.detail.value / 100" />
+            </label>
             <button class="button secondary" @tap="removeSelected">删除选中</button>
           </view>
-          <view class="status" v-else>点击左侧按键后，在这里修改显示文字、KeyCode、大小和透明度。</view>
+          <view class="status" v-else>点击左侧按键后，可在这里修改显示文字、KeyCode、大小和透明度。</view>
           <view class="status">常用：Enter=13，Esc=27，Shift=16，Ctrl=17，空格=32。</view>
         </view>
       </view>
@@ -59,8 +76,11 @@ const preset = [
   { id: 'ctrl', label: 'Ctrl', keyCode: 17, x: 0.86, y: 0.42, size: 48, opacity: 0.48 },
   { id: 'shift', label: 'Shift', keyCode: 16, x: 0.72, y: 0.42, size: 48, opacity: 0.48 },
 ]
-const buttons = ref(uni.getStorageSync('touch_controls') || preset.slice(0, 3))
-const launch = reactive(uni.getStorageSync('launch_settings') || {
+
+const storedButtons = uni.getStorageSync('touch_controls')
+const storedLaunch = uni.getStorageSync('launch_settings')
+const buttons = ref(Array.isArray(storedButtons) && storedButtons.length ? storedButtons : preset.slice(0, 3))
+const launch = reactive(storedLaunch || {
   renderMode: 'fast',
   webgl: true,
   domStorage: true,
@@ -74,7 +94,7 @@ const selected = computed(() => buttons.value.find((item) => item.id === selecte
 const navItems = TOP_NAV_ITEMS
 const modeHint = computed(() => (
   launch.renderMode === 'compat'
-    ? '兼容模式：桌面 UA + VFS 文件拦截，适合贴图/脚本兼容问题，但启动略慢。'
+    ? '兼容模式：桌面 UA + VFS 文件拦截，适合贴图或脚本兼容问题，但启动略慢。'
     : '快速模式：系统 WebView 默认路径，启动更快，优先用于 MV/MZ。'
 ))
 
@@ -128,14 +148,9 @@ function goPage(key) {
 <style scoped lang="scss">
 .settings-grid {
   display: grid;
-  grid-template-columns: 0.62fr 0.38fr;
+  grid-template-columns: 0.24fr 0.46fr 0.3fr;
   gap: 5rpx;
   margin-top: 4rpx;
-}
-.launch-box {
-  padding: 6rpx;
-  background: #111a25;
-  border: 1px solid #273445;
 }
 .compact-actions .button {
   flex: 1;
@@ -151,5 +166,15 @@ function goPage(key) {
   min-height: 28rpx;
   color: #d8e6f5;
   font-size: 12rpx;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  color: #d8e6f5;
+  font-size: 12rpx;
+}
+.wrap {
+  flex-wrap: wrap;
 }
 </style>

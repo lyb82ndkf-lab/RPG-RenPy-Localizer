@@ -1,4 +1,4 @@
-package com.rpgrtl.shell
+﻿package com.rpgrtl.shell
 
 import android.content.Context
 import androidx.documentfile.provider.DocumentFile
@@ -10,7 +10,8 @@ import java.util.Locale
 
 class AndroidRpgMakerService(
     private val context: Context,
-    private val root: DocumentFile
+    private val root: DocumentFile,
+    private val externalContext: JSONObject = JSONObject()
 ) {
     private val dataDir: DocumentFile = findDataDir(root)
         ?: throw IllegalStateException("未找到 RPG Maker MV/MZ 的 data 目录。")
@@ -19,11 +20,12 @@ class AndroidRpgMakerService(
         val entries = JSONArray()
         var count = 0
         val seen = mutableSetOf<String>()
+        val effectiveLimit = if (limit <= 0) Int.MAX_VALUE else limit
         for (file in sortedJsonFiles()) {
             val name = file.name ?: continue
             if (!isTextFile(name)) continue
             val data = readJson(file) ?: continue
-            extractTranslations(name, data, mutableListOf(), entries, seen, limit.coerceIn(1, 5000)) { count++ }
+            extractTranslations(name, data, mutableListOf(), entries, seen, effectiveLimit) { count++ }
         }
         return JSONObject()
             .put("ok", true)
@@ -31,7 +33,8 @@ class AndroidRpgMakerService(
             .put("entries", entries)
     }
 
-    fun dataRecords(category: String, limit: Int): JSONObject {
+    fun dataRecords(category: String, limit: Int = Int.MAX_VALUE): JSONObject {
+        val effectiveLimit = if (limit <= 0) Int.MAX_VALUE else limit
         val records = JSONArray()
         var count = 0
         for (file in sortedJsonFiles()) {
@@ -39,7 +42,7 @@ class AndroidRpgMakerService(
             if (!isEditableFile(name)) continue
             if (category.isNotBlank() && category != name && category != categoryFor(name)) continue
             val data = readJson(file) ?: continue
-            listRecords(name, data, mutableListOf(), records, limit.coerceIn(1, 5000), data) { count++ }
+            listRecords(name, data, mutableListOf(), records, effectiveLimit, data) { count++ }
         }
         return JSONObject()
             .put("ok", true)
@@ -70,13 +73,53 @@ class AndroidRpgMakerService(
             .put("value", displayValue(coerced))
     }
 
+    fun saveTranslationEntries(requestJson: String): JSONObject {
+        val request = JSONObject(requestJson)
+        val entries = request.optJSONArray("entries") ?: JSONArray()
+        val byFile = linkedMapOf<String, MutableList<JSONObject>>()
+        for (index in 0 until entries.length()) {
+            val entry = entries.optJSONObject(index) ?: continue
+            val fileName = entry.optString("file", "")
+            val target = entry.optString("target", "").trim()
+            val path = entry.optJSONArray("json_path")
+            if (fileName.isBlank() || target.isBlank() || path == null || path.length() == 0) continue
+            byFile.getOrPut(fileName) { mutableListOf() }.add(entry)
+        }
+
+        var changed = 0
+        for ((fileName, fileEntries) in byFile) {
+            val file = dataDir.findFile(fileName) ?: continue
+            val data = readJson(file) ?: continue
+            var fileChanged = false
+            for (entry in fileEntries) {
+                val path = entry.optJSONArray("json_path") ?: continue
+                val target = entry.optString("target", "").trim()
+                if (target.isBlank()) continue
+                val finalTarget = if (isQuotedScriptString(data, path)) quoteScriptString(target) else target
+                if (setPathValue(data, path, finalTarget)) {
+                    changed += 1
+                    fileChanged = true
+                }
+            }
+            if (fileChanged) {
+                backupFile(file, "translation")
+                writeText(file, jsonToString(data))
+            }
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("count", changed)
+            .put("message", "Saved $changed translated entries.")
+    }
+
     fun maps(): JSONObject {
         val info = dataDir.findFile("MapInfos.json")
         val infos = readJson(info) as? JSONArray ?: JSONArray()
         val maps = JSONArray()
         for (index in 0 until infos.length()) {
             val item = infos.optJSONObject(index) ?: continue
-            val mapId = item.optInt("id", index)
+            val rawId = item.optInt("id", -1)
+            val mapId = if (rawId > 0) rawId else index + 1
             val fileName = "Map%03d.json".format(mapId)
             val mapData = readJson(dataDir.findFile(fileName)) as? JSONObject
             val events = mapData?.optJSONArray("events")
@@ -154,17 +197,18 @@ class AndroidRpgMakerService(
     }
 
     fun saveSlots(): JSONObject {
-        val saveDir = root.findFile("save")
         val slots = JSONArray()
-        if (saveDir != null && saveDir.isDirectory) {
+        for (saveDir in findSaveDirs()) {
             for (file in saveDir.listFiles().sortedBy { it.name ?: "" }) {
                 val name = file.name ?: continue
-                val match = Regex("""file(\d+)\.(rpgsave|rmmzsave)""", RegexOption.IGNORE_CASE).matchEntire(name) ?: continue
+                val match = SAVE_FILE_REGEX.matchEntire(name) ?: continue
                 slots.put(
                     JSONObject()
-                        .put("slot_id", match.groupValues[1].toInt())
-                        .put("label", "存档 ${match.groupValues[1]}")
+                        .put("slot_id", match.groupValues[1].toIntOrNull() ?: extractSlotNumber(name))
+                        .put("label", "瀛樻。 ${match.groupValues[1]}")
                         .put("name", name)
+                        .put("path", file.uri.toString())
+                        .put("source", saveDir.name ?: "save")
                         .put("size", file.length())
                         .put("modified_at", formatTime(file.lastModified()))
                 )
@@ -173,21 +217,31 @@ class AndroidRpgMakerService(
         return JSONObject().put("ok", true).put("count", slots.length()).put("slots", slots)
     }
 
+    fun savePath(): JSONObject {
+        val saveDir = findSaveDirs().firstOrNull()
+        return JSONObject()
+            .put("ok", true)
+            .put("exists", saveDir != null)
+            .put("savePath", saveDir?.uri?.toString().orEmpty())
+    }
+
     fun createSaveBackup(): JSONObject {
-        val saveDir = root.findFile("save") ?: throw IllegalStateException("没有找到 save 目录。")
-        val backupDir = ensureDir(ensureDir(ensureDir(root, ".rpgrtl_android"), "backup"), "save")
+        val saveDir = findSaveDirs().firstOrNull() ?: throw IllegalStateException("没有找到 save 目录。")
+        val backupDir = ensureDir(ensureDir(ensureDir(root, "mtool"), "backup"), "save")
         var copied = 0
         for (file in saveDir.listFiles()) {
             val name = file.name ?: continue
-            if (!Regex("""file\d+\.(rpgsave|rmmzsave)""", RegexOption.IGNORE_CASE).matches(name)) continue
+            if (!SAVE_FILE_REGEX.matches(name)) continue
             copyFile(file, backupDir, "$name.${stamp()}.bak")
             copied += 1
         }
-        return JSONObject().put("ok", true).put("message", "已备份 $copied 个存档到 .rpgrtl_android/backup/save").put("count", copied)
+        return JSONObject()
+            .put("ok", true)
+            .put("message", "已备份 $copied 个存档到 mtool/backup/save")
+            .put("count", copied)
     }
 
     fun backups(): JSONObject {
-        val backupRoot = root.findFile(".rpgrtl_android")?.findFile("backup")
         val items = JSONArray()
         fun walk(dir: DocumentFile?, prefix: String) {
             if (dir == null || !dir.isDirectory) return
@@ -203,7 +257,8 @@ class AndroidRpgMakerService(
                 )
             }
         }
-        walk(backupRoot, "")
+        walk(root.findFile("mtool")?.findFile("backup"), "")
+        walk(root.findFile(".rpgrtl_android")?.findFile("backup"), ".rpgrtl_android/")
         return JSONObject().put("ok", true).put("count", items.length()).put("backups", items)
     }
 
@@ -211,6 +266,36 @@ class AndroidRpgMakerService(
         return dataDir.listFiles()
             .filter { it.isFile && (it.name ?: "").endsWith(".json", ignoreCase = true) }
             .sortedBy { it.name ?: "" }
+    }
+
+    private fun findSaveDirs(): List<DocumentFile> {
+        val result = mutableListOf<DocumentFile>()
+        fun add(path: String) {
+            val dir = findDocumentPath(root, path)
+            if (dir != null && dir.isDirectory && result.none { it.uri == dir.uri }) {
+                result.add(dir)
+            }
+        }
+        val explicit = externalContext.optString("container_save_path", "")
+        if (explicit.isNotBlank()) add(explicit)
+        add("save")
+        add("www/save")
+        add("game/saves")
+        add("Save")
+        return result
+    }
+
+    private fun findDocumentPath(start: DocumentFile, path: String): DocumentFile? {
+        if (path.isBlank()) return start
+        var current: DocumentFile = start
+        path.split('/', '\\').filter { it.isNotBlank() }.forEach { segment ->
+            val files = current.listFiles()
+            val next = files.firstOrNull { it.name == segment }
+                ?: files.firstOrNull { it.name.equals(segment, ignoreCase = true) }
+                ?: return null
+            current = next
+        }
+        return current
     }
 
     private fun extractTranslations(
@@ -308,6 +393,7 @@ class AndroidRpgMakerService(
                 .put("file", file)
                 .put("context", context)
                 .put("category", category)
+                .put("json_path", JSONArray(path))
         )
     }
 
@@ -433,7 +519,7 @@ class AndroidRpgMakerService(
         if (conditions.optBoolean("variableValid")) { out.put("页$pageIndex: 变量 ${conditions.optInt("variableId")} >= ${conditions.opt("variableValue")}"); added = true }
         if (conditions.optBoolean("selfSwitchValid")) { out.put("页$pageIndex: 独立开关 ${conditions.optString("selfSwitchCh")} ON"); added = true }
         if (conditions.optBoolean("itemValid")) { out.put("页$pageIndex: 持有物品 ${conditions.optInt("itemId")}"); added = true }
-        if (conditions.optBoolean("actorValid")) { out.put("页$pageIndex: 队伍含角色 ${conditions.optInt("actorId")}"); added = true }
+        if (conditions.optBoolean("actorValid")) { out.put("页$pageIndex: 队伍包含角色 ${conditions.optInt("actorId")}"); added = true }
         if (!added) out.put("页$pageIndex: 无触发条件")
     }
 
@@ -443,16 +529,16 @@ class AndroidRpgMakerService(
             val code = command.optInt("code", 0)
             val params = command.optJSONArray("parameters") ?: JSONArray()
             when {
-                code == 401 && params.opt(0) is String -> summary.put("对话：${params.optString(0).take(32)}")
-                code == 405 && params.opt(0) is String -> summary.put("滚动文本：${params.optString(0).take(32)}")
-                code == 121 && params.length() >= 3 -> summary.put("开关：${params.opt(0)}-${params.opt(1)}")
-                code == 122 && params.length() >= 5 -> summary.put("变量：${params.opt(0)}-${params.opt(1)}")
+                code == 401 && params.opt(0) is String -> summary.put("瀵硅瘽锛?{params.optString(0).take(32)}")
+                code == 405 && params.opt(0) is String -> summary.put("婊氬姩鏂囨湰锛?{params.optString(0).take(32)}")
+                code == 121 && params.length() >= 3 -> summary.put("寮€鍏筹細${params.opt(0)}-${params.opt(1)}")
+                code == 122 && params.length() >= 5 -> summary.put("鍙橀噺锛?{params.opt(0)}-${params.opt(1)}")
                 code == 201 && params.length() >= 5 -> {
-                    val text = "传送：地图 ${params.opt(1)} (${params.opt(2)}, ${params.opt(3)})"
+                    val text = "浼犻€侊細鍦板浘 ${params.opt(1)} (${params.opt(2)}, ${params.opt(3)})"
                     summary.put(text)
                     transfers.put(text)
                 }
-                code == 355 -> summary.put("脚本")
+                code == 355 -> summary.put("鑴氭湰")
             }
         }
     }
@@ -484,7 +570,7 @@ class AndroidRpgMakerService(
     private fun writeText(file: DocumentFile, text: String) {
         context.contentResolver.openOutputStream(file.uri, "wt")?.use { output ->
             output.write(text.toByteArray(Charsets.UTF_8))
-        } ?: throw IllegalStateException("无法写入文件：${file.name}")
+        } ?: throw IllegalStateException("鏃犳硶鍐欏叆鏂囦欢锛?{file.name}")
     }
 
     private fun backupFile(file: DocumentFile, group: String) {
@@ -494,7 +580,7 @@ class AndroidRpgMakerService(
 
     private fun copyFile(source: DocumentFile, targetDir: DocumentFile, targetName: String) {
         val target = targetDir.createFile("application/octet-stream", targetName)
-            ?: throw IllegalStateException("无法创建备份文件：$targetName")
+            ?: throw IllegalStateException("鏃犳硶鍒涘缓澶囦唤鏂囦欢锛?targetName")
         context.contentResolver.openInputStream(source.uri)?.use { input ->
             context.contentResolver.openOutputStream(target.uri, "wt")?.use { output ->
                 input.copyTo(output)
@@ -506,7 +592,7 @@ class AndroidRpgMakerService(
         parent.findFile(name)?.let {
             if (it.isDirectory) return it
         }
-        return parent.createDirectory(name) ?: throw IllegalStateException("无法创建目录：$name")
+        return parent.createDirectory(name) ?: throw IllegalStateException("鏃犳硶鍒涘缓鐩綍锛?name")
     }
 
     private fun childAt(target: Any, key: Any): Any? {
@@ -524,13 +610,41 @@ class AndroidRpgMakerService(
         }
     }
 
+    private fun setPathValue(data: Any, path: JSONArray, value: String): Boolean {
+        var target: Any = data
+        for (index in 0 until path.length() - 1) {
+            target = childAt(target, path.get(index)) ?: return false
+        }
+        val last = path.get(path.length() - 1)
+        setChild(target, last, value)
+        return true
+    }
+
+    private fun valueAtPath(data: Any, path: JSONArray): Any? {
+        var target: Any = data
+        for (index in 0 until path.length()) {
+            target = childAt(target, path.get(index)) ?: return null
+        }
+        return target
+    }
+
+    private fun isQuotedScriptString(data: Any, path: JSONArray): Boolean {
+        val raw = valueAtPath(data, path) as? String ?: return false
+        return (raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith("\"") && raw.endsWith("\""))
+    }
+
+    private fun quoteScriptString(value: String): String {
+        val escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+        return "'$escaped'"
+    }
+
     private fun coerceValue(value: String, old: Any?): Any? {
         val text = value.trim()
         return when (old) {
             is Boolean -> text.lowercase() in setOf("1", "true", "yes", "y", "on", "是")
-            is Int -> text.toInt()
-            is Long -> text.toLong()
-            is Double -> text.toDouble()
+            is Int -> text.toIntOrNull() ?: old
+            is Long -> text.toLongOrNull() ?: old
+            is Double -> text.toDoubleOrNull() ?: old
             JSONObject.NULL, null -> if (text.lowercase() == "null") JSONObject.NULL else value
             else -> value
         }
@@ -570,8 +684,8 @@ class AndroidRpgMakerService(
 
     private fun categoryFor(fileName: String): String {
         return when {
-            fileName == "MapInfos.json" -> "MapInfos 地图"
-            fileName.startsWith("Map") && fileName.endsWith(".json") -> "Maps 地图事件"
+            fileName == "MapInfos.json" -> "MapInfos 鍦板浘"
+            fileName.startsWith("Map") && fileName.endsWith(".json") -> "Maps 鍦板浘浜嬩欢"
             else -> CATEGORY_LABELS[fileName] ?: fileName.removeSuffix(".json")
         }
     }
@@ -615,17 +729,18 @@ class AndroidRpgMakerService(
             "message3", "message4", "displayName", "gameTitle", "currencyUnit"
         )
         private val SKIP_DATA_KEYS = setOf("note", "traits", "effects")
+        private val SAVE_FILE_REGEX = Regex("""(?:file|save|slot|autosave)?(\d+).*\.(rpgsave|rmmzsave|rmmz|rmmv|rvdata2|save|lsd|sav)""", RegexOption.IGNORE_CASE)
         private val CATEGORY_LABELS = mapOf(
-            "Actors.json" to "角色",
-            "Armors.json" to "防具",
-            "Classes.json" to "职业",
-            "Enemies.json" to "敌人",
-            "Items.json" to "物品",
+            "Actors.json" to "瑙掕壊",
+            "Armors.json" to "闃插叿",
+            "Classes.json" to "鑱屼笟",
+            "Enemies.json" to "鏁屼汉",
+            "Items.json" to "鐗╁搧",
             "Skills.json" to "技能",
             "States.json" to "状态",
-            "Weapons.json" to "武器",
-            "System.json" to "系统",
-            "CommonEvents.json" to "公共事件"
+            "Weapons.json" to "姝﹀櫒",
+            "System.json" to "绯荤粺",
+            "CommonEvents.json" to "鍏叡浜嬩欢"
         )
 
         private fun findDataDir(root: DocumentFile): DocumentFile? {
@@ -641,6 +756,10 @@ class AndroidRpgMakerService(
                 return null
             }
             return walk(root, 0)
+        }
+
+        private fun extractSlotNumber(name: String): Int {
+            return Regex("""\d+""").find(name)?.value?.toIntOrNull() ?: -1
         }
     }
 }

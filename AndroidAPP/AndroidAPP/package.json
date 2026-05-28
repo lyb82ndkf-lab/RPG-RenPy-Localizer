@@ -5,6 +5,9 @@
   "version": "0.1.0",
   "description": "UniApp + Vue3 鐗堟湰鐨?RPG Maker / Ren'Py 鏈湴鍖栦笌浣撻獙宸ュ叿",
   "scripts": {
+    "build:h5": "echo 'HBuilderX CLI 无法生成完整H5产物。请用 build_frontend.bat 或手动在HBuilderX GUI中构建。' && exit 1",
+    "build:h5:gui": "start \"\" \"D:\\HBuilderX\\HBuilderX.exe\" \"%cd%\"",
+    "sync:android": "xcopy /E /I /Y unpackage\\dist\\build\\h5\\* ..\\..\\android_app\\shell\\app\\src\\main\\assets\\mobile_ui\\",
     "test": "echo \"No tests configured\""
   },
   "keywords": [

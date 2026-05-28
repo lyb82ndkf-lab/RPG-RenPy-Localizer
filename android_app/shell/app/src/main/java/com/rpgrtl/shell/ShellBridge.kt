@@ -11,6 +11,13 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun pickGameExe() {
+        activity.runOnUiThread {
+            activity.pickGameExe()
+        }
+    }
+
+    @JavascriptInterface
     fun openOverlaySettings() {
         activity.runOnUiThread {
             activity.openOverlaySettings()
@@ -39,8 +46,20 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun scanSelectedGamePath(uri: String) {
+        activity.runOnUiThread {
+            activity.scanSelectedGamePath(uri)
+        }
+    }
+
+    @JavascriptInterface
     fun selectGameFolder(uri: String): String {
         return activity.selectGameFolder(uri)
+    }
+
+    @JavascriptInterface
+    fun selectGamePath(uri: String): String {
+        return activity.selectGamePath(uri)
     }
 
     @JavascriptInterface
@@ -65,6 +84,11 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun androidLaunchGame(backend: String): String {
+        return activity.androidLaunchGame(backend)
+    }
+
+    @JavascriptInterface
     fun toggleToolPage() {
         activity.runOnUiThread {
             activity.toggleToolPage()
@@ -77,13 +101,18 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
-    fun androidDataRecords(category: String, limit: Int): String {
-        return activity.androidDataRecords(category, limit)
+    fun androidDataRecords(requestJson: String): String {
+        return activity.androidDataRecords(requestJson)
     }
 
     @JavascriptInterface
     fun androidUpdateRecord(recordJson: String, newValue: String): String {
         return activity.androidUpdateRecord(recordJson, newValue)
+    }
+
+    @JavascriptInterface
+    fun androidSaveTranslationEntries(requestJson: String): String {
+        return activity.androidSaveTranslationEntries(requestJson)
     }
 
     @JavascriptInterface
@@ -112,6 +141,11 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun androidGetSavePath(): String {
+        return activity.androidGetSavePath()
+    }
+
+    @JavascriptInterface
     fun saveAiSettings(json: String): String {
         return activity.saveAiSettings(json)
     }
@@ -129,6 +163,11 @@ class ShellBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun runtimeCheat(action: String, value: String): String {
         return activity.runtimeCheat(action, value)
+    }
+
+    @JavascriptInterface
+    fun androidRuntimeEval(script: String): String {
+        return activity.androidRuntimeEval(script)
     }
 
     @JavascriptInterface

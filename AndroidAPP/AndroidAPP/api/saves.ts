@@ -6,10 +6,13 @@ export interface SaveSlot {
   slot_id?: number
   size?: number
   modified_at?: string
+  path?: string
+  source?: string
+  save_root?: string
 }
 
 export function listSaveSlots() {
-  if (isAndroidShell()) return Promise.resolve(shellJson<{ slots: SaveSlot[] }>('androidSaveSlots'))
+  if (isAndroidShell()) return Promise.resolve(shellJson<{ slots: SaveSlot[]; save_path?: string; wine?: boolean }>('androidSaveSlots'))
   return request<{ slots: SaveSlot[] }>('/api/saves')
 }
 
@@ -21,5 +24,10 @@ export function createBackup() {
 export function listBackups() {
   if (isAndroidShell()) return Promise.resolve(shellJson<{ backups: Record<string, any>[] }>('androidBackups'))
   return request<{ backups: Record<string, any>[] }>('/api/saves/backups')
+}
+
+export function getSavePath() {
+  if (isAndroidShell()) return Promise.resolve(shellJson<{ savePath: string; exists: boolean; wine?: boolean }>('androidGetSavePath'))
+  return Promise.resolve({ savePath: '', exists: false })
 }
 

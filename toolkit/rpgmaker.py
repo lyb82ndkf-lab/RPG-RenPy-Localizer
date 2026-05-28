@@ -118,6 +118,69 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     return bridge.translations[raw] || bridge.translations[raw.trim()] || raw;
   }
 
+  function applyTranslationsToLoadedData() {
+    if (!bridge.translationEnabled || !bridge.translations) return 0;
+    let changed = 0;
+    const visited = new Set();
+    const walk = value => {
+      if (!value || typeof value !== "object" || visited.has(value)) return;
+      visited.add(value);
+      if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) {
+          const item = value[i];
+          if (typeof item === "string") {
+            const translated = translate(item);
+            if (translated !== item) {
+              value[i] = translated;
+              changed++;
+            }
+          } else {
+            walk(item);
+          }
+        }
+        return;
+      }
+      for (const key of Object.keys(value)) {
+        const item = value[key];
+        if (typeof item === "string") {
+          const translated = translate(item);
+          if (translated !== item) {
+            value[key] = translated;
+            changed++;
+          }
+        } else {
+          walk(item);
+        }
+      }
+    };
+    [
+      window.$dataActors,
+      window.$dataArmors,
+      window.$dataClasses,
+      window.$dataEnemies,
+      window.$dataItems,
+      window.$dataMap,
+      window.$dataMapInfos,
+      window.$dataSkills,
+      window.$dataStates,
+      window.$dataSystem,
+      window.$dataWeapons
+    ].forEach(walk);
+    if (window.$gameMessage) {
+      walk($gameMessage._texts);
+      walk($gameMessage._choices);
+    }
+    if (window.$gameMap) $gameMap.requestRefresh();
+    if (window.SceneManager && SceneManager._scene) {
+      try {
+        if (SceneManager._scene._messageWindow && SceneManager._scene._messageWindow.refresh) SceneManager._scene._messageWindow.refresh();
+        if (SceneManager._scene._choiceListWindow && SceneManager._scene._choiceListWindow.refresh) SceneManager._scene._choiceListWindow.refresh();
+        if (SceneManager._scene.refresh) SceneManager._scene.refresh();
+      } catch (_e) {}
+    }
+    return changed;
+  }
+
   function collectContainer(container, database) {
     const result = [];
     if (!container || !database) return result;
@@ -366,8 +429,9 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         const payload = await readBody(req);
         bridge.translations = payload.dict || {};
         bridge.translationEnabled = payload.enabled !== false;
+        const applied = applyTranslationsToLoadedData();
         if (SceneManager && SceneManager._scene && SceneManager._scene.refresh) SceneManager._scene.refresh();
-        return json(res, 200, { ok: true, count: Object.keys(bridge.translations).length });
+        return json(res, 200, { ok: true, count: Object.keys(bridge.translations).length, applied });
       }
       json(res, 404, { ok: false, error: "not found" });
     } catch (e) {
@@ -500,13 +564,21 @@ class RPGMakerService:
     def apply_translations(self, translations: dict[str, TranslationEntry]) -> int:
         self._backup_tree()
         updated = 0
+        source_index = self._translation_source_index(translations)
+        target_files = {
+            entry.file
+            for entry in translations.values()
+            if entry.target.strip() and entry.file
+        }
         for index, json_path in enumerate(sorted(self.data_dir.glob("*.json"))):
             if json_path.name not in TEXT_FILES and not json_path.stem.startswith("Map"):
+                continue
+            if target_files and json_path.name not in target_files:
                 continue
             if index % 5 == 0:
                 time.sleep(0)
             data = load_json(json_path)
-            changed = self._apply_to_json(json_path.name, data, translations)
+            changed = self._apply_to_json(json_path.name, data, translations, source_index)
             if changed:
                 save_json(json_path, data)
                 updated += changed
@@ -516,11 +588,19 @@ class RPGMakerService:
         patch_root = self.project.root / ".rpgrtl_workspace" / "runtime_patch"
         updated = 0
         changed_files: list[tuple[Path, Any]] = []
+        source_index = self._translation_source_index(translations)
+        target_files = {
+            entry.file
+            for entry in translations.values()
+            if entry.target.strip() and entry.file
+        }
         for json_path in sorted(self.data_dir.glob("*.json")):
             if json_path.name not in TEXT_FILES and not json_path.stem.startswith("Map"):
                 continue
+            if target_files and json_path.name not in target_files:
+                continue
             data = load_json(json_path)
-            changed = self._apply_to_json(json_path.name, data, translations)
+            changed = self._apply_to_json(json_path.name, data, translations, source_index)
             if changed:
                 changed_files.append((json_path, data))
                 updated += changed
@@ -1077,7 +1157,16 @@ class RPGMakerService:
         elif code == 102 and params and isinstance(params[0], list):
             for index, option in enumerate(params[0]):
                 if isinstance(option, str):
-                    add(index, option)
+                    if option.strip():
+                        results.append(
+                            TranslationEntry(
+                                entry_id=self._make_entry_id(file_name, path + ["parameters", 0, index]),
+                                source=option,
+                                file=file_name,
+                                context=f"event code {code}",
+                                category=self._event_translation_category(code),
+                            )
+                        )
         elif code == 402 and len(params) > 1 and isinstance(params[1], str):
             add(1, params[1])
         elif code == 122 and len(params) > 4 and isinstance(params[4], str):
@@ -1116,19 +1205,25 @@ class RPGMakerService:
                 )
             )
 
+    @staticmethod
+    def _translation_source_index(translations: dict[str, TranslationEntry]) -> dict[str, str]:
+        return {
+            entry.source: entry.target
+            for entry in translations.values()
+            if entry.source and entry.target.strip()
+        }
+
     def _apply_to_json(
-        self, file_name: str, data: Any, translations: dict[str, TranslationEntry]
+        self, file_name: str, data: Any, translations: dict[str, TranslationEntry], source_index: dict[str, str] | None = None
     ) -> int:
         changed = 0
+        source_index = source_index or self._translation_source_index(translations)
 
         def resolve(entry_id: str, original: str) -> str:
             entry = translations.get(entry_id)
             if entry and entry.target.strip():
                 return entry.target
-            for candidate in translations.values():
-                if candidate.source == original and candidate.target.strip():
-                    return candidate.target
-            return original
+            return source_index.get(original, original)
 
         def visit(node: Any, path: list[str | int]) -> None:
             nonlocal changed
@@ -1190,7 +1285,7 @@ class RPGMakerService:
         elif code == 102 and params and isinstance(params[0], list):
             for index, option in enumerate(params[0]):
                 if isinstance(option, str):
-                    entry_id = self._make_entry_id(file_name, path + ["parameters", index])
+                    entry_id = self._make_entry_id(file_name, path + ["parameters", 0, index])
                     new_text = resolve(entry_id, option)
                     if new_text != option:
                         params[0][index] = new_text

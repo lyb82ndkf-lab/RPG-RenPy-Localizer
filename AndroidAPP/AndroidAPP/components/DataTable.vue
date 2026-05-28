@@ -1,7 +1,7 @@
 <template>
-  <scroll-view scroll-y class="data-table" @scrolltolower="loadMore">
+  <scroll-view scroll-y class="data-table">
     <view
-      v-for="group in visibleGroups"
+      v-for="group in groups"
       :key="group.key"
       class="row"
       :class="{ active: group.key === selectedKey }"
@@ -10,29 +10,15 @@
       <view class="name">{{ group.label }}</view>
       <view class="meta">{{ group.records.length }} 条</view>
     </view>
-    <view v-if="visibleGroups.length < groups.length" class="more">继续下滑加载更多</view>
   </scroll-view>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
-
 const props = defineProps({
   groups: { type: Array, default: () => [] },
   selectedKey: { type: String, default: '' },
 })
 defineEmits(['select'])
-
-const visibleCount = ref(80)
-const visibleGroups = computed(() => props.groups.slice(0, visibleCount.value))
-
-watch(() => props.groups.length, () => {
-  visibleCount.value = 80
-})
-
-function loadMore() {
-  visibleCount.value = Math.min(visibleCount.value + 80, props.groups.length)
-}
 </script>
 
 <style scoped lang="scss">
@@ -62,11 +48,5 @@ function loadMore() {
   margin-top: 1rpx;
   color: #95a7ba;
   font-size: 10rpx;
-}
-.more {
-  padding: 6rpx;
-  color: #95a7ba;
-  text-align: center;
-  font-size: 11rpx;
 }
 </style>

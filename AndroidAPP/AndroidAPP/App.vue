@@ -1,10 +1,22 @@
 <script setup>
 import { onLaunch } from '@dcloudio/uni-app'
 import { useProjectStore } from '@/store/project'
+import { isAndroidShell } from '@/utils/shell-bridge'
+import { switchTopPage } from '@/utils/navigation'
 
 onLaunch(() => {
   const project = useProjectStore()
   project.restoreLibrary()
+  project.restoreCurrentSelection()
+  if (isAndroidShell() && typeof window !== 'undefined') {
+    window.onAndroidExternalLaunchContext = (payload) => {
+      project.applyExternalLaunchContext(payload)
+      if (payload?.target_page) switchTopPage(payload.target_page)
+    }
+    window.onAndroidOpenToolPage = (page) => {
+      if (page) switchTopPage(page)
+    }
+  }
 })
 </script>
 

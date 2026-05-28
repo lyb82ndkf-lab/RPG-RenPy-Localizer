@@ -6,12 +6,15 @@
         <view class="panel-body column">
           <view class="row compact-actions">
             <button class="button" @tap="pickFolder">选择文件夹</button>
+            <button class="button" @tap="pickExe">选择 EXE</button>
             <button class="button secondary" :disabled="project.loading" @tap="load">载入</button>
             <button class="button secondary" :disabled="!project.loaded" @tap="project.launch()">启动</button>
           </view>
           <view class="status" v-if="project.loading">正在识别游戏...</view>
-          <view class="status" v-else-if="project.loaded">当前：{{ currentTitle }} / {{ project.engine }}</view>
-          <view class="status" v-else>请选择游戏文件夹，识别成功后会自动加入游戏库。</view>
+          <view class="status" v-else-if="project.loaded">
+            当前：{{ currentTitle }} / {{ project.engine }} / 后端：{{ backendLabel }}
+          </view>
+          <view class="status" v-else>请选择游戏文件夹或 Windows EXE，识别成功后会自动加入游戏库。</view>
         </view>
       </view>
 
@@ -42,7 +45,7 @@
 import { computed, ref } from 'vue'
 import TopNav from '@/components/TopNav.vue'
 import GameCard from '@/components/GameCard.vue'
-import { pickGamePath } from '@/utils/file-access'
+import { pickGameExe, pickGamePath } from '@/utils/file-access'
 import { switchTopPage } from '@/utils/navigation'
 import { TOP_NAV_ITEMS } from '@/utils/top-nav'
 import { useProjectStore } from '@/store/project'
@@ -50,15 +53,44 @@ import { useProjectStore } from '@/store/project'
 const project = useProjectStore()
 const path = ref(project.path)
 const navItems = TOP_NAV_ITEMS
+
 const currentTitle = computed(() => {
   const item = project.library.find((game) => game.path === project.path)
-  return item?.title || item?.name || project.summary.name || '已载入游戏'
+  return item?.title || item?.name || project.summary.name || '已导入游戏'
+})
+
+const backendLabel = computed(() => {
+  if (project.launchBackend === 'renpy') return 'Ren\'Py 翻译/补丁'
+  if (project.launchBackend === 'wine') return 'RPGTL Wine/Box64'
+  if (project.launchBackend === 'compatible-exe') return 'exe 兼容运行器'
+  return 'RPGTL 内置 WebView'
 })
 
 async function pickFolder() {
   path.value = await pickGamePath()
   if (path.value) {
-    project.remember({ path: path.value, name: '待识别游戏', title: '待识别游戏', engine: '待识别' })
+    project.remember({
+      path: path.value,
+      name: '待识别游戏',
+      title: '待识别游戏',
+      engine: '待识别',
+    })
+    await project.load(path.value)
+  }
+}
+
+async function pickExe() {
+  path.value = await pickGameExe()
+  if (path.value) {
+    const title = decodeURIComponent(String(path.value).split(/[\\/%]/).filter(Boolean).pop() || 'Windows EXE')
+    project.remember({
+      path: path.value,
+      name: title,
+      title,
+      engine: 'Windows exe / Wine backend',
+      backend: 'wine',
+      summary: { exe: path.value, engine: 'Windows exe / Wine backend' },
+    })
     await project.load(path.value)
   }
 }
@@ -68,7 +100,10 @@ function selectGame(game) {
 }
 
 async function load() {
-  if (!path.value) return uni.showToast({ title: '请先选择游戏', icon: 'none' })
+  if (!path.value) {
+    uni.showToast({ title: '请先选择游戏', icon: 'none' })
+    return
+  }
   await project.load(path.value)
 }
 
@@ -86,7 +121,7 @@ function renameGame(game) {
 function removeGame(game) {
   uni.showModal({
     title: '删除游戏',
-    content: `从游戏库移除「${game.title || game.name || '未命名游戏'}」？不会删除手机文件。`,
+    content: `从游戏库移除 ${game.title || game.name || '未命名游戏'} ？不会删除手机文件。`,
     success: (res) => {
       if (res.confirm) project.remove(game)
     },

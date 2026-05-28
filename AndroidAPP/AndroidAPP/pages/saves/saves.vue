@@ -7,12 +7,16 @@
       </view>
       <view class="panel-body saves-layout">
         <view class="column save-list">
+          <view class="status">检测路径：{{ saves.savePath || '未找到存档目录' }}</view>
+          <view class="status" v-if="saves.wineMode">Wine 存档：{{ saves.savePath || '正在探测' }}</view>
+          <view class="status error" v-if="saves.error">{{ saves.error }}</view>
           <view class="row compact-actions">
             <button class="button" @tap="backup">立即备份</button>
             <button class="button secondary" @tap="saves.loadBackups(true)">备份列表</button>
           </view>
           <scroll-view scroll-y class="slot-list">
             <SaveSlotCard v-for="slot in saves.slots" :key="slot.name" :slot="slot" @select="selected = slot" />
+            <view v-if="!saves.loading && !saves.slots.length" class="status">没有找到存档文件。</view>
           </scroll-view>
         </view>
         <view class="column detail-pane">
@@ -34,6 +38,7 @@ import SaveFileEditor from '@/components/SaveFileEditor.vue'
 import { switchTopPage } from '@/utils/navigation'
 import { TOP_NAV_ITEMS } from '@/utils/top-nav'
 import { useSavesStore } from '@/store/saves'
+import { onShow } from '@dcloudio/uni-app'
 
 const saves = useSavesStore()
 const selected = ref(null)
@@ -48,7 +53,11 @@ function goPage(key) {
   switchTopPage(key)
 }
 
-saves.load()
+onShow(() => {
+  saves.load(true)
+  saves.loadBackups(true)
+  saves.refreshSavePath()
+})
 </script>
 
 <style scoped lang="scss">
@@ -69,5 +78,8 @@ saves.load()
 }
 .panel-head {
   justify-content: flex-end;
+}
+.error {
+  color: #ff8a80;
 }
 </style>

@@ -2,8 +2,11 @@ declare global {
   interface Window {
     RPGRenPyShell?: Record<string, (...args: any[]) => any>
     onAndroidGameFolderPicked?: (uri: string) => void
+    onAndroidGameExePicked?: (uri: string) => void
     onAndroidProjectScanned?: (payload: string | Record<string, any>) => void
     onAndroidShellMessage?: (message: string) => void
+    onAndroidExternalLaunchContext?: (payload: Record<string, any>) => void
+    onAndroidOpenToolPage?: (page: string) => void
   }
 }
 
@@ -29,8 +32,14 @@ export function shellJson<T = any>(method: string, ...args: any[]): T {
 export function launchShellGame(engine = '') {
   if (!isAndroidShell()) return false
   const lower = String(engine || '').toLowerCase()
+  if (window.RPGRenPyShell?.androidLaunchGame) {
+    callShell('androidLaunchGame', lower)
+    return true
+  }
   if (lower.includes('ren')) {
     callShell('launchRenpyGame')
+  } else if (lower.includes('wine')) {
+    callShell('androidLaunchGame', 'wine')
   } else if (lower.includes('exe') || lower.includes('windows')) {
     callShell('launchExeWithExternalRunner')
   } else {
@@ -42,6 +51,12 @@ export function launchShellGame(engine = '') {
 export function selectShellGameFolder(path: string) {
   if (!isAndroidShell() || !path) return false
   shellJson('selectGameFolder', path)
+  return true
+}
+
+export function selectShellGamePath(path: string) {
+  if (!isAndroidShell() || !path) return false
+  shellJson('selectGamePath', path)
   return true
 }
 
@@ -60,7 +75,22 @@ export function pickShellFolder(): Promise<string> {
   })
 }
 
-export function scanShellProject(): Promise<{ project: any; summary: Record<string, any> }> {
+export function pickShellExe(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!isAndroidShell()) {
+      reject(new Error('当前不在 Android 壳内运行。'))
+      return
+    }
+    const previous = window.onAndroidGameExePicked
+    window.onAndroidGameExePicked = (uri: string) => {
+      previous?.(uri)
+      resolve(uri)
+    }
+    callShell('pickGameExe')
+  })
+}
+
+export function scanShellProject(path = ''): Promise<{ project: any; summary: Record<string, any> }> {
   return new Promise((resolve, reject) => {
     if (!isAndroidShell()) {
       reject(new Error('当前不在 Android 壳内运行。'))
@@ -83,6 +113,6 @@ export function scanShellProject(): Promise<{ project: any; summary: Record<stri
       previousMessage?.(message)
       if (message.includes('失败')) reject(new Error(message))
     }
-    callShell('scanSelectedGame')
+    callShell('scanSelectedGamePath', path)
   })
 }

@@ -105,6 +105,16 @@ class Workspace:
         clean = {str(source).strip(): str(target).strip() for source, target in translations.items() if str(source).strip() and str(target).strip()}
         self._write_json(path, {"translations": clean})
 
+    def delete_project_translation_memory(self, project_root: Path | None) -> None:
+        if not project_root:
+            return
+        path = self._project_tm_path(self.config_dir, project_root)
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
     @staticmethod
     def _read_json(path: Path, default: Any) -> Any:
         if not path.exists():

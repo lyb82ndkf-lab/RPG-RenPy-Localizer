@@ -1,0 +1,9 @@
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\gladiorenderer\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\lib\linkernsbypass\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\src\hook\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\midihandler\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\virglrenderer\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\vortekrenderer\CMakeLists.txt
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\winlator\CMakeLists.txt

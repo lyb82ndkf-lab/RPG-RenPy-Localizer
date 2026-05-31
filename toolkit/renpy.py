@@ -32,11 +32,11 @@ LIVE_TRANSLATIONS_NAME = "renpy_live_translation.json"
 LIVE_SEEN_NAME = "renpy_live_seen.jsonl"
 LIVE_LOG_NAME = "rpgrtl_live_debug.log"
 LIVE_BRIDGE_PORT = 32180
-LIVE_BRIDGE_VERSION = "2026-05-28.1"
+LIVE_BRIDGE_VERSION = "2026-05-29.6"
 
 _LIVE_SERVER_LOCK = threading.Lock()
 _LIVE_SERVER: ThreadingHTTPServer | None = None
-_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}}
+_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}, "notify_seq": 0, "force_text": "", "pre_translate_queue": []}
 
 
 def _live_log_path() -> Path:
@@ -56,10 +56,29 @@ def _append_live_log(component: str, event: str, payload: object = "") -> None:
             },
             ensure_ascii=False,
         )
+        with _LIVE_LOG_LOCK:
+            _LIVE_LOG_BUFFER.append(line)
+            if len(_LIVE_LOG_BUFFER) >= 20:
+                _flush_live_log_buffer()
+    except Exception:
+        pass
+
+_LIVE_LOG_BUFFER: list[str] = []
+_LIVE_LOG_LOCK = threading.Lock()
+_LIVE_LOG_LAST_FLUSH = 0.0
+
+def _flush_live_log_buffer() -> None:
+    global _LIVE_LOG_LAST_FLUSH
+    if not _LIVE_LOG_BUFFER:
+        return
+    try:
         path = _live_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(line + "\n")
+            for line in _LIVE_LOG_BUFFER:
+                f.write(line + "\n")
+        _LIVE_LOG_BUFFER.clear()
+        _LIVE_LOG_LAST_FLUSH = time.time()
     except Exception:
         pass
 
@@ -104,7 +123,7 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
         try:
             payload = self.rfile.read(length).decode("utf-8")
             data = json.loads(payload)
-            return data if isinstance(data, dict) else {}
+            return data if (hasattr(data, "get") and hasattr(data, "keys")) else {}
         except Exception:
             return {}
 
@@ -118,6 +137,15 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/notify":
+            with _LIVE_SERVER_LOCK:
+                seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
+                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
+                force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                if force_text:
+                    _LIVE_SERVER_STATE["force_text"] = ""
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq})
+            return
         if parsed.path != "/debug":
             self._send_json({"ok": False, "error": "not found"})
             return
@@ -129,12 +157,21 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
             pass
         with _LIVE_SERVER_LOCK:
             events = list(_LIVE_SERVER_STATE.get("events", []))[-limit:]
-            translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
-        self._send_json({"ok": True, "events": events, "translation_count": len(translations)})
+            translation_count = len(_LIVE_SERVER_STATE.get("translations", {}))
+        self._send_json({"ok": True, "events": events, "translation_count": translation_count})
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         payload = self._read_json()
+        if parsed.path == "/notify":
+            with _LIVE_SERVER_LOCK:
+                seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
+                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
+                force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                if force_text:
+                    _LIVE_SERVER_STATE["force_text"] = ""
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq})
+            return
         if parsed.path == "/log":
             _append_live_log("game", str(payload.get("event", "log") or "log"), payload)
             self._send_json({"ok": True})
@@ -142,16 +179,14 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/pull":
             with _LIVE_SERVER_LOCK:
                 translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
-            _append_live_log("server", "pull", {"translation_count": len(translations), "pid": payload.get("pid", "")})
             self._send_json({"ok": True, "translations": translations})
             return
         if parsed.path == "/translation":
             source = str(payload.get("text", "") or "")
             displayed = str(payload.get("substituted", "") or source)
             with _LIVE_SERVER_LOCK:
-                translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
+                translations = _LIVE_SERVER_STATE.get("translations", {})
             target = _lookup_live_translation_value(translations, source, displayed)
-            _append_live_log("server", "translation_lookup", {"source": source[:180], "displayed": displayed[:180], "matched": bool(target), "translation_count": len(translations)})
             if target:
                 self._send_json({"code": 0, "ok": True, "new_text": target})
             else:
@@ -183,7 +218,7 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                 "do_display_displayed",
                 "display_say",
                 "show_display_say",
-                "text_render",
+                "text_init",
                 "choice",
                 "menu_choice",
                 "who",
@@ -191,12 +226,13 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                 "live_replaced",
                 "live_replace_failed",
                 "live_bridge_loaded",
+                "live_refresh",
             }
             if kind not in allowed_events:
                 self._send_json({"ok": True, "target": ""})
                 return
             with _LIVE_SERVER_LOCK:
-                translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
+                translations = _LIVE_SERVER_STATE.get("translations", {})
             target = str(payload.get("target", "") or "")
             if not target:
                 target = _lookup_live_translation_value(translations, source, displayed)
@@ -225,6 +261,77 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                             del events[: len(events) - 2000]
                     _append_live_log("game", "seen", event)
             self._send_json({"ok": True, "target": target})
+            return
+        if parsed.path == "/pre_translate":
+            texts = payload.get("texts", []) if hasattr(payload, "get") else []
+            if not isinstance(texts, list):
+                texts = []
+            with _LIVE_SERVER_LOCK:
+                translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
+                pre_queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+            found = {}
+            queued = []
+            for text in texts:
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                target = _lookup_live_translation_value(translations, text, text)
+                if target:
+                    found[text] = target
+                else:
+                    if text not in pre_queue:
+                        pre_queue.append(text)
+                    queued.append(text)
+            _append_live_log("server", "pre_translate", {"total": len(texts), "found": len(found), "queued": len(queued)})
+            self._send_json({"ok": True, "translations": found, "queued": queued})
+            return
+        if parsed.path == "/seen_batch":
+            items = payload.get("items", []) if hasattr(payload, "get") else []
+            if not isinstance(items, list):
+                items = []
+            with _LIVE_SERVER_LOCK:
+                seen_dict = _LIVE_SERVER_STATE.setdefault("seen", {})
+                events_list = _LIVE_SERVER_STATE.setdefault("events", [])
+                trans = _LIVE_SERVER_STATE.get("translations", {})
+            targets = []
+            for item in items:
+                if not (hasattr(item, "get") and hasattr(item, "keys")):
+                    targets.append("")
+                    continue
+                source = str(item.get("what", "") or "")
+                displayed = str(item.get("displayed", "") or source)
+                kind = str(item.get("event", "") or "")
+                target = str(item.get("target", "") or "")
+                if not target:
+                    target = _lookup_live_translation_value(trans, source, displayed)
+                matched = bool(item.get("matched") or (target and target != displayed))
+                event = {"time": time.time(), "kind": kind, "source": source, "displayed": displayed, "target": target, "matched": matched}
+                if source.strip() or displayed.strip():
+                    key = source or displayed
+                    previous = seen_dict.get(key) if isinstance(seen_dict, dict) else None
+                    if previous != target:
+                        if isinstance(seen_dict, dict):
+                            seen_dict[key] = target
+                        events_list.append(event)
+                        if len(events_list) > 2000:
+                            del events_list[:len(events_list) - 2000]
+                targets.append(target)
+            _append_live_log("server", "seen_batch", {"count": len(items)})
+            self._send_json({"ok": True, "targets": targets})
+            return
+        if parsed.path == "/translation_batch":
+            texts = payload.get("texts", []) if hasattr(payload, "get") else []
+            if not isinstance(texts, list):
+                texts = []
+            with _LIVE_SERVER_LOCK:
+                trans = _LIVE_SERVER_STATE.get("translations", {})
+            results = {}
+            for text in texts:
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                t = _lookup_live_translation_value(trans, text, text)
+                if t:
+                    results[text] = t
+            self._send_json({"ok": True, "translations": results})
             return
         self._send_json({"ok": False, "error": "not found"})
 
@@ -353,9 +460,8 @@ init 999 python:
 '''
 
 
-RENPY_LIVE_BRIDGE_SOURCE = r'''
-# Auto-generated by RPGRenPyLocalizer.
-# Complete live text bridge, inspired by projz_renpy_translation's Ren'Py hooks.
+RENPY_LIVE_BRIDGE_SOURCE = r'''# Auto-generated by RPGRenPyLocalizer.
+# Live text bridge based on projz_renpy_translation's proven hook pattern.
 init -7 python:
     import os
     import json
@@ -375,18 +481,92 @@ init -7 python:
 
     _rpgrtl_live_server = "http://127.0.0.1:__RPGRTL_PORT__"
     _rpgrtl_bridge_version = "__RPGRTL_BRIDGE_VERSION__"
-    _rpgrtl_request_timeout = 1.5
-    _rpgrtl_cache_ttl = 2.0
+    _rpgrtl_request_timeout = 0.4
     _rpgrtl_translation_cache = {}
-    _rpgrtl_cache_time = 0
-    _rpgrtl_live_seen = {}
-    _rpgrtl_last_integrity_report = 0
-    _rpgrtl_last_pull_report = 0
-    _rpgrtl_tid_what = (None, None)
-    _rpgrtl_local_cache_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "renpy_live_translation.json")
     _rpgrtl_local_cache = {}
     _rpgrtl_pending_seen = []
     _rpgrtl_pending_lookup = set()
+    _rpgrtl_translatable_cache = {}  # {text: bool} — avoids regex every frame
+    _rpgrtl_last_restart_interaction = 0
+    _rpgrtl_restart_interval = 0.1
+    _rpgrtl_last_notify_seq = 0
+    _rpgrtl_bg_loop_interval = 1.0
+    _rpgrtl_tid_what = (None, None)
+    _rpgrtl_active_widget = None
+    _rpgrtl_active_source = ""
+    _rpgrtl_force_text = ""
+    _rpgrtl_force_applied = False
+    _rpgrtl_debug_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "rpgrtl_bridge_debug.log")
+    _rpgrtl_local_cache_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "renpy_live_translation.json")
+
+    # CJK font setup — ensure Chinese characters render correctly
+    try:
+        _rpgrtl_cjk_font = None
+        for _f in (
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/msyh.ttf",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+        ):
+            if os.path.exists(_f):
+                _rpgrtl_cjk_font = _f
+                break
+        if _rpgrtl_cjk_font:
+            try:
+                config.default_font = _rpgrtl_cjk_font
+            except Exception:
+                pass
+            try:
+                gui.text_font = _rpgrtl_cjk_font
+            except Exception:
+                pass
+            try:
+                gui.name_text_font = _rpgrtl_cjk_font
+            except Exception:
+                pass
+            try:
+                gui.interface_text_font = _rpgrtl_cjk_font
+            except Exception:
+                pass
+            for _sname in (
+                "default", "say_dialogue", "say_label", "say_thought",
+                "input", "input_prompt",
+                "choice_button_text", "choice_chosen_button_text",
+                "menu_choice", "menu_choice_chosen",
+                "menu_choice_button_text", "menu_choice_chosen_button_text",
+                "button_text", "small_button_text",
+                "navigation_button_text",
+                "page_button_text",
+                "quick_button_text",
+                "slot_button_text",
+                "label_text", "prompt_text",
+                "textbutton_text",
+            ):
+                try:
+                    getattr(style, _sname).font = _rpgrtl_cjk_font
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    _rpgrtl_debug_buffer = []
+    _rpgrtl_debug_last_flush = 0.0
+    def _rpgrtl_debug(msg):
+        try:
+            _rpgrtl_debug_buffer.append(time.strftime("%Y-%m-%d %H:%M:%S") + " " + msg + "\n")
+            now = time.time()
+            if len(_rpgrtl_debug_buffer) >= 10 or now - _rpgrtl_debug_last_flush >= 3.0:
+                with open(_rpgrtl_debug_file, "a", encoding="utf-8") as f:
+                    for line in _rpgrtl_debug_buffer:
+                        f.write(line)
+                _rpgrtl_debug_buffer[:] = []
+                _rpgrtl_debug_last_flush = now
+        except Exception:
+            pass
 
     def _rpgrtl_send(endpoint, payload, timeout=None):
         if timeout is None:
@@ -405,49 +585,6 @@ init -7 python:
         except Exception:
             pass
 
-    def _rpgrtl_load_local_cache():
-        global _rpgrtl_local_cache
-        try:
-            if os.path.isfile(_rpgrtl_local_cache_file):
-                with open(_rpgrtl_local_cache_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    cached = data.get("translations", {})
-                    if isinstance(cached, dict):
-                        _rpgrtl_local_cache = cached
-                        _rpgrtl_log("local_cache_loaded", {"path": _rpgrtl_local_cache_file, "count": len(cached)})
-        except Exception as exc:
-            _rpgrtl_log("local_cache_load_failed", {"path": _rpgrtl_local_cache_file, "error": str(exc)})
-            pass
-
-    def _rpgrtl_pull_translations_cached(force=False):
-        global _rpgrtl_translation_cache, _rpgrtl_cache_time, _rpgrtl_last_pull_report
-        now = time.time()
-        if not force and _rpgrtl_translation_cache and now - _rpgrtl_cache_time < _rpgrtl_cache_ttl:
-            return _rpgrtl_translation_cache
-        try:
-            payload = _rpgrtl_send("/pull", {"pid": os.getpid()}, timeout=2.0)
-            if isinstance(payload, dict):
-                translations = payload.get("translations", {})
-                if isinstance(translations, dict):
-                    changed = translations != _rpgrtl_translation_cache
-                    _rpgrtl_translation_cache = translations
-                    _rpgrtl_local_cache.update(translations)
-                    _rpgrtl_cache_time = now
-                    if changed or now - _rpgrtl_last_pull_report >= 5.0:
-                        _rpgrtl_last_pull_report = now
-                        _rpgrtl_log("pull_success", {"count": len(translations), "changed": changed})
-                        _rpgrtl_record_live_text("live_pull", "pulled %d translations" % len(translations), "", "live_pulled", record_miss=True)
-                    if changed:
-                        try:
-                            renpy.restart_interaction()
-                        except Exception:
-                            pass
-        except Exception as exc:
-            _rpgrtl_log("pull_failed", {"error": str(exc)})
-            pass
-        return _rpgrtl_translation_cache or _rpgrtl_local_cache
-
     def _rpgrtl_tagless(text):
         try:
             return re.sub(r"\{[^}]*\}", "", text).strip()
@@ -457,24 +594,42 @@ init -7 python:
     def _rpgrtl_is_translatable(text):
         if not isinstance(text, string_types):
             return False
+        cached = _rpgrtl_translatable_cache.get(text)
+        if cached is not None:
+            return cached
         clean = _rpgrtl_tagless(text).strip()
         if len(clean) <= 1:
+            _rpgrtl_translatable_cache[text] = False
             return False
         if clean.startswith("[") and clean.endswith("]"):
+            _rpgrtl_translatable_cache[text] = False
             return False
         for ch in clean:
             if "a" <= ch.lower() <= "z":
+                _rpgrtl_translatable_cache[text] = True
                 return True
-            if "\u3040" <= ch <= "\u30ff":
+            if "぀" <= ch <= "ヿ":
+                _rpgrtl_translatable_cache[text] = True
                 return True
-            if "\u4e00" <= ch <= "\u9fff":
+            if "一" <= ch <= "鿿":
+                _rpgrtl_translatable_cache[text] = True
+                return True
+        _rpgrtl_translatable_cache[text] = False
+        return False
+
+    def _rpgrtl_has_cjk(text):
+        """Check if text contains any CJK characters (needs CJK font to render)."""
+        if not isinstance(text, string_types):
+            return False
+        for ch in text:
+            if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿" or "豈" <= ch <= "﫿":
                 return True
         return False
 
-    def _rpgrtl_candidates(source, transformed):
+    def _rpgrtl_candidates(source):
         result = []
         seen = set()
-        for value in (transformed, source):
+        for value in (source,):
             if not isinstance(value, string_types):
                 continue
             variants = [value, value.strip(), _rpgrtl_tagless(value), re.sub(r"\s+", " ", value.strip())]
@@ -487,95 +642,289 @@ init -7 python:
                     result.append(item)
         return result
 
-    def _rpgrtl_lookup_live_text(source, transformed=None):
-        if transformed is None:
-            transformed = source
-        translations = _rpgrtl_pull_translations_cached()
-        if translations:
-            for key in _rpgrtl_candidates(source, transformed):
-                if key in translations:
-                    target = translations.get(key)
-                    _rpgrtl_translation_cache[source] = target
-                    return target
-        if isinstance(source, string_types) and source.strip():
-            _rpgrtl_pending_lookup.add(source.strip())
+    def _rpgrtl_lookup(text):
+        if not isinstance(text, string_types) or not text.strip():
+            return None
+        translations = _rpgrtl_translation_cache or _rpgrtl_local_cache
+        if not translations:
+            return None
+        for key in _rpgrtl_candidates(text):
+            if key in translations:
+                return translations[key]
         return None
 
-    def _rpgrtl_record_live_text(source, transformed, target, kind="text", record_miss=True):
-        if not isinstance(source, string_types) or not source.strip():
-            return None
-        if not record_miss and not target:
-            return None
-        matched = bool(target and target != transformed)
-        key = kind + "\0" + source
-        if target and key in _rpgrtl_live_seen and _rpgrtl_live_seen.get(key) == target:
-            return target
-        _rpgrtl_live_seen[key] = target
-        try:
-            payload = _rpgrtl_send("/seen", {"event": kind, "what": source, "displayed": transformed, "target": target or "", "matched": matched}, timeout=1.5)
-            if isinstance(payload, dict):
-                response_target = payload.get("target", "")
-                if response_target:
-                    _rpgrtl_translation_cache[source] = response_target
-                    return response_target
-        except Exception:
-            pass
-        return target
-
-    def _rpgrtl_current_hook_status():
-        status = {}
-        try:
-            status["character_call"] = renpy.character.ADVCharacter.__call__ is _rpgrtl_hook_character_call
-        except Exception:
-            status["character_call"] = False
-        try:
-            status["prefix_suffix"] = renpy.character.ADVCharacter.prefix_suffix is _rpgrtl_hook_prefix_suffix
-        except Exception:
-            status["prefix_suffix"] = False
-        try:
-            status["do_display"] = renpy.character.ADVCharacter.do_display is _rpgrtl_hook_do_display
-        except Exception:
-            status["do_display"] = False
-        try:
-            status["display_say"] = renpy.character.display_say is _rpgrtl_hook_display_say
-        except Exception:
-            status["display_say"] = False
-        try:
-            status["show_display_say"] = renpy.character.show_display_say is _rpgrtl_hook_show_display_say
-        except Exception:
-            status["show_display_say"] = False
-        try:
-            status["replace_text"] = config.replace_text is _rpgrtl_live_filter
-        except Exception:
-            status["replace_text"] = False
-        return status
-
-    def _rpgrtl_report_hook_integrity(reason="hook_status", force=False):
-        global _rpgrtl_last_integrity_report
+    def _rpgrtl_restart_interaction(reason="refresh"):
+        global _rpgrtl_last_restart_interaction
         now = time.time()
-        if not force and now - _rpgrtl_last_integrity_report < 2.0:
-            return
-        _rpgrtl_last_integrity_report = now
+        if now - _rpgrtl_last_restart_interaction < _rpgrtl_restart_interval:
+            return False
+        _rpgrtl_last_restart_interaction = now
         try:
-            _rpgrtl_send("/seen", {"event": reason, "what": "hook_status", "displayed": json.dumps(_rpgrtl_current_hook_status(), sort_keys=True), "target": "", "matched": False}, timeout=0.5)
+            renpy.restart_interaction()
+            return True
+        except Exception:
+            pass
+        return False
+
+    def _rpgrtl_load_local_cache():
+        global _rpgrtl_local_cache
+        try:
+            if os.path.isfile(_rpgrtl_local_cache_file):
+                with open(_rpgrtl_local_cache_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if (hasattr(data, "get") and hasattr(data, "keys")):
+                    cached = data.get("translations", {})
+                    if (hasattr(cached, "get") and hasattr(cached, "keys")):
+                        _rpgrtl_local_cache = cached
+                        _rpgrtl_log("local_cache_loaded", {"count": len(cached)})
         except Exception:
             pass
 
-    def _rpgrtl_translate_text(source, transformed=None, kind="text", record_miss=True):
-        if transformed is None:
-            transformed = source
-        if not _rpgrtl_is_translatable(source):
-            return None
-        target = _rpgrtl_lookup_live_text(source, transformed)
-        if target:
-            _rpgrtl_pending_seen.append({"event": kind, "what": source, "displayed": transformed, "target": target, "matched": True})
-            _rpgrtl_log("translation_hit", {"kind": kind, "source": source[:180], "target": target[:180]})
-        elif record_miss:
-            _rpgrtl_pending_seen.append({"event": kind, "what": source, "displayed": transformed, "target": "", "matched": False})
-        return target
+    def _rpgrtl_pull_translations():
+        global _rpgrtl_translation_cache
+        try:
+            payload = _rpgrtl_send("/pull", {"pid": os.getpid()}, timeout=3.0)
+            if (hasattr(payload, "get") and hasattr(payload, "keys")):
+                translations = payload.get("translations", {})
+                if (hasattr(translations, "get") and hasattr(translations, "keys")):
+                    _rpgrtl_translation_cache = translations
+                    _rpgrtl_local_cache.update(translations)
+                    _rpgrtl_log("pull_success", {"count": len(translations)})
+        except Exception:
+            pass
 
-    _rpgrtl_load_local_cache()
+    _rpgrtl_seen_queued = set()  # deduplicate pending_seen
 
+    def _rpgrtl_report_seen(source, displayed, target, kind):
+        key = source.strip() if isinstance(source, str) else ""
+        if key and key in _rpgrtl_seen_queued:
+            return
+        if key:
+            _rpgrtl_seen_queued.add(key)
+        # Limit queue size to prevent memory leak
+        if len(_rpgrtl_pending_seen) > 200:
+            _rpgrtl_pending_seen[:] = _rpgrtl_pending_seen[-100:]
+        _rpgrtl_pending_seen.append({"event": kind, "what": source, "displayed": displayed, "target": target or "", "matched": bool(target)})
+        if len(_rpgrtl_seen_queued) > 5000:
+            _rpgrtl_seen_queued.clear()
+
+    def _rpgrtl_take_force_text(expected_source=None):
+        global _rpgrtl_force_text
+        forced = _rpgrtl_force_text
+        if not forced:
+            return ""
+        if expected_source and not _rpgrtl_is_translatable(expected_source):
+            return ""
+        _rpgrtl_force_text = ""
+        return forced
+
+    def _rpgrtl_remember_active_widget(widget, source):
+        global _rpgrtl_active_widget, _rpgrtl_active_source
+        if widget is not None and source and _rpgrtl_is_translatable(source):
+            _rpgrtl_active_widget = widget
+            _rpgrtl_active_source = source
+
+    def _rpgrtl_patch_active_widget(reason="translation_ready", forced_text=None):
+        widget = _rpgrtl_active_widget
+        source = _rpgrtl_active_source
+        translated = forced_text if forced_text else _rpgrtl_lookup(source)
+        _rpgrtl_debug("patch_active: widget=" + repr(type(widget).__name__ if widget else None) + " source=" + repr((source or "")[:40]) + " translated=" + repr((translated or "")[:40]) + " reason=" + reason)
+        if not widget and not translated:
+            return False
+        if not translated:
+            return False
+        patched = False
+        if widget is not None:
+            try:
+                if _rpgrtl_old_set_text:
+                    _rpgrtl_old_set_text(widget, translated, None, False, True)
+                else:
+                    widget.text = [translated]
+                _rpgrtl_log("active_widget_patched", {"source": (source or "")[:180], "target": translated[:180], "reason": reason})
+                _rpgrtl_debug("patch_active SUCCESS: target=" + repr(translated[:60]))
+                patched = True
+            except Exception as exc:
+                _rpgrtl_log("active_widget_patch_failed", {"source": (source or "")[:180], "error": str(exc), "reason": reason})
+                _rpgrtl_debug("patch_active FAILED: " + repr(exc))
+        try:
+            for w in renpy.display.screen.current_screen().children if hasattr(renpy.display.screen, "current_screen") and callable(renpy.display.screen.current_screen) else []:
+                if hasattr(w, "text"):
+                    if _rpgrtl_old_set_text:
+                        _rpgrtl_old_set_text(w, translated, None, False, True)
+                    else:
+                        w.text = [translated]
+                    patched = True
+        except Exception:
+            pass
+        if patched:
+            try:
+                renpy.restart_interaction()
+            except Exception:
+                pass
+        return patched
+
+    # Direct widget update: find Text widget with id="what" via screen API
+    # and call set_text() on it. Does NOT restart interaction.
+    def _rpgrtl_force_update_current_text(forced_text):
+        _rpgrtl_debug("force_update_current_text: " + repr(forced_text[:60]))
+        updated = False
+        try:
+            # Try renpy.display.screen.get_screen("say") to get the say screen
+            say_screen = None
+            try:
+                say_screen = renpy.display.screen.get_screen("say")
+            except Exception:
+                pass
+            if say_screen is None:
+                # Fallback: try current_screen
+                try:
+                    if hasattr(renpy.display.screen, "current_screen") and callable(renpy.display.screen.current_screen):
+                        say_screen = renpy.display.screen.current_screen()
+                except Exception:
+                    pass
+            if say_screen is not None:
+                # Find the "what" widget by traversing children
+                def find_what_widget(obj, depth=0):
+                    if depth > 20:
+                        return None
+                    # Check if this object has the id "what"
+                    if hasattr(obj, "widget_id") and obj.widget_id == "what":
+                        return obj
+                    if hasattr(obj, "id") and obj.id == "what" and hasattr(obj, "text"):
+                        return obj
+                    # Check children
+                    if hasattr(obj, "children"):
+                        for child in obj.children:
+                            result = find_what_widget(child, depth + 1)
+                            if result:
+                                return result
+                    if hasattr(obj, "child"):
+                        result = find_what_widget(obj.child, depth + 1)
+                        if result:
+                            return result
+                    if hasattr(obj, "content"):
+                        result = find_what_widget(obj.content, depth + 1)
+                        if result:
+                            return result
+                    return None
+                widget = find_what_widget(say_screen)
+                if widget is not None:
+                    _rpgrtl_debug("force_update: found widget " + repr(type(widget).__name__))
+                    if _rpgrtl_old_set_text:
+                        _rpgrtl_old_set_text(widget, forced_text, None, False, True)
+                    else:
+                        widget.text = [forced_text]
+                    _rpgrtl_debug("force_update: set_text done")
+                    updated = True
+                    # set_text invalidates the render cache; the event loop will
+                    # re-render the screen on the next draw cycle automatically.
+                    # Do NOT call restart_interaction — it ends the current interaction
+                    # and causes the dialogue to advance to the next line.
+                else:
+                    _rpgrtl_debug("force_update: 'what' widget not found in screen tree")
+            else:
+                _rpgrtl_debug("force_update: no screen found")
+        except Exception as exc:
+            _rpgrtl_debug("force_update EXCEPTION: " + repr(exc))
+        return updated
+
+    # Force-update choice buttons on the "choice" screen when translations arrive late.
+    # With the Text.render hook now active, this is mostly a backup mechanism.
+    def _rpgrtl_force_update_choice_buttons():
+        """Patch choice screen buttons with translated text if available."""
+        try:
+            choice_screen = renpy.display.screen.get_screen("choice")
+            if choice_screen is None:
+                return False
+
+            def find_all_text_widgets(obj, depth=0):
+                """Find all Text widgets in the screen tree."""
+                if depth > 30:
+                    return []
+                results = []
+                cls_name = type(obj).__name__
+                if hasattr(obj, "text") and isinstance(obj.text, list) and cls_name == "Text":
+                    results.append(obj)
+                if hasattr(obj, "children"):
+                    for child in obj.children:
+                        results.extend(find_all_text_widgets(child, depth + 1))
+                if hasattr(obj, "child"):
+                    results.extend(find_all_text_widgets(obj.child, depth + 1))
+                if hasattr(obj, "content"):
+                    results.extend(find_all_text_widgets(obj.content, depth + 1))
+                return results
+
+            widgets = find_all_text_widgets(choice_screen)
+            updated = False
+            for widget in widgets:
+                current_text = widget.text
+                if isinstance(current_text, list) and len(current_text) == 1:
+                    txt = current_text[0]
+                    if isinstance(txt, str) and txt.strip():
+                        translated = _rpgrtl_lookup(txt)
+                        if translated and translated != txt:
+                            if _rpgrtl_cjk_font:
+                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            widget.text = [translated]
+                            _rpgrtl_text_modified[id(widget)] = translated
+                            updated = True
+                            _rpgrtl_debug("choice_widget_patched: " + repr(txt[:40]) + " -> " + repr(translated[:40]))
+            if updated:
+                import pygame
+                pygame.event.post(pygame.event.Event(25))  # PERIODIC event
+            return updated
+        except Exception as exc:
+            _rpgrtl_debug("force_update_choice EXCEPTION: " + repr(exc))
+            return False
+
+    # Track whether a menu is currently active for live patching
+    _rpgrtl_menu_active = [False]
+
+    # Hook: Text.set_text (projz pattern - call old first, then self.text=[translated])
+    _rpgrtl_old_set_text = None
+    try:
+        _rpgrtl_old_set_text = renpy.text.text.Text.set_text
+    except Exception:
+        pass
+
+    def _rpgrtl_hook_set_text(self, text, scope=None, substitute=False, update=True):
+        global _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text
+        res = _rpgrtl_old_set_text(self, text, scope, substitute, update) if _rpgrtl_old_set_text else None
+        if not isinstance(text, (string_types, list)):
+            return res
+        old_text = None
+        if isinstance(text, string_types):
+            old_text = text
+        elif len(text) == 1 and isinstance(text[0], string_types):
+            old_text = text[0]
+        if old_text and _rpgrtl_is_translatable(old_text):
+            _rpgrtl_remember_active_widget(self, old_text)
+            _rpgrtl_debug("set_text TRACK: widget=" + repr(type(self).__name__) + " text=" + repr(old_text[:60]))
+        forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
+        if forced and old_text and _rpgrtl_is_translatable(old_text):
+            _rpgrtl_debug("set_text FORCE: old_text=" + repr(old_text[:60]) + " forced=" + repr(forced[:60]))
+            try:
+                self.text = [forced]
+                _rpgrtl_force_text = ""
+                _rpgrtl_log("set_text_force_replace", {"source": old_text[:180], "target": forced[:180]})
+                _rpgrtl_patch_active_widget("set_text_force")
+                return True
+            except Exception as exc:
+                _rpgrtl_debug("set_text FORCE FAILED: " + repr(exc))
+                _rpgrtl_log("set_text_force_failed", {"source": old_text[:180], "error": str(exc), "target": forced[:180]})
+        if not old_text or not _rpgrtl_is_translatable(old_text):
+            return res
+        translated = _rpgrtl_lookup(old_text)
+        if translated and translated != old_text:
+            try:
+                self.text = [translated]
+                _rpgrtl_log("set_text_replace", {"source": old_text[:180], "target": translated[:180]})
+                return True
+            except Exception:
+                pass
+        return res
+
+    # Hook: ADVCharacter.__call__ (track raw what for translate_identifier)
     _rpgrtl_old_character_call = None
     try:
         _rpgrtl_old_character_call = renpy.character.ADVCharacter.__call__
@@ -590,6 +939,7 @@ init -7 python:
             _rpgrtl_tid_what = (None, what)
         return _rpgrtl_old_character_call(self, what, **kwargs)
 
+    # Hook: ADVCharacter.prefix_suffix (projz pattern - return translated directly)
     _rpgrtl_old_prefix_suffix = None
     try:
         _rpgrtl_old_prefix_suffix = renpy.character.ADVCharacter.prefix_suffix
@@ -597,21 +947,40 @@ init -7 python:
         pass
 
     def _rpgrtl_hook_prefix_suffix(self, thing, prefix, body, suffix):
-        _rpgrtl_report_hook_integrity("hook_integrity", force=False)
+        global _rpgrtl_force_text, _rpgrtl_force_applied
         if _rpgrtl_old_prefix_suffix:
             res = _rpgrtl_old_prefix_suffix(self, thing, prefix, body, suffix)
         else:
             res = (prefix or "") + (body or "") + (suffix or "")
         if body is None or thing not in ("what", "who"):
             return res
-        target = _rpgrtl_translate_text(body, res, "prefix_suffix", record_miss=(thing == "what"))
-        if not target:
+        forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
+        if forced and thing == "what":
+            _rpgrtl_debug("prefix_suffix FORCE: body=" + repr(body[:60]) + " forced=" + repr(forced[:60]))
+            # Do NOT clear _rpgrtl_force_text here — let do_display handle it.
+            # do_display will display the forced text and wait for player input.
+            _rpgrtl_force_applied = True
+            _rpgrtl_report_seen(body, res, forced, "force_text")
+            _rpgrtl_log("prefix_suffix_force_replace", {"source": body[:180], "target": forced[:180]})
+            return (prefix or "") + forced + (suffix or "")
+        if not _rpgrtl_is_translatable(res):
             return res
-        try:
-            return _rpgrtl_old_prefix_suffix(self, thing, prefix, target, suffix)
-        except Exception:
-            return (prefix or "") + target + (suffix or "")
+        translated = _rpgrtl_lookup(body)
+        if translated and translated != body:
+            if _rpgrtl_cjk_font and _rpgrtl_has_cjk(translated):
+                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+            _rpgrtl_report_seen(body, res, translated, "prefix_suffix")
+            try:
+                result = _rpgrtl_old_prefix_suffix(self, thing, prefix, translated, suffix) if _rpgrtl_old_prefix_suffix else (prefix or "") + translated + (suffix or "")
+                _rpgrtl_log("prefix_suffix_replace", {"source": body[:180], "target": translated[:180]})
+                return result
+            except Exception:
+                return (prefix or "") + translated + (suffix or "")
+        _rpgrtl_report_seen(body, res, "", "prefix_suffix")
+        _rpgrtl_pending_lookup.add(body.strip())
+        return res
 
+    # Hook: ADVCharacter.do_display (projz pattern - replace who/what, handle DTT)
     _rpgrtl_old_do_display = None
     try:
         _rpgrtl_old_do_display = renpy.character.ADVCharacter.do_display
@@ -624,26 +993,28 @@ init -7 python:
     except Exception:
         pass
 
-    _rpgrtl_old_display_say = None
-    try:
-        _rpgrtl_old_display_say = renpy.character.display_say
-    except Exception:
-        pass
-
-    _rpgrtl_old_show_display_say = None
-    try:
-        _rpgrtl_old_show_display_say = renpy.character.show_display_say
-    except Exception:
-        pass
-
-    _rpgrtl_old_menu = None
-    try:
-        _rpgrtl_old_menu = renpy.exports.menu
-    except Exception:
-        pass
-
     def _rpgrtl_hook_do_display(self, who, what, **display_args):
-        new_who = who
+        global _rpgrtl_force_text, _rpgrtl_force_applied
+        # Check force_text FIRST — this is the primary injection mechanism.
+        # When restart_interaction re-enters do_display, force_text is set by prefix_suffix.
+        forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
+        if forced:
+            if _rpgrtl_cjk_font and _rpgrtl_has_cjk(forced):
+                forced = "{font=" + _rpgrtl_cjk_font + "}" + forced + "{/font}"
+            _rpgrtl_debug("do_display FORCE: forced=" + repr(forced[:60]) + " what=" + repr(what[:60]))
+            _rpgrtl_force_text = ""
+            _rpgrtl_force_applied = False
+            _rpgrtl_report_seen(what, what, forced, "force_text")
+            _rpgrtl_log("do_display_force_replace", {"source": what[:180], "target": forced[:180]})
+            _rpgrtl_old_do_display(self, who, forced, **display_args)
+            return
+        if _rpgrtl_force_applied:
+            _rpgrtl_force_applied = False
+            try:
+                _rpgrtl_old_do_display(self, who, what, **display_args)
+            except Exception:
+                pass
+            return
         new_what = what
         try:
             context_tid = renpy.game.context().translate_identifier
@@ -651,29 +1022,44 @@ init -7 python:
             context_tid = None
         tid, raw_what = _rpgrtl_tid_what
         source_what = raw_what if tid == context_tid and isinstance(raw_what, string_types) else what
-        target = _rpgrtl_translate_text(source_what, what, "do_display", record_miss=True)
-        if not target and isinstance(raw_what, string_types) and raw_what != source_what:
-            target = _rpgrtl_translate_text(raw_what, what, "do_display_raw", record_miss=False)
-        if not target and isinstance(what, string_types) and what != source_what:
-            target = _rpgrtl_translate_text(what, what, "do_display_displayed", record_miss=False)
-        if target:
-            new_what = target
-            _rpgrtl_log("do_display_replace", {"source": source_what[:180], "target": target[:180]})
-            for key in ("what", "what_text", "what_string", "show_what"):
-                if key in display_args:
-                    display_args[key] = target
-        who_target = _rpgrtl_translate_text(who, who, "who", record_miss=False) if isinstance(who, string_types) else None
-        if who_target:
-            new_who = who_target
+        forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
+        if forced and source_what:
+            _rpgrtl_debug("do_display FORCE: source=" + repr(source_what[:60]) + " forced=" + repr(forced[:60]))
+            new_what = forced
+            _rpgrtl_force_text = ""
+            translated = forced
+            _rpgrtl_report_seen(source_what, what, translated, "force_text")
+            _rpgrtl_log("do_display_force_replace", {"source": source_what[:180], "target": translated[:180]})
+            try:
+                _rpgrtl_old_do_display(self, who, forced, **display_args)
+            except Exception:
+                pass
+            return
+        else:
+            translated = _rpgrtl_lookup(source_what)
+            if not translated and source_what != what:
+                translated = _rpgrtl_lookup(what)
+            if translated:
+                new_what = translated
+                _rpgrtl_report_seen(source_what, what, translated, "do_display")
+                _rpgrtl_log("do_display_replace", {"source": source_what[:180], "target": translated[:180]})
+            else:
+                _rpgrtl_report_seen(source_what, what, "", "do_display")
+                _rpgrtl_pending_lookup.add(source_what.strip())
+        new_who = who
+        if isinstance(who, string_types):
+            who_translated = _rpgrtl_lookup(who)
+            if who_translated:
+                new_who = who_translated
         old_dtt = display_args.get("dtt", None)
         new_dtt = None
-        if target and _rpgrtl_dialogue_text_tags and old_dtt is not None:
+        if translated and _rpgrtl_dialogue_text_tags and old_dtt is not None:
             try:
                 new_dtt = _rpgrtl_dialogue_text_tags(new_what)
                 display_args["dtt"] = new_dtt
             except Exception:
                 new_dtt = None
-        result = _rpgrtl_old_do_display(self, new_who, new_what, **display_args)
+        _rpgrtl_old_do_display(self, new_who, new_what, **display_args)
         if new_dtt is not None and old_dtt is not None:
             try:
                 for k, v in vars(new_dtt).items():
@@ -681,206 +1067,77 @@ init -7 python:
                 display_args["dtt"] = old_dtt
             except Exception:
                 pass
-        return result
 
-    def _rpgrtl_hook_display_say(who, what, *args, **kwargs):
-        new_who = who
-        new_what = what
-        target = _rpgrtl_translate_text(what, what, "display_say", record_miss=True) if isinstance(what, string_types) else None
-        if target:
-            new_what = target
-            _rpgrtl_log("display_say_replace", {"source": what[:180], "target": target[:180]})
-            if _rpgrtl_dialogue_text_tags and "dtt" in kwargs:
-                try:
-                    kwargs["dtt"] = _rpgrtl_dialogue_text_tags(new_what)
-                except Exception:
-                    pass
-        who_target = _rpgrtl_translate_text(who, who, "display_say_who", record_miss=False) if isinstance(who, string_types) else None
-        if who_target:
-            new_who = who_target
-        return _rpgrtl_old_display_say(new_who, new_what, *args, **kwargs)
-
-    def _rpgrtl_hook_show_display_say(who, what, *args, **kwargs):
-        new_who = who
-        new_what = what
-        target = _rpgrtl_translate_text(what, what, "show_display_say", record_miss=True) if isinstance(what, string_types) else None
-        if target:
-            new_what = target
-            _rpgrtl_log("show_display_say_replace", {"source": what[:180], "target": target[:180]})
-        who_target = _rpgrtl_translate_text(who, who, "show_display_say_who", record_miss=False) if isinstance(who, string_types) else None
-        if who_target:
-            new_who = who_target
-        return _rpgrtl_old_show_display_say(new_who, new_what, *args, **kwargs)
-
-    def _rpgrtl_translate_menu_item(item):
-        try:
-            if isinstance(item, tuple) and item and isinstance(item[0], string_types):
-                target = _rpgrtl_translate_text(item[0], item[0], "choice", record_miss=True)
-                if target:
-                    return (target,) + item[1:]
-            if isinstance(item, list) and item and isinstance(item[0], string_types):
-                target = _rpgrtl_translate_text(item[0], item[0], "choice", record_miss=True)
-                if target:
-                    new_item = list(item)
-                    new_item[0] = target
-                    return new_item
-            caption = getattr(item, "caption", None)
-            if isinstance(caption, string_types):
-                target = _rpgrtl_translate_text(caption, caption, "choice", record_miss=True)
-                if target:
-                    try:
-                        item.caption = target
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        return item
-
-    def _rpgrtl_hook_menu(items, *args, **kwargs):
-        try:
-            if isinstance(items, list):
-                items = [_rpgrtl_translate_menu_item(item) for item in items]
-            elif isinstance(items, tuple):
-                items = tuple(_rpgrtl_translate_menu_item(item) for item in items)
-        except Exception:
-            pass
-        return _rpgrtl_old_menu(items, *args, **kwargs)
-
-    _rpgrtl_old_set_text = None
+    # Hook: Menu.execute — translate menu choice labels before display
+    _rpgrtl_old_Menu_execute = None
     try:
-        _rpgrtl_old_set_text = renpy.text.text.Text.set_text
+        _rpgrtl_old_Menu_execute = renpy.ast.Menu.execute
     except Exception:
         pass
 
-    _rpgrtl_old_text_init = None
+    def _rpgrtl_hook_Menu_execute(self):
+        # Translate choice labels in-place before the menu is displayed
+        try:
+            items = getattr(self, 'items', None)
+            if items and isinstance(items, list):
+                changed = False
+                for i, item in enumerate(items):
+                    if isinstance(item, (list, tuple)) and len(item) >= 1:
+                        label = item[0]
+                        if isinstance(label, str) and label.strip():
+                            translated = _rpgrtl_lookup(label)
+                            if translated and translated != label:
+                                if _rpgrtl_cjk_font:
+                                    translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                                new_item = (translated,) + tuple(item[1:])
+                                items[i] = new_item
+                                changed = True
+                                _rpgrtl_report_seen(label, label, translated, "menu_choice")
+                                _rpgrtl_log("menu_choice_replace", {"source": label[:180], "target": translated[:180]})
+                            else:
+                                _rpgrtl_pending_lookup.add(label.strip())
+        except Exception as exc:
+            _rpgrtl_debug("menu_choice translate error: " + repr(exc))
+        if _rpgrtl_old_Menu_execute:
+            _rpgrtl_menu_active[0] = True
+            try:
+                return _rpgrtl_old_Menu_execute(self)
+            finally:
+                _rpgrtl_menu_active[0] = False
+
+    # Hook: renpy.display_menu — translate choice labels right before screen display
+    _rpgrtl_old_display_menu = None
     try:
-        _rpgrtl_old_text_init = renpy.text.text.Text.__init__
+        _rpgrtl_old_display_menu = renpy.display_menu
     except Exception:
         pass
 
-    _rpgrtl_old_text_render = None
-    try:
-        _rpgrtl_old_text_render = renpy.text.text.Text.render
-    except Exception:
-        pass
+    def _rpgrtl_hook_display_menu(items, *args, **kwargs):
+        # Translate labels in the items list before passing to original display_menu
+        if isinstance(items, list):
+            new_items = []
+            for item in items:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label = item[0]
+                    if isinstance(label, str) and label.strip():
+                        translated = _rpgrtl_lookup(label)
+                        if translated and translated != label:
+                            if _rpgrtl_cjk_font:
+                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            _rpgrtl_debug("display_menu translate: " + repr(label[:40]) + " -> " + repr(translated[:40]))
+                            new_items.append((translated,) + tuple(item[1:]))
+                            continue
+                new_items.append(item)
+            items = new_items
+        if _rpgrtl_old_display_menu:
+            return _rpgrtl_old_display_menu(items, *args, **kwargs)
 
-    def _rpgrtl_translate_text_payload(text, kind, record_miss=False):
-        if isinstance(text, string_types):
-            target = _rpgrtl_translate_text(text, text, kind, record_miss=record_miss)
-            return target if target else text
-        if isinstance(text, list):
-            changed = False
-            replacement = []
-            for item in text:
-                if isinstance(item, string_types):
-                    target = _rpgrtl_translate_text(item, item, kind, record_miss=record_miss)
-                    if target:
-                        replacement.append(target)
-                        changed = True
-                    else:
-                        replacement.append(item)
-                else:
-                    replacement.append(item)
-            return replacement if changed else text
-        return text
-
-    def _rpgrtl_debug_text(value):
-        try:
-            if isinstance(value, string_types):
-                return value
-            if isinstance(value, list):
-                return "".join([item for item in value if isinstance(item, string_types)])
-            return str(value)
-        except Exception:
-            return ""
-
-    def _rpgrtl_hook_text_init(self, *args, **kwargs):
-        if args:
-            text = args[0]
-            replacement = _rpgrtl_translate_text_payload(text, "text_init", record_miss=False)
-            if replacement is not text:
-                args = (replacement,) + args[1:]
-        if "text" in kwargs:
-            text = kwargs.get("text")
-            replacement = _rpgrtl_translate_text_payload(text, "text_init_kw", record_miss=False)
-            if replacement is not text:
-                kwargs["text"] = replacement
-        return _rpgrtl_old_text_init(self, *args, **kwargs)
-
-    def _rpgrtl_hook_text_render(self, *args, **kwargs):
-        try:
-            current = getattr(self, "text", None)
-            replacement = _rpgrtl_translate_text_payload(current, "text_render", record_miss=False)
-            if replacement is not current:
-                try:
-                    self.set_text(replacement)
-                except Exception:
-                    self.text = replacement if isinstance(replacement, list) else [replacement]
-        except Exception:
-            pass
-        return _rpgrtl_old_text_render(self, *args, **kwargs)
-
-    def _rpgrtl_hook_set_text(self, text, scope=None, substitute=False, update=True):
-        replacement_text = _rpgrtl_translate_text_payload(text, "set_text", record_miss=False)
-        if replacement_text != text:
-            try:
-                _rpgrtl_log("set_text_replace", {"source": _rpgrtl_debug_text(text)[:180], "target": _rpgrtl_debug_text(replacement_text)[:180], "substitute": substitute})
-                _rpgrtl_record_live_text(_rpgrtl_debug_text(text), _rpgrtl_debug_text(text), _rpgrtl_debug_text(replacement_text), "live_replaced", record_miss=True)
-                return _rpgrtl_old_set_text(self, replacement_text, scope, substitute, update) if _rpgrtl_old_set_text else None
-            except Exception as exc:
-                _rpgrtl_log("set_text_replace_failed", {"source": _rpgrtl_debug_text(text)[:180], "target": _rpgrtl_debug_text(replacement_text)[:180], "error": str(exc)})
-                _rpgrtl_record_live_text(_rpgrtl_debug_text(text), _rpgrtl_debug_text(replacement_text), str(exc), "live_replace_failed", record_miss=True)
-                pass
-        res = _rpgrtl_old_set_text(self, text, scope, substitute, update) if _rpgrtl_old_set_text else None
-        old_text = None
-        try:
-            if isinstance(text, string_types):
-                old_text = text
-            elif len(text) == 1 and isinstance(text[0], string_types):
-                old_text = text[0]
-        except Exception:
-            old_text = None
-        if old_text:
-            displayed = old_text
-            try:
-                if isinstance(self.text, list) and self.text and isinstance(self.text[0], string_types):
-                    displayed = self.text[0]
-            except Exception:
-                pass
-            target = _rpgrtl_translate_text(old_text, displayed, "set_text_after", record_miss=False)
-            if target:
-                try:
-                    self.text = [target]
-                    return True
-                except Exception:
-                    pass
-        return res
-
-    _rpgrtl_previous_replace_text = getattr(config, "replace_text", None)
-
-    def _rpgrtl_live_filter(s):
-        if not isinstance(s, string_types):
-            return s
-        transformed = s
-        if _rpgrtl_previous_replace_text:
-            try:
-                transformed = _rpgrtl_previous_replace_text(s)
-            except Exception:
-                transformed = s
-        translations = _rpgrtl_pull_translations_cached()
-        if translations:
-            for key in _rpgrtl_candidates(s, transformed):
-                if key in translations:
-                    return translations.get(key)
-        if isinstance(s, string_types) and s.strip():
-            _rpgrtl_pending_lookup.add(s.strip())
-        return transformed
-
+    # Install hooks
     try:
         if _rpgrtl_old_character_call:
             renpy.character.ADVCharacter.__call__ = _rpgrtl_hook_character_call
     except Exception as e:
-        print("[RPGRenPyLocalizer] Hook character call failed:", e)
+        print("[RPGRenPyLocalizer] Hook character_call failed:", e)
     try:
         if _rpgrtl_old_prefix_suffix:
             renpy.character.ADVCharacter.prefix_suffix = _rpgrtl_hook_prefix_suffix
@@ -892,67 +1149,376 @@ init -7 python:
     except Exception as e:
         print("[RPGRenPyLocalizer] Hook do_display failed:", e)
     try:
-        if _rpgrtl_old_display_say:
-            renpy.character.display_say = _rpgrtl_hook_display_say
+        if _rpgrtl_old_set_text:
+            renpy.text.text.Text.set_text = _rpgrtl_hook_set_text
     except Exception as e:
-        print("[RPGRenPyLocalizer] Hook display_say failed:", e)
+        print("[RPGRenPyLocalizer] Hook Text.set_text failed:", e)
     try:
-        if _rpgrtl_old_show_display_say:
-            renpy.character.show_display_say = _rpgrtl_hook_show_display_say
+        if _rpgrtl_old_Menu_execute:
+            renpy.ast.Menu.execute = _rpgrtl_hook_Menu_execute
     except Exception as e:
-        print("[RPGRenPyLocalizer] Hook show_display_say failed:", e)
+        print("[RPGRenPyLocalizer] Hook Menu.execute failed:", e)
     try:
-        if _rpgrtl_old_menu:
-            renpy.exports.menu = _rpgrtl_hook_menu
+        if _rpgrtl_old_display_menu:
+            renpy.display_menu = _rpgrtl_hook_display_menu
     except Exception as e:
-        print("[RPGRenPyLocalizer] Hook menu failed:", e)
-    try:
-        config.replace_text = _rpgrtl_live_filter
-    except Exception as e:
-        print("[RPGRenPyLocalizer] Hook replace_text failed:", e)
+        print("[RPGRenPyLocalizer] Hook display_menu failed:", e)
 
+    # Startup verification: log which hooks were installed
+    _rpgrtl_debug("HOOK STATUS: character_call=" + str(_rpgrtl_old_character_call is not None) +
+                  " prefix_suffix=" + str(_rpgrtl_old_prefix_suffix is not None) +
+                  " do_display=" + str(_rpgrtl_old_do_display is not None) +
+                  " set_text=" + str(_rpgrtl_old_set_text is not None) +
+                  " Menu.execute=" + str(_rpgrtl_old_Menu_execute is not None) +
+                  " display_menu=" + str(_rpgrtl_old_display_menu is not None))
+    _rpgrtl_debug("CJK FONT: " + repr(_rpgrtl_cjk_font) + " cache_count=" + str(len(_rpgrtl_local_cache)) + " trans_cache=" + str(len(_rpgrtl_translation_cache)))
+    try:
+        _def_font = getattr(config, 'default_font', None)
+        _gui_font = getattr(gui, 'text_font', None) if 'gui' in dir() else None
+        _rpgrtl_debug("FONTS: config.default_font=" + repr(_def_font) + " gui.text_font=" + repr(_gui_font))
+    except Exception:
+        pass
+
+    # config.say_menu_text_filter: translate menu labels during Menu.execute
+    _rpgrtl_prev_menu_filter = getattr(config, "say_menu_text_filter", None)
+    def _rpgrtl_menu_text_filter(label):
+        if _rpgrtl_prev_menu_filter:
+            label = _rpgrtl_prev_menu_filter(label)
+        if isinstance(label, str) and label.strip():
+            _rpgrtl_debug("menu_filter: " + repr(label[:60]))
+            translated = _rpgrtl_lookup(label)
+            if translated and translated != label:
+                if _rpgrtl_cjk_font:
+                    translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                _rpgrtl_debug("menu_filter REPLACE: " + repr(label[:40]) + " -> " + repr(translated[:40]))
+                _rpgrtl_log("menu_filter_replace", {"source": label[:180], "target": translated[:180]})
+                return translated
+        return label
+    config.say_menu_text_filter = _rpgrtl_menu_text_filter
+
+    # config.replace_text: intercept ALL text at render time
+    _rpgrtl_config_prev_replace = getattr(config, "replace_text", None)
+    def _rpgrtl_config_replace_text(s):
+        if not isinstance(s, string_types):
+            return s
+        if _rpgrtl_config_prev_replace is not None:
+            return _rpgrtl_config_prev_replace(s)
+        return s
+    config.replace_text = _rpgrtl_config_replace_text
+
+    # Text.render() hook: intercept ALL text at render time and apply cached translations.
+    # This is the primary injection mechanism — works for dialogue AND choice buttons.
+    # self.text is a LIST in Ren'Py, not a string.
+    _rpgrtl_text_modified = {}  # {id(widget): translated_text} — tracks widgets we've modified
+    _rpgrtl_force_apply_count = 0
+    _rpgrtl_render_apply_count = 0
+    _rpgrtl_render_diag_until = time.time() + 30  # log all text for first 30 seconds
+    _rpgrtl_render_diag_count = 0
+    try:
+        _rpgrtl_Text_cls = renpy.text.text.Text
+        _rpgrtl_orig_Text_render = _rpgrtl_Text_cls.render
+        def _rpgrtl_hook_Text_render(self, width, height, st, at):
+            global _rpgrtl_force_text, _rpgrtl_force_apply_count, _rpgrtl_render_apply_count
+            global _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_render_diag_count
+            forced = _rpgrtl_force_text
+            wid = id(self)
+            # --- Force text injection (manual "hello" test) ---
+            if forced and isinstance(forced, string_types):
+                if wid not in _rpgrtl_text_modified:
+                    _rpgrtl_force_apply_count += 1
+                    _rpgrtl_debug("Text.render FORCE apply: " + repr(forced[:60]) + " count=" + str(_rpgrtl_force_apply_count))
+                _rpgrtl_text_modified[wid] = forced
+                self.text = [forced]
+                result = _rpgrtl_orig_Text_render(self, width, height, st, at + 0.001)
+                if _rpgrtl_force_apply_count >= 1:
+                    _rpgrtl_force_text = ""
+                    _rpgrtl_force_apply_count = 0
+                return result
+            # --- Diagnostic: log ALL translatable text for first 30 seconds ---
+            if time.time() < _rpgrtl_render_diag_until:
+                try:
+                    _ctl = self.text
+                    if isinstance(_ctl, list) and len(_ctl) >= 1 and isinstance(_ctl[0], string_types) and _ctl[0].strip():
+                        _raw = _ctl[0]
+                        if _rpgrtl_is_translatable(_raw):
+                            _rpgrtl_render_diag_count += 1
+                            if _rpgrtl_render_diag_count <= 50:
+                                _sty = ""
+                                try:
+                                    _sty = getattr(self, 'style', None)
+                                    _sty = getattr(_sty, 'name', '') if _sty else ''
+                                except Exception:
+                                    pass
+                                _rpgrtl_debug("render_diag: style=" + repr(_sty) + " text=" + repr(_raw[:80]))
+                except Exception:
+                    pass
+            # --- Cached translation injection (primary mechanism) ---
+            try:
+                current_text_list = self.text
+                if isinstance(current_text_list, list) and len(current_text_list) >= 1:
+                    raw = current_text_list[0]
+                    if isinstance(raw, string_types) and raw.strip() and _rpgrtl_is_translatable(raw):
+                        # If already translated (self.text was set to translated), skip
+                        prev_translated = _rpgrtl_text_modified.get(wid)
+                        if prev_translated and isinstance(prev_translated, string_types) and raw == prev_translated:
+                            # Already translated — just track and render
+                            _rpgrtl_active_widget = self
+                            _rpgrtl_active_source = raw
+                            return _rpgrtl_orig_Text_render(self, width, height, st, at)
+                        # New or changed text — clear stale tracking
+                        if prev_translated is not None and prev_translated != raw:
+                            _rpgrtl_text_modified.pop(wid, None)
+                        # Remember this widget for live patching
+                        _rpgrtl_active_widget = self
+                        _rpgrtl_active_source = raw
+                        # Queue for translation if not cached
+                        if raw not in _rpgrtl_translation_cache:
+                            _rpgrtl_pending_lookup.add(raw.strip())
+                        translated = _rpgrtl_lookup(raw)
+                        if translated and translated != raw:
+                            if _rpgrtl_cjk_font:
+                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            _rpgrtl_text_modified[wid] = translated
+                            self.text = [translated]
+                            _rpgrtl_render_apply_count += 1
+                            if _rpgrtl_render_apply_count <= 10:
+                                _rpgrtl_debug("Text.render CACHE apply: " + repr(raw[:50]) + " -> " + repr(translated[:50]))
+                            result = _rpgrtl_orig_Text_render(self, width, height, st, at + 0.001)
+                            return result
+                        # Text has CJK chars (already translated by menu_filter etc) but
+                        # no cache hit — apply {font} tag so CJK glyphs render correctly
+                        if _rpgrtl_cjk_font and _rpgrtl_has_cjk(raw) and not raw.startswith("{font="):
+                            font_text = "{font=" + _rpgrtl_cjk_font + "}" + raw + "{/font}"
+                            _rpgrtl_text_modified[wid] = font_text
+                            self.text = [font_text]
+                            result = _rpgrtl_orig_Text_render(self, width, height, st, at + 0.001)
+                            return result
+            except Exception:
+                pass
+            return _rpgrtl_orig_Text_render(self, width, height, st, at)
+        _rpgrtl_Text_cls.render = _rpgrtl_hook_Text_render
+        _rpgrtl_debug("Hooked Text.render")
+    except Exception as e:
+        print("[RPGRenPyLocalizer] Hook Text.render failed:", e)
+
+    # Load cache + pull from server
+    _rpgrtl_load_local_cache()
+    try:
+        _rpgrtl_pull_translations()
+    except Exception:
+        pass
+
+    # AST lookahead: extract upcoming dialogue/choices for pre-translation
+    _rpgrtl_last_lookahead_node = [None]
+    _rpgrtl_lookahead_interval = 5.0
+    def _rpgrtl_lookahead_texts():
+        """Traverse upcoming AST nodes to extract dialogue and choice texts."""
+        try:
+            ctx = renpy.game.context()
+            current_name = ctx.current
+            # Only re-scan if we moved to a new node
+            if current_name == _rpgrtl_last_lookahead_node[0]:
+                return []
+            _rpgrtl_last_lookahead_node[0] = current_name
+            current = renpy.game.script.lookup(current_name)
+            if current is None:
+                return []
+        except Exception:
+            return []
+        results = []
+        visited = set()
+        queue = []
+        # Start from the NEXT node (not current, which is already displayed)
+        if current.next:
+            queue.append(current.next)
+        while queue and len(results) < 200:
+            node = queue.pop(0)
+            if node is None:
+                continue
+            nid = id(node)
+            if nid in visited:
+                continue
+            visited.add(nid)
+            try:
+                if hasattr(node, 'what') and hasattr(node, 'who'):
+                    # Say node — extract dialogue text
+                    what = getattr(node, 'what', None)
+                    if isinstance(what, str) and what.strip():
+                        results.append(what)
+                elif hasattr(node, 'items') and hasattr(node, 'has_caption'):
+                    # Menu node — extract choice labels
+                    items = getattr(node, 'items', [])
+                    for item in items:
+                        if isinstance(item, (list, tuple)) and len(item) >= 1:
+                            label = item[0]
+                            if isinstance(label, str) and label.strip():
+                                results.append(label)
+                # Traverse linear next
+                nxt = getattr(node, 'next', None)
+                if nxt is not None and id(nxt) not in visited:
+                    queue.append(nxt)
+                # Explore If branches
+                entries = getattr(node, 'entries', None)
+                if entries and isinstance(entries, list):
+                    for entry in entries:
+                        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                            block = entry[1]
+                            if isinstance(block, list) and block:
+                                queue.append(block[0])
+                # Explore Menu choice branches
+                items = getattr(node, 'items', None)
+                if items and isinstance(items, list) and hasattr(node, 'has_caption'):
+                    for item in items:
+                        if isinstance(item, (list, tuple)) and len(item) >= 3:
+                            block = item[2]
+                            if isinstance(block, list) and block:
+                                queue.append(block[0])
+            except Exception:
+                continue
+        return results
+
+    # Background thread: poll for new translations
     def _rpgrtl_background_update():
+        _rpgrtl_last_pull_time = [0.0]
+        _rpgrtl_last_lookahead_time = [0.0]
         def _update_loop():
+            global _rpgrtl_last_notify_seq, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text
             while True:
                 try:
-                    time.sleep(_rpgrtl_cache_ttl)
-                    _rpgrtl_pull_translations_cached(force=True)
+                    time.sleep(_rpgrtl_bg_loop_interval)
+                    now = time.time()
+                    # Periodic pull: every 1 second, refresh full translation table from server
+                    if now - _rpgrtl_last_pull_time[0] >= 2.0:
+                        _rpgrtl_last_pull_time[0] = now
+                        old_count = len(_rpgrtl_translation_cache)
+                        _rpgrtl_pull_translations()
+                        new_count = len(_rpgrtl_translation_cache)
+                        if new_count > old_count and old_count == 0:
+                            _rpgrtl_restart_interaction("cache_warmed")
+                    # AST lookahead: every 5 seconds, send upcoming texts for pre-translation
+                    if now - _rpgrtl_last_lookahead_time[0] >= _rpgrtl_lookahead_interval:
+                        _rpgrtl_last_lookahead_time[0] = now
+                        try:
+                            upcoming = _rpgrtl_lookahead_texts()
+                            if upcoming:
+                                # Filter out already-translated texts
+                                to_send = [t for t in upcoming if t not in _rpgrtl_translation_cache]
+                                if to_send:
+                                    payload = _rpgrtl_send("/pre_translate", {"texts": to_send[:50]}, timeout=1.0)
+                                    if hasattr(payload, "get") and hasattr(payload, "keys"):
+                                        trans = payload.get("translations", {})
+                                        if hasattr(trans, "items"):
+                                            for src, tgt in trans.items():
+                                                if src and tgt:
+                                                    _rpgrtl_translation_cache[src] = tgt
+                                                    _rpgrtl_local_cache[src] = tgt
+                                    _rpgrtl_debug("lookahead: " + str(len(upcoming)) + " upcoming, " + str(len(to_send)) + " sent")
+                        except Exception as _la_exc:
+                            _rpgrtl_debug("lookahead EXCEPTION: " + repr(_la_exc))
+                    new_translations = {}
+                    # Batch /seen: send all pending seen events in ONE HTTP call
                     batch = []
                     while _rpgrtl_pending_seen:
                         try:
                             batch.append(_rpgrtl_pending_seen.pop(0))
                         except IndexError:
                             break
-                    for event in batch[:50]:
+                    if batch:
                         try:
-                            _rpgrtl_send("/seen", event, timeout=0.3)
+                            payload = _rpgrtl_send("/seen_batch", {"items": batch[:50]}, timeout=1.0)
+                            if hasattr(payload, "get") and hasattr(payload, "keys"):
+                                targets = payload.get("targets", [])
+                                for i, event in enumerate(batch[:50]):
+                                    if i < len(targets):
+                                        target = str(targets[i] or "")
+                                        source = str(event.get("what", "") or "")
+                                        if target and source:
+                                            _rpgrtl_translation_cache[source] = target
+                                            _rpgrtl_local_cache[source] = target
+                                            new_translations[source] = target
                         except Exception:
-                            pass
+                            for event in batch:
+                                _rpgrtl_pending_seen.append(event)
+                    # Batch /translation: send all pending lookups in ONE HTTP call
                     lookups = list(_rpgrtl_pending_lookup)
                     _rpgrtl_pending_lookup.clear()
-                    for text in lookups[:20]:
+                    if lookups:
                         try:
-                            payload = _rpgrtl_send("/translation", {"text": text, "substituted": text}, timeout=0.5)
-                            if isinstance(payload, dict) and payload.get("new_text"):
-                                _rpgrtl_translation_cache[text] = payload["new_text"]
+                            payload = _rpgrtl_send("/translation_batch", {"texts": lookups[:30]}, timeout=1.0)
+                            if hasattr(payload, "get") and hasattr(payload, "keys"):
+                                trans = payload.get("translations", {})
+                                if hasattr(trans, "items"):
+                                    for src, tgt in trans.items():
+                                        if src and tgt:
+                                            _rpgrtl_translation_cache[src] = tgt
+                                            _rpgrtl_local_cache[src] = tgt
+                                            new_translations[src] = tgt
                         except Exception:
-                            _rpgrtl_pending_lookup.add(text)
+                            pass
+                        # Re-add texts that weren't found
+                        for text in lookups:
+                            if text not in _rpgrtl_translation_cache:
+                                _rpgrtl_pending_lookup.add(text)
+                    # Proactively request translation for current active source
+                    active_src = _rpgrtl_active_source
+                    if active_src and active_src.strip() and active_src not in _rpgrtl_translation_cache:
+                        _rpgrtl_pending_lookup.add(active_src.strip())
+                    # Patch active widget if translation just arrived — use the working
+                    # injection method (screen.widgets + set_text + pygame event)
+                    if active_src and _rpgrtl_is_translatable(active_src):
+                        translated = _rpgrtl_lookup(active_src)
+                        if translated and translated != active_src:
+                            _rpgrtl_debug("active_src has translation: " + repr(active_src[:40]) + " -> " + repr(translated[:40]))
+                            _rpgrtl_force_update_current_text(translated)
+                    # If new translations arrived and a menu is active, patch choice buttons
+                    if new_translations and _rpgrtl_menu_active[0]:
+                        try:
+                            _rpgrtl_force_update_choice_buttons()
+                        except Exception:
+                            pass
+                    try:
+                        notify_payload = _rpgrtl_send("/notify", {}, timeout=0.3)
+                        if hasattr(notify_payload, "get") and hasattr(notify_payload, "keys"):
+                            server_seq = int(notify_payload.get("seq", 0))
+                            force_text = str(notify_payload.get("force_text", "") or "")
+                            _rpgrtl_debug("notify parsed: seq=" + str(server_seq) + " force_text=" + repr(force_text[:60]) + " last_seq=" + str(_rpgrtl_last_notify_seq))
+                            if server_seq > _rpgrtl_last_notify_seq:
+                                _rpgrtl_last_notify_seq = server_seq
+                                _rpgrtl_pull_translations()
+                            if force_text:
+                                _rpgrtl_force_text = force_text
+                                _rpgrtl_debug("notify FORCE_TEXT received: " + repr(force_text[:100]))
+                                _rpgrtl_log("force_text_received", {"target": force_text[:180]})
+                                # Directly update the Text widget via screen API.
+                                # Does NOT restart interaction (which would advance dialogue).
+                                _rpgrtl_force_update_current_text(force_text)
+                                _rpgrtl_force_text = ""
+                            else:
+                                _rpgrtl_patch_active_widget("notify_refresh")
+                                _rpgrtl_restart_interaction("notify_refresh")
+                        else:
+                            _rpgrtl_debug("notify response not dict: " + repr(type(notify_payload)))
+                    except Exception as _notify_exc:
+                        _rpgrtl_debug("notify EXCEPTION: " + repr(_notify_exc))
+                except Exception as _loop_exc:
+                    _rpgrtl_debug("loop EXCEPTION: " + repr(_loop_exc))
+                # Flush buffered log periodically
+                try:
+                    with _LIVE_LOG_LOCK:
+                        if _LIVE_LOG_BUFFER and time.time() - _LIVE_LOG_LAST_FLUSH >= 3.0:
+                            _flush_live_log_buffer()
                 except Exception:
                     pass
-        thread = threading.Thread(target=_update_loop, daemon=True)
-        thread.start()
+        threading.Thread(target=_update_loop, daemon=True).start()
 
     try:
         _rpgrtl_background_update()
     except Exception:
         pass
+
+    # Boot log
     try:
-        _rpgrtl_log("bridge_loaded", {"version": _rpgrtl_bridge_version, "gamedir": config.gamedir})
-        _rpgrtl_record_live_text("live_bridge", "version " + _rpgrtl_bridge_version, "", "live_bridge_loaded", record_miss=True)
-    except Exception:
-        pass
-    _rpgrtl_report_hook_integrity("hook_status", force=True)
-    try:
+        _rpgrtl_log("bridge_loaded", {"version": _rpgrtl_bridge_version, "gamedir": config.gamedir, "cache_count": len(_rpgrtl_translation_cache)})
         _rpgrtl_send("/boot", {"pid": os.getpid(), "root": config.gamedir, "version": renpy.version_only + " bridge " + _rpgrtl_bridge_version})
     except Exception:
         pass
@@ -1011,6 +1577,8 @@ class RenPyService:
             path.with_suffix(".rpyc").unlink()
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            _append_live_log("tool", "rpyc_delete_failed", {"path": str(path.with_suffix('.rpyc')), "error": str(exc)})
         workspace = self.project.root / ".rpgrtl_workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         if clear_seen:
@@ -1027,6 +1595,7 @@ class RenPyService:
                 _LIVE_SERVER_STATE["events"] = []
                 _LIVE_SERVER_STATE["seen"] = {}
                 _LIVE_SERVER_STATE["translations"] = {}
+                _LIVE_SERVER_STATE["force_text"] = ""
             if _LIVE_SERVER is not None:
                 _append_live_log("tool", "live_bridge_server_reuse", {"port": LIVE_BRIDGE_PORT, "clear_events": clear_events})
                 return
@@ -1097,6 +1666,24 @@ class RenPyService:
             if isinstance(events, list) and len(events) > 2000:
                 del events[: len(events) - 2000]
         _append_live_log("tool", "merge_live_translation", {"source": source[:180], "target": sanitized[:180], "kind": kind})
+        self.notify_game_refresh()
+
+    def notify_game_refresh(self) -> int:
+        with _LIVE_SERVER_LOCK:
+            seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0)) + 1
+            _LIVE_SERVER_STATE["notify_seq"] = seq
+        _append_live_log("tool", "notify_game_refresh", {"seq": seq})
+        return seq
+
+    def force_live_text(self, text: str) -> int:
+        value = str(text or "").strip()
+        if not value:
+            return 0
+        with _LIVE_SERVER_LOCK:
+            _LIVE_SERVER_STATE["force_text"] = value
+            _LIVE_SERVER_STATE["force_seq"] = int(_LIVE_SERVER_STATE.get("force_seq", 0)) + 1
+        _append_live_log("tool", "force_live_text", {"text": value[:180], "force_seq": int(_LIVE_SERVER_STATE.get("force_seq", 0))})
+        return self.notify_game_refresh()
 
     def append_live_debug_event(self, kind: str, source: str, displayed: str = "", target: str = "", matched: bool = False) -> None:
         source = str(source or "").strip()
@@ -1325,12 +1912,16 @@ class RenPyService:
         # 流式写入 — 避免构建超大 lines 列表和 "\n".join() 内存尖峰
         with output.open("w", encoding="utf-8", newline="\n") as f:
             f.write("# Auto-generated by RPGRenPyLocalizer\n")
-            f.write("translate schinese strings:\n")
-            f.write("\n")
             count = 0
             for entry in sorted(entries, key=lambda item: item.entry_id):
                 if entry.source in existing_sources or entry.source in written_sources:
                     continue
+                if not entry.target.strip():
+                    continue
+                if count == 0:
+                    # Only write the header when we have actual entries
+                    f.write("translate schinese strings:\n")
+                    f.write("\n")
                 if count % 200 == 0:
                     time.sleep(0)
                 escaped_source = self._escape(entry.source)
@@ -1341,6 +1932,13 @@ class RenPyService:
                 f.write("\n")
                 written_sources.add(entry.source)
                 count += 1
+
+        # If no entries were written, remove the empty file
+        if count == 0:
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                pass
 
         return count
 
@@ -1787,20 +2385,13 @@ class RenPyService:
     @staticmethod
     def _live_bridge_looks_valid(text: str) -> bool:
         return (
-            "def _rpgrtl_live_filter" in text
-            and "def _rpgrtl_hook_do_display" in text
+            "def _rpgrtl_hook_do_display" in text
             and "def _rpgrtl_hook_prefix_suffix" in text
             and "def _rpgrtl_hook_set_text" in text
-            and "def _rpgrtl_hook_text_init" in text
-            and "def _rpgrtl_hook_text_render" in text
-            and "def _rpgrtl_hook_display_say" in text
-            and "def _rpgrtl_hook_show_display_say" in text
-            and "def _rpgrtl_hook_menu" in text
+            and "def _rpgrtl_hook_character_call" in text
+            and "def _rpgrtl_lookup" in text
             and "/pull" in text
-            and "config.replace_text = _rpgrtl_live_filter" in text
             and "import renpy" not in text
-            and 'target = _rpgrtl_translate_text(what, what, "call"' not in text
-            and "target if target else what" not in text
         )
 
     def _translation_file_pairs_are_valid(self, path: Path) -> bool:

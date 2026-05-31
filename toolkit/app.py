@@ -24,7 +24,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .detectors import detect_project
 from .models import DataRecord, MapDetail, MapRecord, ProjectInfo, SaveSlot, TranslationEntry
-from .renpy import RenPyService, _append_live_log, _live_log_path
+from .renpy import RenPyService, _append_live_log, _live_log_path, _LIVE_SERVER_STATE, _LIVE_SERVER_LOCK
 from .rpgmaker import RPGMakerService
 from .storage import export_translation_pack, import_translation_pack, load_json, load_translation_pack_payload, translation_pack_signature
 from .ui_layout import DashboardLayoutController
@@ -146,7 +146,15 @@ class ToolkitApp:
         self.library_tags_var = tk.StringVar()
         settings = self.workspace.load_settings()
         saved_provider = settings.get("ai_provider", "OpenAI")
-        self.translation_channel_var = tk.StringVar(value="百度 API 翻译" if saved_provider == "百度翻译" else "AI 翻译")
+        saved_channel = settings.get("translation_channel", "")
+        if saved_channel:
+            self.translation_channel_var = tk.StringVar(value=saved_channel)
+        elif saved_provider == "百度翻译":
+            self.translation_channel_var = tk.StringVar(value="百度API翻译（麻烦，不推荐）")
+        else:
+            self.translation_channel_var = tk.StringVar(value="机翻（速度较快，免费，推荐）")
+        self.mt_source_lang_var = tk.StringVar(value=settings.get("mt_source_lang", "auto"))
+        self.mt_target_lang_var = tk.StringVar(value=settings.get("mt_target_lang", "zh-CN"))
         self.ai_provider_var = tk.StringVar(value=settings.get("ai_provider", "OpenAI"))
         self.ai_api_key_var = tk.StringVar(value=settings.get("ai_api_keys", {}).get(settings.get("ai_provider", "OpenAI"), settings.get("openai_api_key", "")))
         self.ai_base_url_var = tk.StringVar(value=settings.get("ai_base_urls", {}).get(settings.get("ai_provider", "OpenAI"), settings.get("ai_base_url", "")))
@@ -199,7 +207,7 @@ class ToolkitApp:
         self._renpy_extract_process: subprocess.Popen[bytes] | None = None
         self._renpy_extract_pid: int | None = None
         self._renpy_realtime_stop: threading.Event | None = None
-        self._renpy_realtime_seen_sources: set[str] = set()
+        self._renpy_realtime_seen_sources: set[str] = set()  # legacy — kept for compat
         self._project_load_token = 0
         self._data_cell_editor: ttk.Entry | None = None
 
@@ -942,9 +950,19 @@ class ToolkitApp:
         ai.pack(fill="x")
         ai.grid_columnconfigure(1, weight=1)
         tk.Label(ai, text="翻译渠道", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        channel_box = ttk.Combobox(ai, textvariable=self.translation_channel_var, values=("AI 翻译", "百度 API 翻译"), state="readonly", width=18)
+        channel_box = ttk.Combobox(ai, textvariable=self.translation_channel_var, values=("机翻（速度较快，免费，推荐）", "AI翻译（速度较快质量好，需配置API，推荐）", "百度API翻译（麻烦，不推荐）"), state="readonly", width=30)
         channel_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         channel_box.bind("<<ComboboxSelected>>", self._on_translation_channel_change)
+
+        self.mt_settings_frame = tk.Frame(ai, bg=PANEL_BG)
+        self.mt_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.mt_settings_frame.grid_columnconfigure(1, weight=1)
+        _lang_opts = ("auto", "en", "ja", "ko", "zh-CN", "zh-TW", "fr", "de", "es", "ru", "pt")
+        tk.Label(self.mt_settings_frame, text="源语言", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
+        ttk.Combobox(self.mt_settings_frame, textvariable=self.mt_source_lang_var, values=_lang_opts, state="readonly", width=12).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        tk.Label(self.mt_settings_frame, text="目标语言", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Combobox(self.mt_settings_frame, textvariable=self.mt_target_lang_var, values=_lang_opts[1:], state="readonly", width=12).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Button(self.mt_settings_frame, text="测试联通", command=self._test_mt_connection).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
         self.ai_settings_frame = tk.Frame(ai, bg=PANEL_BG)
         self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -2252,6 +2270,8 @@ class ToolkitApp:
                 justify="left",
             ).pack(side="left", fill="x", expand=True)
             ttk.Button(header, text="刷新", command=lambda d=dialog: self._refresh_renpy_live_debug_dialog(d), width=8).pack(side="right")
+            ttk.Button(header, text="注入 hello", command=lambda: self._force_renpy_live_text(service, "hello"), width=10).pack(side="right", padx=(0, 6))
+            ttk.Button(header, text="嵌入翻译", command=lambda: self._embed_live_translations_to_game(service), width=10).pack(side="right", padx=(0, 6))
             status_var = tk.StringVar(value="实时状态读取中...")
             tk.Label(dialog, textvariable=status_var, bg=PANEL_BG, fg=TEXT_MUTED, anchor="w", padx=12).pack(fill="x", pady=(0, 6))
             dialog._rpgrtl_status_var = status_var  # type: ignore[attr-defined]
@@ -2336,8 +2356,22 @@ class ToolkitApp:
             tree.insert("", "end", values=(kind, matched, source, displayed, target))
         dialog.after(1200, lambda d=dialog: self._refresh_renpy_live_debug_dialog(d) if getattr(d, "winfo_exists", lambda: False)() else None)
 
+    def _force_renpy_live_text(self, service: object, text: str) -> None:
+        try:
+            if hasattr(service, "force_live_text"):
+                seq = service.force_live_text(text)
+                _append_live_log("tool", "force_live_text_requested", {"text": text, "seq": seq})
+                messagebox.showinfo("调试注入", f"已请求强制注入：{text}\n请切到游戏对话框查看是否被替换。")
+            else:
+                messagebox.showinfo("调试注入", "当前 Ren'Py 服务不支持强制注入。")
+        except Exception as exc:
+            messagebox.showerror("调试注入失败", str(exc))
+
     def save_ai_settings(self) -> None:
         settings = self.workspace.load_settings()
+        settings["translation_channel"] = self.translation_channel_var.get()
+        settings["mt_source_lang"] = self.mt_source_lang_var.get()
+        settings["mt_target_lang"] = self.mt_target_lang_var.get()
         provider = "百度翻译" if self._using_baidu_channel() else (self.ai_provider_var.get().strip() or "OpenAI")
         keys = settings.get("ai_api_keys", {})
         if not isinstance(keys, dict):
@@ -2382,7 +2416,10 @@ class ToolkitApp:
         self.ai_status_var.set(f"已切换到 {channel}。")
 
     def _using_baidu_channel(self) -> bool:
-        return self.translation_channel_var.get() == "百度 API 翻译"
+        return "百度" in self.translation_channel_var.get()
+
+    def _using_mt_channel(self) -> bool:
+        return "机翻" in self.translation_channel_var.get()
 
     def _selected_parallel_providers(self) -> list[str]:
         return [provider for provider, var in self.ai_parallel_provider_vars.items() if var.get()]
@@ -2433,12 +2470,19 @@ class ToolkitApp:
     def _refresh_translation_channel_ui(self) -> None:
         if not hasattr(self, "ai_settings_frame") or not hasattr(self, "baidu_settings_frame"):
             return
-        if self._using_baidu_channel():
+        if self._using_mt_channel():
             self.ai_settings_frame.grid_remove()
+            self.baidu_settings_frame.grid_remove()
+            self.mt_settings_frame.grid()
+            self.ai_provider_link.configure(text="MyMemory / Google / LibreTranslate")
+        elif self._using_baidu_channel():
+            self.ai_settings_frame.grid_remove()
+            self.mt_settings_frame.grid_remove()
             self.baidu_settings_frame.grid()
             self.ai_provider_link.configure(text=self._provider_link_label("百度翻译"))
         else:
             self.baidu_settings_frame.grid_remove()
+            self.mt_settings_frame.grid_remove()
             self.ai_settings_frame.grid()
             self.ai_provider_link.configure(text=self._provider_link_label(self.ai_provider_var.get().strip() or "OpenAI"))
 
@@ -5177,6 +5221,15 @@ class ToolkitApp:
         provider_config = self._renpy_realtime_provider_config()
         if provider_config is None:
             return
+        # Auto-save channel and language settings for next launch
+        try:
+            _s = self.workspace.load_settings()
+            _s["translation_channel"] = self.translation_channel_var.get()
+            _s["mt_source_lang"] = self.mt_source_lang_var.get()
+            _s["mt_target_lang"] = self.mt_target_lang_var.get()
+            self.workspace.save_settings(_s)
+        except Exception:
+            pass
         self._start_activity()
         self.runtime_status_var.set("正在准备 Ren'Py 实时游戏翻译...")
         self._set_status_text("正在后台写入 Ren'Py 原生翻译、安装实时桥接并加载实时翻译缓存，请稍候。")
@@ -5188,6 +5241,8 @@ class ToolkitApp:
             native_count = service.apply_translations(translations) if hasattr(service, "apply_translations") else 0
             service.install_live_translation_bridge(clear_seen=True)
             cache = self._load_renpy_realtime_cache()
+            self._merge_renpy_realtime_cache_sources(cache)
+            self._save_renpy_realtime_cache(cache)
             service.write_live_translation_table(self._renpy_realtime_entries(cache))
             _append_live_log("tool", "prepare_realtime_done", {"cache_count": len(cache), "native_count": native_count})
         except Exception as exc:
@@ -5206,7 +5261,6 @@ class ToolkitApp:
         if self._renpy_realtime_stop:
             self._renpy_realtime_stop.set()
         self._renpy_realtime_stop = threading.Event()
-        self._renpy_realtime_seen_sources = set(cache)
         threading.Thread(target=self._renpy_realtime_worker, args=(service, provider_config, self._renpy_realtime_stop), daemon=True).start()
         _append_live_log("tool", "realtime_worker_started", {"cache_count": len(cache), "provider": provider_config.get("provider", "")})
         if hasattr(service, "append_live_debug_event"):
@@ -5216,6 +5270,8 @@ class ToolkitApp:
         self.launch_current_game()
 
     def _renpy_realtime_provider_config(self) -> dict[str, str] | None:
+        if self._using_mt_channel():
+            return {"provider": "机翻", "source_lang": self.mt_source_lang_var.get(), "target_lang": self.mt_target_lang_var.get()}
         if self._using_baidu_channel():
             appid = self.baidu_appid_var.get().strip()
             secret = self.baidu_secret_var.get().strip()
@@ -5271,136 +5327,177 @@ class ToolkitApp:
             )
         return entries
 
+    def _merge_renpy_realtime_cache_sources(self, cache: dict[str, str]) -> None:
+        for entry in self.translation_map.values():
+            source = entry.source.strip()
+            target = entry.target.strip()
+            if source and target:
+                cache.setdefault(source, target)
+
+    def _persist_renpy_realtime_translation(self, service: object, cache: dict[str, str], source: str, target: str, kind: str = "realtime_translated", write_table: bool = True) -> None:
+        source = str(source or "").strip()
+        target = str(target or "").strip()
+        if not source or not target:
+            return
+        cache[source] = target
+        self.translation_memory[source] = target
+        self._invalidate_translation_memory_index()
+        self._tm_dirty = True
+        self._flush_translation_memory()
+        self._save_renpy_realtime_cache(cache)
+        if hasattr(service, "merge_live_translation"):
+            service.merge_live_translation(source, target, kind=kind)
+        if write_table and hasattr(service, "write_live_translation_table"):
+            service.write_live_translation_table(self._renpy_realtime_entries(cache))
+        self.root.after(0, lambda s=source, t=target: self._apply_renpy_realtime_translation_to_table(s, t))
+
+    def _batch_persist_realtime_translations(self, service: object, cache: dict[str, str], translations: dict[str, str]) -> None:
+        """Batch-persist all translations in one go — single disk write instead of per-text writes."""
+        if not translations:
+            return
+        for source, target in translations.items():
+            cache[source] = target
+            self.translation_memory[source] = target
+        self._tm_dirty = True
+        self._flush_translation_memory()
+        self._save_renpy_realtime_cache(cache)
+        if hasattr(service, "merge_live_translation"):
+            for source, target in translations.items():
+                service.merge_live_translation(source, target, kind="realtime_translated")
+        if hasattr(service, "write_live_translation_table"):
+            service.write_live_translation_table(self._renpy_realtime_entries(cache))
+        # Single main-thread callback — batched, not per-text
+        self.root.after(0, lambda ts=dict(translations): self._batch_apply_realtime_to_table(ts))
+
+    def _batch_apply_realtime_to_table(self, translations: dict[str, str]) -> None:
+        """Apply multiple translations to project table in one main-thread callback."""
+        for source, target in translations.items():
+            for entry in self.translation_entries:
+                if entry.source == source:
+                    entry.target = target
+                    self.translation_map[entry.entry_id] = entry
+                    break
+        if translations:
+            self._schedule_translation_tree_refresh(delay_ms=80)
+            self._save_project_translation_cache()
+
     def _renpy_realtime_worker(self, service: object, provider_config: dict[str, str], stop_event: threading.Event) -> None:
         cache = self._load_renpy_realtime_cache()
-        ordered_sources = self._renpy_realtime_ordered_sources()
-        cached_applied_sources: set[str] = set()
+        self._merge_renpy_realtime_cache_sources(cache)
+        seen_sources: set[str] = set(cache)  # init from cache so already-translated texts are skipped
         last_scan_report = 0.0
         last_idle_report = 0.0
-        last_skip_report = 0.0
+        last_table_write = 0.0
+        worker_interval = 0.3
+        total_translated = 0
         while not stop_event.is_set():
             try:
-                events = service.read_live_debug_entries(2000) if hasattr(service, "read_live_debug_entries") else []
-                changed = False
-                candidates = [
-                    event
-                    for event in events
-                    if str(event.get("source", "") or "").strip()
-                    and not str(event.get("target", "") or "").strip()
-                    and str(event.get("kind", "") or "") in {"prefix_suffix", "do_display", "do_display_raw", "do_display_displayed", "display_say", "show_display_say", "choice", "menu_choice", "text_render"}
-                    and not str(event.get("kind", "") or "").startswith("realtime_")
-                    and not str(event.get("kind", "") or "").startswith("live_")
-                    and not str(event.get("source", "") or "").strip().startswith("live_")
-                ]
+                # 1. Collect untranslated sources from bridge lookahead queue
+                queue_sources: list[str] = []
+                try:
+                    lock = service._LIVE_SERVER_LOCK if hasattr(service, '_LIVE_SERVER_LOCK') else _LIVE_SERVER_LOCK
+                    with lock:
+                        pre_queue = list(_LIVE_SERVER_STATE.get("pre_translate_queue", []))
+                        _LIVE_SERVER_STATE["pre_translate_queue"] = []
+                except Exception:
+                    pre_queue = []
+                for t in pre_queue:
+                    t = t.strip()
+                    if t and t not in cache and t not in seen_sources and not self._looks_like_non_dialogue_translation(t):
+                        queue_sources.append(t)
+                        seen_sources.add(t)
+
+                # 2. Collect untranslated sources from events (runtime discovery)
+                events = service.read_live_debug_entries(300) if hasattr(service, "read_live_debug_entries") else []
+                event_sources: list[str] = []
                 now = time.monotonic()
-                if candidates and hasattr(service, "append_live_debug_event") and now - last_scan_report >= 5:
-                    last_scan_report = now
-                    latest_source = str(candidates[-1].get("source", "") or "").strip()
-                    _append_live_log("tool", "realtime_scan", {"candidate_count": len(candidates), "latest_source": latest_source[:180]})
-                    service.append_live_debug_event("realtime_scan", latest_source or "实时扫描", f"发现未命中 {len(candidates)} 条，优先处理最新文本", "", False)
-                if not candidates and hasattr(service, "append_live_debug_event") and now - last_idle_report >= 5:
-                    last_idle_report = now
-                    bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
-                    translation_count = bridge_status.get("translation_count", 0) if isinstance(bridge_status, dict) else 0
-                    seen_count = bridge_status.get("seen_count", 0) if isinstance(bridge_status, dict) else 0
-                    service.append_live_debug_event("realtime_idle", "实时后台空闲", f"暂无未命中候选；桥接表 {translation_count} 条，已见文本 {seen_count} 条", "", False)
-                for event in reversed(candidates):
+                for event in reversed(events):
                     source = str(event.get("source", "") or "").strip()
-                    displayed = str(event.get("displayed", "") or source).strip()
-                    kind = str(event.get("kind", "") or "")
                     if not source or source == "hook_status":
                         continue
-                    cached_source, target = self._renpy_realtime_cached_match(source, displayed, cache)
-                    if target:
-                        first_cached_application = source not in cached_applied_sources
-                        if first_cached_application and hasattr(service, "merge_live_translation"):
-                            cached_applied_sources.add(source)
-                            _append_live_log("tool", "realtime_cached_applied", {"source": source[:180], "target": target[:180]})
-                            service.merge_live_translation(source, target, kind="realtime_cached_applied")
-                        if first_cached_application and cached_source != source and hasattr(service, "append_live_debug_event"):
-                            service.append_live_debug_event("realtime_cached_variant", source, f"用缓存变体命中：{cached_source}", target, True)
+                    kind = str(event.get("kind", "") or "")
+                    if kind.startswith("realtime_") or kind.startswith("live_"):
                         continue
-                    if source in self._renpy_realtime_seen_sources:
-                        if hasattr(service, "append_live_debug_event") and now - last_skip_report >= 5:
-                            last_skip_report = now
-                            service.append_live_debug_event("realtime_skip_seen", source, "已在本轮实时队列中处理过，避免重复请求", "", False)
+                    if source.startswith("live_"):
+                        continue
+                    if source in cache or source in seen_sources:
                         continue
                     if self._looks_like_non_dialogue_translation(source):
                         continue
-                    priority_sources = self._renpy_realtime_priority_sources(source, ordered_sources, cache)
-                    for item in priority_sources:
-                        self._renpy_realtime_seen_sources.add(item)
+                    event_sources.append(source)
+                    seen_sources.add(source)
+
+                # 3. Merge all untranslated sources, preserve order (queue first, then event-discovered)
+                all_sources: list[str] = []
+                seen_dedup: set[str] = set()
+                for src in queue_sources + event_sources:
+                    if src not in seen_dedup:
+                        seen_dedup.add(src)
+                        all_sources.append(src)
+
+                # 4. Logging
+                if all_sources and hasattr(service, "append_live_debug_event") and now - last_scan_report >= 10:
+                    last_scan_report = now
+                    _append_live_log("tool", "realtime_batch", {"total": len(all_sources), "from_queue": len(queue_sources), "from_events": len(event_sources)})
+                    service.append_live_debug_event("realtime_batch", all_sources[0], f"批量待译 {len(all_sources)} 条（队列 {len(queue_sources)}，事件 {len(event_sources)}）", "", False)
+                elif not all_sources and hasattr(service, "append_live_debug_event") and now - last_idle_report >= 30:
+                    last_idle_report = now
+                    service.append_live_debug_event("realtime_idle", "实时后台空闲", f"暂无未命中候选；已译 {total_translated} 条", "", False)
+
+                if not all_sources:
+                    stop_event.wait(worker_interval)
+                    continue
+
+                # 5. Translate all at once — no per-tick limit
+                _append_live_log("tool", "realtime_requesting", {"count": len(all_sources), "provider": provider_config.get("provider", "")})
+                try:
+                    translations = self._renpy_realtime_translate_sources(all_sources, provider_config)
+                except Exception as exc:
+                    _append_live_log("tool", "realtime_failed", {"error": str(exc), "count": len(all_sources)})
                     if hasattr(service, "append_live_debug_event"):
-                        _append_live_log("tool", "realtime_requesting", {"source": source[:180], "count": len(priority_sources), "provider": provider_config.get("provider", "")})
-                        service.append_live_debug_event("realtime_queued", source, f"已加入实时翻译队列：{len(priority_sources)} 条", "", False)
-                        provider_name = provider_config.get("provider", "AI")
-                        service.append_live_debug_event("realtime_requesting", source, f"正在请求 {provider_name}，本批 {len(priority_sources)} 条", "", False)
-                    try:
-                        translations = self._renpy_realtime_translate_sources(priority_sources, provider_config)
-                    except Exception as exc:
-                        for item in priority_sources:
-                            self._renpy_realtime_seen_sources.discard(item)
-                        if hasattr(service, "append_live_debug_event"):
-                            _append_live_log("tool", "realtime_failed", {"source": source[:180], "error": str(exc)})
-                            service.append_live_debug_event("realtime_failed", source, "AI/翻译接口请求失败", str(exc), False)
-                        continue
-                    translated_count = sum(1 for item in priority_sources if translations.get(item, "").strip())
-                    if hasattr(service, "append_live_debug_event"):
-                        _append_live_log("tool", "realtime_response", {"source": source[:180], "translated_count": translated_count, "requested_count": len(priority_sources)})
-                        service.append_live_debug_event("realtime_response", source, f"接口已返回：{translated_count}/{len(priority_sources)} 条有效译文", "", translated_count > 0)
-                    for item in priority_sources:
-                        target = translations.get(item, "").strip()
-                        if not target:
-                            self._renpy_realtime_seen_sources.discard(item)
-                            if hasattr(service, "append_live_debug_event"):
-                                service.append_live_debug_event("realtime_empty", item, "AI 未返回译文，或译文被安全过滤", "", False)
-                            continue
-                        cache[item] = target
-                        changed = True
-                        if hasattr(service, "merge_live_translation"):
-                            service.merge_live_translation(item, target)
-                        self.root.after(0, lambda s=item, t=target: self._apply_renpy_realtime_translation_to_table(s, t))
-                if changed:
-                    self._save_renpy_realtime_cache(cache)
-                    if hasattr(service, "write_live_translation_table"):
-                        _path, count = service.write_live_translation_table(self._renpy_realtime_entries(cache))
-                        _append_live_log("tool", "realtime_written", {"bridge_count": count, "cache_count": len(cache)})
-                        if hasattr(service, "append_live_debug_event"):
-                            service.append_live_debug_event("realtime_written", "实时桥接表", f"已写入桥接表 {count} 条，实时缓存 {len(cache)} 条", "", True)
-                    self.root.after(0, lambda c=len(cache): self.runtime_status_var.set(f"Ren'Py 实时游戏翻译运行中：缓存 {c} 条"))
+                        service.append_live_debug_event("realtime_failed", "翻译失败", str(exc), "", False)
+                    for src in all_sources:
+                        seen_sources.discard(src)  # allow retry next tick
+                    stop_event.wait(worker_interval)
+                    continue
+
+                # 6. Collect results — mark failures for retry
+                translated = {src: tgt for src, tgt in translations.items() if tgt.strip()}
+                not_translated = [src for src in all_sources if not translations.get(src, "").strip()]
+
+                for src in not_translated:
+                    seen_sources.discard(src)  # allow retry next tick
+
+                # 7. Batch persist — single disk write for all translations
+                if translated:
+                    total_translated += len(translated)
+                    self._batch_persist_realtime_translations(service, cache, translated)
+                    last_table_write = time.monotonic()
+
+                if hasattr(service, "append_live_debug_event"):
+                    _append_live_log("tool", "realtime_done", {"translated": len(translated), "failed": len(not_translated), "total_session": total_translated})
+                    if translated:
+                        service.append_live_debug_event("realtime_response", list(translated.keys())[0], f"已译 {len(translated)}/{len(all_sources)} 条", list(translated.values())[0], len(translated) > 0)
+                    if not_translated:
+                        service.append_live_debug_event("realtime_empty", not_translated[0], f"{len(not_translated)} 条未返回译文，下轮重试", "", False)
+
+                self.root.after(0, lambda c=total_translated: self.runtime_status_var.set(f"Ren'Py 实时游戏翻译运行中：已译 {c} 条"))
+
+                # 8. Periodic seen_sources cleanup — remove texts already in cache (they're done)
+                if len(seen_sources) > 2000:
+                    before = len(seen_sources)
+                    seen_sources.intersection_update(cache)
+                    _append_live_log("tool", "seen_cleanup", {"before": before, "after": len(seen_sources)})
+
             except Exception as exc:
                 if hasattr(service, "append_live_debug_event"):
                     _append_live_log("tool", "realtime_worker_exception", {"error": str(exc)})
                     service.append_live_debug_event("realtime_worker_exception", "实时后台异常", str(exc), "", False)
                 self.root.after(0, lambda err=exc: self.runtime_status_var.set(f"Ren'Py 实时游戏翻译异常：{err}"))
-            stop_event.wait(1.0)
-
-    def _renpy_realtime_ordered_sources(self) -> list[str]:
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for entry in self.translation_entries:
-            source = entry.source.strip()
-            if not source or source in seen:
-                continue
-            if entry.category not in {"dialogue", "choice"}:
-                continue
-            seen.add(source)
-            ordered.append(source)
-        return ordered
-
-    def _renpy_realtime_priority_sources(self, source: str, ordered_sources: list[str], cache: dict[str, str]) -> list[str]:
-        result = [source]
-        try:
-            index = ordered_sources.index(source)
-        except ValueError:
-            return result
-        for item in ordered_sources[index + 1 : index + 51]:
-            if item in cache or item in self._renpy_realtime_seen_sources:
-                continue
-            if self._looks_like_non_dialogue_translation(item):
-                continue
-            result.append(item)
-        return result
+            stop_event.wait(worker_interval)
+        # Final save on shutdown
+        self._save_renpy_realtime_cache(cache)
+        self.root.after(0, lambda: self.runtime_status_var.set("Ren'Py 实时游戏翻译已停止"))
 
     @staticmethod
     def _renpy_realtime_cached_match(source: str, displayed: str, cache: dict[str, str]) -> tuple[str, str]:
@@ -5421,6 +5518,174 @@ class ToolkitApp:
                     return variant, target
         return "", ""
 
+    # --- Machine translation (free, no API key) ---
+
+    @staticmethod
+    def _get_system_proxy() -> dict | None:
+        """Read Windows system proxy settings (from registry). Returns dict for urllib ProxyHandler or None."""
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+                enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+                if not enabled:
+                    return None
+                server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                if not server:
+                    return None
+                # server like "127.0.0.1:7890" or "http=...;https=..."
+                if "=" in server:
+                    # Multi-proxy format: "http=127.0.0.1:7890;https=127.0.0.1:7890"
+                    proxies = {}
+                    for part in server.split(";"):
+                        if "=" in part:
+                            k, v = part.split("=", 1)
+                            proxies[k.strip()] = v.strip()
+                    return {"http": proxies.get("http", ""), "https": proxies.get("https", "")}
+                else:
+                    return {"http": f"http://{server}", "https": f"http://{server}"}
+        except Exception:
+            return None
+
+    def _urlopen_with_proxy(self, req, timeout: int = 8):
+        """urlopen that respects Windows system proxy if available."""
+        import urllib.request
+        proxy = self._get_system_proxy()
+        if proxy:
+            handler = urllib.request.ProxyHandler(proxy)
+            opener = urllib.request.build_opener(handler)
+            return opener.open(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def _request_google_translate(self, text: str, source: str, target: str) -> str:
+        """Google Translate hidden API (free, no key). Uses clients5 endpoint for better reliability."""
+        import urllib.request, urllib.parse, json
+        # clients5.google.com is the "new" hidden API endpoint — works with VPN/proxy
+        params = urllib.parse.urlencode({"client": "dict-chrome-ex", "sl": source, "tl": target, "q": text})
+        url = f"https://clients5.google.com/translate_a/t?{params}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        })
+        with self._urlopen_with_proxy(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+        # clients5 returns [["translated","original",...]] or {"sentences":[...]}
+        if isinstance(data, dict) and "sentences" in data:
+            return "".join(s.get("trans", "") for s in data["sentences"])
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            return data[0][0]
+        if isinstance(data, list) and data and isinstance(data[0], str):
+            return data[0]
+        return ""
+
+    def _request_libre_translate(self, text: str, source: str, target: str) -> str:
+        """LibreTranslate public instance (free, no key). Tries multiple instances."""
+        import urllib.request, json
+        # Try multiple LibreTranslate public instances in order
+        instances = [
+            "https://libretranslate.com/translate",
+            "https://translate.argosopentech.com/translate",
+            "https://lt.vern.cc/translate",
+        ]
+        body = json.dumps({"q": text, "source": source, "target": target, "format": "text"}).encode("utf-8")
+        last_err = None
+        for url in instances:
+            try:
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+                with self._urlopen_with_proxy(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data.get("translatedText", "")
+            except Exception as e:
+                last_err = e
+                continue
+        if last_err:
+            raise last_err
+        return ""
+
+    def _request_mymemory_translate(self, text: str, source: str, target: str) -> str:
+        """MyMemory free translation API (no key, works globally including China)."""
+        import urllib.request, urllib.parse, json
+        langpair = f"{source}|{target}" if source != "auto" else f"en|{target}"
+        params = urllib.parse.urlencode({"q": text, "langpair": langpair})
+        url = f"https://api.mymemory.translated.net/get?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with self._urlopen_with_proxy(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("responseData", {}).get("translatedText", "")
+
+    def _test_mt_connection(self) -> None:
+        """Test all machine translation APIs and report results."""
+        import threading
+        def _run():
+            results = []
+            apis = [
+                ("MyMemory", lambda: self._request_mymemory_translate("Hello, how are you?", "auto", "zh-CN")),
+                ("Google", lambda: self._request_google_translate("Hello, how are you?", "auto", "zh-CN")),
+                ("LibreTranslate", lambda: self._request_libre_translate("Hello, how are you?", "auto", "zh-CN")),
+            ]
+            for name, fn in apis:
+                try:
+                    result = fn()
+                    if result:
+                        results.append(f"  {name}: 成功 -> {result}")
+                    else:
+                        results.append(f"  {name}: 返回为空")
+                except Exception as e:
+                    results.append(f"  {name}: 失败 ({type(e).__name__})")
+            msg = "机翻接口测试结果：\n" + "\n".join(results)
+            self.root.after(0, lambda: self.ai_status_var.set(msg.replace("\n", " | ")))
+            self.root.after(0, lambda m=msg: messagebox.showinfo("机翻接口测试", m))
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _request_mt_translations(self, entries: list[TranslationEntry], source_lang: str, target_lang: str) -> dict[str, str]:
+        """Translate multiple entries using free APIs — flat parallel dispatch.
+
+        All (entry × API) combinations are submitted to a single thread pool.
+        Per entry, the first successful result wins.
+        MyMemory (shortest latency from China) is submitted first with shorter timeout.
+        """
+        from concurrent.futures import ThreadPoolExecutor, Future
+        import threading
+
+        result: dict[str, str] = {}
+        done_entries: set[str] = set()
+        lock = threading.Lock()
+
+        def _on_done(entry_idx: str, future: Future):
+            try:
+                translated = future.result()
+                if translated and translated.strip():
+                    with lock:
+                        if entry_idx not in done_entries:
+                            result[entry_idx] = translated.strip()
+                            done_entries.add(entry_idx)
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=24) as pool:
+            # Submit MyMemory first (fastest from China), then Google, then Libre
+            api_funcs = [
+                (self._request_mymemory_translate, source_lang, target_lang),
+                (self._request_google_translate, source_lang, target_lang),
+                (self._request_libre_translate, source_lang, target_lang),
+            ]
+            futures = []
+            for index, entry in enumerate(entries, start=1):
+                text = entry.source.strip()
+                if not text:
+                    continue
+                entry_idx = str(index)
+                for api_fn, src, tgt in api_funcs:
+                    f = pool.submit(api_fn, text, src, tgt)
+                    f.add_done_callback(lambda fut, idx=entry_idx: _on_done(idx, fut))
+                    futures.append(f)
+            # Wait for all to finish (bounded by API timeouts ~5-8s)
+            for f in futures:
+                try:
+                    f.result(timeout=12)
+                except Exception:
+                    pass
+        return result
+
     def _renpy_realtime_translate_sources(self, sources: list[str], provider_config: dict[str, str]) -> dict[str, str]:
         result: dict[str, str] = {}
         pending: list[TranslationEntry] = []
@@ -5434,6 +5699,8 @@ class ToolkitApp:
             return result
         if provider_config.get("provider") == "百度翻译":
             raw = self._request_baidu_translations(pending, provider_config["appid"], provider_config["secret"])
+        elif provider_config.get("provider") == "机翻":
+            raw = self._request_mt_translations(pending, provider_config.get("source_lang", "auto"), provider_config.get("target_lang", "zh-CN"))
         else:
             raw = self._request_ai_translations(pending, provider_config.get("api_key", ""), provider_config.get("model", ""), provider_config.get("provider", "OpenAI"), provider_config.get("base_url", ""))
         memory_changed = False

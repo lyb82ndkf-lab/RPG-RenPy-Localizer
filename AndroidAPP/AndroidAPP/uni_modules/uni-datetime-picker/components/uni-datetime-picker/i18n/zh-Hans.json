@@ -1,0 +1,22 @@
+﻿{
+	"uni-datetime-picker.selectDate": "閫夋嫨鏃ユ湡",
+	"uni-datetime-picker.selectTime": "閫夋嫨鏃堕棿",
+	"uni-datetime-picker.selectDateTime": "閫夋嫨鏃ユ湡鏃堕棿",
+	"uni-datetime-picker.startDate": "寮€濮嬫棩鏈?,
+	"uni-datetime-picker.endDate": "缁撴潫鏃ユ湡",
+	"uni-datetime-picker.startTime": "寮€濮嬫椂闂?,
+	"uni-datetime-picker.endTime": "缁撴潫鏃堕棿",
+	"uni-datetime-picker.ok": "纭畾",
+	"uni-datetime-picker.clear": "娓呴櫎",
+	"uni-datetime-picker.cancel": "鍙栨秷",
+	"uni-datetime-picker.year": "骞?,
+	"uni-datetime-picker.month": "鏈?,
+	"uni-calender.SUN": "鏃?,
+	"uni-calender.MON": "涓€",
+	"uni-calender.TUE": "浜?,
+	"uni-calender.WED": "涓?,
+	"uni-calender.THU": "鍥?,
+	"uni-calender.FRI": "浜?,
+	"uni-calender.SAT": "鍏?,
+	"uni-calender.confirm": "纭"
+}

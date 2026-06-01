@@ -1,0 +1,42 @@
+package com.rpgrtl.engine.xenvironment.components;
+
+import com.rpgrtl.engine.xenvironment.EnvironmentComponent;
+import com.rpgrtl.engine.xconnector.XConnectorEpoll;
+import com.rpgrtl.engine.xconnector.UnixSocketConfig;
+import com.rpgrtl.engine.xserver.XClientConnectionHandler;
+import com.rpgrtl.engine.xserver.XClientRequestHandler;
+import com.rpgrtl.engine.xserver.XServer;
+
+public class XServerComponent extends EnvironmentComponent {
+    private XConnectorEpoll connector;
+    private final XServer xServer;
+    private final UnixSocketConfig socketConfig;
+
+    public XServerComponent(XServer xServer, UnixSocketConfig socketConfig) {
+        this.xServer = xServer;
+        this.socketConfig = socketConfig;
+    }
+
+    @Override
+    public void start() {
+        if (connector != null) return;
+        connector = new XConnectorEpoll(socketConfig, new XClientConnectionHandler(xServer), new XClientRequestHandler());
+        connector.setInitialInputBufferCapacity(4096);
+        connector.setInitialOutputBufferCapacity(4096);
+        connector.setCanReceiveAncillaryMessages(true);
+        connector.start();
+    }
+
+    @Override
+    public void stop() {
+        if (connector != null) {
+            connector.destroy();
+            connector = null;
+        }
+    }
+
+    public XServer getXServer() {
+        return xServer;
+    }
+}
+

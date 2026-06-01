@@ -1,0 +1,85 @@
+﻿{
+  "id": "uni-segmented-control",
+  "displayName": "uni-segmented-control 鍒嗘鍣?,
+  "version": "1.2.3",
+  "description": "鍒嗘鍣ㄧ敱鑷冲皯 2 涓垎娈垫帶浠剁粍鎴愶紝鐢ㄤ綔涓嶅悓瑙嗗浘鐨勬樉绀?,
+  "keywords": [
+    "uni-ui",
+    "uniui",
+    "鍒嗘鍣?,
+    "segement",
+    "椤堕儴閫夋嫨"
+],
+  "repository": "https://github.com/dcloudio/uni-ui",
+  "engines": {
+    "HBuilderX": ""
+  },
+  "directories": {
+    "example": "../../temps/example_temps"
+  },
+"dcloudext": {
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "鏃?,
+      "data": "鏃?,
+      "permissions": "鏃?
+    },
+    "npmurl": "https://www.npmjs.com/package/@dcloudio/uni-ui",
+    "type": "component-vue"
+  },
+  "uni_modules": {
+    "dependencies": ["uni-scss"],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y",
+        "alipay": "n"
+      },
+      "client": {
+        "App": {
+          "app-vue": "y",
+          "app-nvue": "y"
+        },
+        "H5-mobile": {
+          "Safari": "y",
+          "Android Browser": "y",
+          "寰俊娴忚鍣?Android)": "y",
+          "QQ娴忚鍣?Android)": "y"
+        },
+        "H5-pc": {
+          "Chrome": "y",
+          "IE": "y",
+          "Edge": "y",
+          "Firefox": "y",
+          "Safari": "y"
+        },
+        "灏忕▼搴?: {
+          "寰俊": "y",
+          "闃块噷": "y",
+          "鐧惧害": "y",
+          "瀛楄妭璺冲姩": "y",
+          "QQ": "y"
+        },
+        "蹇簲鐢?: {
+          "鍗庝负": "u",
+          "鑱旂洘": "u"
+        },
+        "Vue": {
+            "vue2": "y",
+            "vue3": "y"
+        }
+      }
+    }
+  }
+}

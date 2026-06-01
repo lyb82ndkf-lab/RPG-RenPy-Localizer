@@ -1,0 +1,86 @@
+﻿{
+  "id": "uni-breadcrumb",
+  "displayName": "uni-breadcrumb 闈㈠寘灞?,
+  "version": "0.1.2",
+  "description": "Breadcrumb  闈㈠寘灞?,
+  "keywords": [
+    "uni-breadcrumb",
+    "breadcrumb",
+    "uni-ui",
+    "闈㈠寘灞戝鑸?,
+    "闈㈠寘灞?
+],
+  "repository": "",
+  "engines": {
+    "HBuilderX": "^3.1.0"
+  },
+  "dcloudext": {
+    "category": [
+        "鍓嶇缁勪欢",
+        "閫氱敤缁勪欢"
+    ],
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "鏃?,
+      "data": "鏃?,
+      "permissions": "鏃?
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "y",
+          "vue3": "y"
+        },
+        "App": {
+          "app-vue": "y",
+          "app-nvue": "n"
+        },
+        "H5-mobile": {
+          "Safari": "y",
+          "Android Browser": "y",
+          "寰俊娴忚鍣?Android)": "y",
+          "QQ娴忚鍣?Android)": "y"
+        },
+        "H5-pc": {
+          "Chrome": "y",
+          "IE": "y",
+          "Edge": "y",
+          "Firefox": "y",
+          "Safari": "y"
+        },
+        "灏忕▼搴?: {
+          "寰俊": "y",
+          "闃块噷": "u",
+          "鐧惧害": "u",
+          "瀛楄妭璺冲姩": "u",
+        "QQ": "u",
+        "浜笢": "u"
+        },
+        "蹇簲鐢?: {
+          "鍗庝负": "u",
+          "鑱旂洘": "u"
+        }
+      }
+    }
+  }
+}
+

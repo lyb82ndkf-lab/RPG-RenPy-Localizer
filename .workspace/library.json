@@ -1,0 +1,14 @@
+{
+  "games": [
+    {
+      "name": "Project1",
+      "path": "E:\\demo\\output\\Project1",
+      "engine": "RPG Maker MV/MZ",
+      "added_at": "2026-05-21T13:10:35",
+      "last_opened_at": "2026-05-21T15:09:09",
+      "launcher_path": "E:\\demo\\output\\Project1\\Game.exe",
+      "note": "",
+      "tags": []
+    }
+  ]
+}

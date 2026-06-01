@@ -1,0 +1,20 @@
+﻿// 鏂囨。鏁欑▼: https://uniapp.dcloud.net.cn/uniCloud/schema
+{
+  "bsonType": "object",
+  "required": ["_id", "value"],
+  "properties": {
+    "_id": {
+      "bsonType": "string",
+      "description": "key锛屾牸寮忥細uni-id:[provider]:[appid]:[openid]:[access-token|user-access-token|session-key|encrypt-key-version|ticket]"
+    },
+    "value": {
+      "bsonType": "object",
+      "description": "瀛楁_id瀵瑰簲鐨勫€?
+    },
+    "expired": {
+      "bsonType": "date",
+      "description": "杩囨湡鏃堕棿"
+    }
+  }
+}
+

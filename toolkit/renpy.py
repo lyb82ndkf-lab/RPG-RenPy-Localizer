@@ -626,6 +626,47 @@ init -7 python:
                 return True
         return False
 
+    def _rpgrtl_normalize_fullwidth(text):
+        """Convert fullwidth (全角) ASCII characters to halfwidth (半角).
+
+        Fullwidth chars U+FF01–U+FF5E map to ASCII U+0021–U+007E (offset -0xFEE0).
+        Fullwidth space U+3000 maps to ASCII space U+0020.
+        This prevents AI-translated text from using fullwidth braces, parens, quotes etc.
+        that would break Ren'Py text tag parsing.
+        """
+        if not isinstance(text, string_types):
+            return text
+        out = []
+        for ch in text:
+            cp = ord(ch)
+            if 0xFF01 <= cp <= 0xFF5E:
+                out.append(chr(cp - 0xFEE0))
+            elif cp == 0x3000:  # ideographic space
+                out.append(" ")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _rpgrtl_strip_font_tags(text):
+        """Strip any existing {font=...}...{/font} tags, handling both half/fullwidth braces."""
+        if not isinstance(text, string_types):
+            return text
+        # Normalize ALL fullwidth ASCII chars to halfwidth first
+        text = _rpgrtl_normalize_fullwidth(text)
+        # Remove any existing {font=...}...{/font} wrappers (could be nested/malformed)
+        text = re.sub(r"\{font=[^}]*\}", "", text)
+        text = text.replace("{/font}", "")
+        return text
+
+    def _rpgrtl_wrap_font(text):
+        """Wrap text with CJK font tag, stripping any existing/broken font tags first."""
+        if not _rpgrtl_cjk_font:
+            return text
+        clean = _rpgrtl_strip_font_tags(text)
+        if not clean or not _rpgrtl_has_cjk(clean):
+            return text
+        return "{font=" + _rpgrtl_cjk_font + "}" + clean + "{/font}"
+
     def _rpgrtl_candidates(source):
         result = []
         seen = set()
@@ -650,7 +691,11 @@ init -7 python:
             return None
         for key in _rpgrtl_candidates(text):
             if key in translations:
-                return translations[key]
+                result = translations[key]
+                # Strip any existing/broken font tags — _rpgrtl_wrap_font will re-add clean ones
+                if _rpgrtl_cjk_font:
+                    result = _rpgrtl_strip_font_tags(result)
+                return result
         return None
 
     def _rpgrtl_restart_interaction(reason="refresh"):
@@ -675,7 +720,8 @@ init -7 python:
                 if (hasattr(data, "get") and hasattr(data, "keys")):
                     cached = data.get("translations", {})
                     if (hasattr(cached, "get") and hasattr(cached, "keys")):
-                        _rpgrtl_local_cache = cached
+                        # Normalize fullwidth chars in cached translations
+                        _rpgrtl_local_cache = {k: _rpgrtl_normalize_fullwidth(v) for k, v in cached.items()}
                         _rpgrtl_log("local_cache_loaded", {"count": len(cached)})
         except Exception:
             pass
@@ -687,6 +733,8 @@ init -7 python:
             if (hasattr(payload, "get") and hasattr(payload, "keys")):
                 translations = payload.get("translations", {})
                 if (hasattr(translations, "get") and hasattr(translations, "keys")):
+                    # Normalize fullwidth chars in translations
+                    translations = {k: _rpgrtl_normalize_fullwidth(v) for k, v in translations.items()}
                     _rpgrtl_translation_cache = translations
                     _rpgrtl_local_cache.update(translations)
                     _rpgrtl_log("pull_success", {"count": len(translations)})
@@ -863,8 +911,7 @@ init -7 python:
                     if isinstance(txt, str) and txt.strip():
                         translated = _rpgrtl_lookup(txt)
                         if translated and translated != txt:
-                            if _rpgrtl_cjk_font:
-                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            translated = _rpgrtl_wrap_font(translated)
                             widget.text = [translated]
                             _rpgrtl_text_modified[id(widget)] = translated
                             updated = True
@@ -967,8 +1014,7 @@ init -7 python:
             return res
         translated = _rpgrtl_lookup(body)
         if translated and translated != body:
-            if _rpgrtl_cjk_font and _rpgrtl_has_cjk(translated):
-                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+            translated = _rpgrtl_wrap_font(translated)
             _rpgrtl_report_seen(body, res, translated, "prefix_suffix")
             try:
                 result = _rpgrtl_old_prefix_suffix(self, thing, prefix, translated, suffix) if _rpgrtl_old_prefix_suffix else (prefix or "") + translated + (suffix or "")
@@ -999,8 +1045,7 @@ init -7 python:
         # When restart_interaction re-enters do_display, force_text is set by prefix_suffix.
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
         if forced:
-            if _rpgrtl_cjk_font and _rpgrtl_has_cjk(forced):
-                forced = "{font=" + _rpgrtl_cjk_font + "}" + forced + "{/font}"
+            forced = _rpgrtl_wrap_font(forced)
             _rpgrtl_debug("do_display FORCE: forced=" + repr(forced[:60]) + " what=" + repr(what[:60]))
             _rpgrtl_force_text = ""
             _rpgrtl_force_applied = False
@@ -1087,8 +1132,7 @@ init -7 python:
                         if isinstance(label, str) and label.strip():
                             translated = _rpgrtl_lookup(label)
                             if translated and translated != label:
-                                if _rpgrtl_cjk_font:
-                                    translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                                translated = _rpgrtl_wrap_font(translated)
                                 new_item = (translated,) + tuple(item[1:])
                                 items[i] = new_item
                                 changed = True
@@ -1122,8 +1166,7 @@ init -7 python:
                     if isinstance(label, str) and label.strip():
                         translated = _rpgrtl_lookup(label)
                         if translated and translated != label:
-                            if _rpgrtl_cjk_font:
-                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            translated = _rpgrtl_wrap_font(translated)
                             _rpgrtl_debug("display_menu translate: " + repr(label[:40]) + " -> " + repr(translated[:40]))
                             new_items.append((translated,) + tuple(item[1:]))
                             continue
@@ -1188,8 +1231,7 @@ init -7 python:
             _rpgrtl_debug("menu_filter: " + repr(label[:60]))
             translated = _rpgrtl_lookup(label)
             if translated and translated != label:
-                if _rpgrtl_cjk_font:
-                    translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                translated = _rpgrtl_wrap_font(translated)
                 _rpgrtl_debug("menu_filter REPLACE: " + repr(label[:40]) + " -> " + repr(translated[:40]))
                 _rpgrtl_log("menu_filter_replace", {"source": label[:180], "target": translated[:180]})
                 return translated
@@ -1257,6 +1299,9 @@ init -7 python:
                 current_text_list = self.text
                 if isinstance(current_text_list, list) and len(current_text_list) >= 1:
                     raw = current_text_list[0]
+                    if isinstance(raw, string_types) and raw.strip():
+                        # Normalize fullwidth chars that AI translation may introduce
+                        raw = _rpgrtl_normalize_fullwidth(raw)
                     if isinstance(raw, string_types) and raw.strip() and _rpgrtl_is_translatable(raw):
                         # If already translated (self.text was set to translated), skip
                         prev_translated = _rpgrtl_text_modified.get(wid)
@@ -1276,8 +1321,7 @@ init -7 python:
                             _rpgrtl_pending_lookup.add(raw.strip())
                         translated = _rpgrtl_lookup(raw)
                         if translated and translated != raw:
-                            if _rpgrtl_cjk_font:
-                                translated = "{font=" + _rpgrtl_cjk_font + "}" + translated + "{/font}"
+                            translated = _rpgrtl_wrap_font(translated)
                             _rpgrtl_text_modified[wid] = translated
                             self.text = [translated]
                             _rpgrtl_render_apply_count += 1
@@ -1287,8 +1331,8 @@ init -7 python:
                             return result
                         # Text has CJK chars (already translated by menu_filter etc) but
                         # no cache hit — apply {font} tag so CJK glyphs render correctly
-                        if _rpgrtl_cjk_font and _rpgrtl_has_cjk(raw) and not raw.startswith("{font="):
-                            font_text = "{font=" + _rpgrtl_cjk_font + "}" + raw + "{/font}"
+                        font_text = _rpgrtl_wrap_font(raw)
+                        if font_text != raw:
                             _rpgrtl_text_modified[wid] = font_text
                             self.text = [font_text]
                             result = _rpgrtl_orig_Text_render(self, width, height, st, at + 0.001)

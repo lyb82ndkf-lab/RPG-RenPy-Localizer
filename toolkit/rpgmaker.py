@@ -3,15 +3,234 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 import zlib
 from dataclasses import dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import Any
 
 from .models import DataRecord, MapDetail, MapEventInfo, MapRecord, MapTileInfo, ProjectInfo, SaveSlot, TranslationEntry
 from .storage import load_json, save_json
+
+
+# ---------------------------------------------------------------------------
+# Real-time translation server state (tool side)
+# ---------------------------------------------------------------------------
+RPGRM_LIVE_BRIDGE_PORT = 32181  # tool-side HTTP server port
+
+_RPGRM_LIVE_SERVER_STATE: dict[str, Any] = {
+    "translations": {},         # source -> target
+    "events": [],               # debug events (capped at 2000)
+    "seen": {},                 # source -> target dedup
+    "notify_seq": 0,
+    "pre_translate_queue": [],  # texts needing translation
+}
+_RPGRM_LIVE_SERVER_LOCK = threading.Lock()
+_RPGRM_LIVE_SERVER: Any = None  # HTTPServer instance
+
+
+class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _rpgmaker_live_candidates(source: str) -> list[str]:
+    """Generate candidate keys for translation lookup."""
+    candidates = [source]
+    stripped = source.strip()
+    if stripped != source:
+        candidates.append(stripped)
+    # Whitespace-normalized
+    normalized = re.sub(r"\s+", " ", stripped)
+    if normalized not in candidates:
+        candidates.append(normalized)
+    # De-quoted
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
+        candidates.append(stripped[1:-1])
+    return candidates
+
+
+def _rpgmaker_lookup_translation(source: str) -> str:
+    """Look up translation for a source text, trying multiple candidate keys."""
+    with _RPGRM_LIVE_SERVER_LOCK:
+        translations = _RPGRM_LIVE_SERVER_STATE["translations"]
+        for key in _rpgmaker_live_candidates(source):
+            target = translations.get(key, "")
+            if target:
+                return target
+    return ""
+
+
+class _RPGRMLiveBridgeHandler(BaseHTTPRequestHandler):
+    """HTTP handler for tool-side real-time translation server (port 32181)."""
+
+    def log_message(self, format, *args):
+        pass  # suppress default logging
+
+    def _json_response(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        if path == "/notify":
+            with _RPGRM_LIVE_SERVER_LOCK:
+                seq = _RPGRM_LIVE_SERVER_STATE["notify_seq"]
+                count = len(_RPGRM_LIVE_SERVER_STATE["translations"])
+            self._json_response(200, {"ok": True, "seq": seq, "translationCount": count})
+        elif path == "/debug":
+            limit = 200
+            if "?" in self.path:
+                for param in self.path.split("?")[1].split("&"):
+                    kv = param.split("=")
+                    if kv[0] == "limit" and len(kv) > 1:
+                        limit = int(kv[1]) if kv[1].isdigit() else 200
+            with _RPGRM_LIVE_SERVER_LOCK:
+                events = list(_RPGRM_LIVE_SERVER_STATE["events"][-limit:])
+                count = len(_RPGRM_LIVE_SERVER_STATE["translations"])
+            self._json_response(200, {"ok": True, "events": events, "translationCount": count})
+        elif path == "/state":
+            with _RPGRM_LIVE_SERVER_LOCK:
+                count = len(_RPGRM_LIVE_SERVER_STATE["translations"])
+                event_count = len(_RPGRM_LIVE_SERVER_STATE["events"])
+            self._json_response(200, {"ok": True, "translationCount": count, "eventCount": event_count})
+        else:
+            self._json_response(404, {"ok": False, "error": "not found"})
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        if path == "/pull":
+            payload = self._read_body()
+            with _RPGRM_LIVE_SERVER_LOCK:
+                translations = dict(_RPGRM_LIVE_SERVER_STATE["translations"])
+            self._json_response(200, {"ok": True, "translations": translations})
+        elif path == "/seen_batch":
+            payload = self._read_body()
+            items = payload.get("items", [])
+            targets = []
+            with _RPGRM_LIVE_SERVER_LOCK:
+                for item in items:
+                    text = str(item.get("text", "")).strip()
+                    if text and text not in _RPGRM_LIVE_SERVER_STATE["seen"]:
+                        event = item.get("event", "unknown")
+                        displayed = item.get("displayed", text)
+                        target = str(item.get("target", "")).strip()
+                        _RPGRM_LIVE_SERVER_STATE["events"].append({
+                            "time": time.time(),
+                            "kind": event,
+                            "source": text,
+                            "displayed": displayed,
+                            "target": target,
+                            "matched": bool(target),
+                        })
+                        if len(_RPGRM_LIVE_SERVER_STATE["events"]) > 2000:
+                            _RPGRM_LIVE_SERVER_STATE["events"] = _RPGRM_LIVE_SERVER_STATE["events"][-1500:]
+                        _RPGRM_LIVE_SERVER_STATE["seen"][text] = target
+                        # Also queue for worker translation if no existing translation
+                        if not target:
+                            translated = False
+                            for key in _rpgmaker_live_candidates(text):
+                                if _RPGRM_LIVE_SERVER_STATE["translations"].get(key, ""):
+                                    translated = True
+                                    break
+                            if not translated:
+                                # Check if already in queue
+                                already_queued = any(
+                                    (isinstance(q, dict) and q.get("text") == text) or (isinstance(q, str) and q == text)
+                                    for q in _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"]
+                                )
+                                if not already_queued:
+                                    is_dialogue = event in ("game_message_setText", "game_message_setChoice",
+                                        "map_event_dialogue", "map_event_choice", "map_event_scroll",
+                                        "choice_drawItem", "showText", "scrollText", "dialogue_block",
+                                        "cmd_401_dialogue", "cmd_102_choice", "cmd_405_scroll")
+                                    _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"].append({
+                                        "text": text, "priority": "high" if is_dialogue else "low", "event": event,
+                                    })
+                    # Look up translation for immediate response
+                    target_val = _RPGRM_LIVE_SERVER_STATE.get("seen", {}).get(text, "")
+                    if not target_val:
+                        for key in _rpgmaker_live_candidates(text):
+                            target_val = _RPGRM_LIVE_SERVER_STATE["translations"].get(key, "")
+                            if target_val:
+                                break
+                    targets.append(target_val)
+                # Cap the queue
+                if len(_RPGRM_LIVE_SERVER_STATE["pre_translate_queue"]) > 500:
+                    _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"] = _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"][-300:]
+            self._json_response(200, {"ok": True, "targets": targets})
+        elif path == "/pre_translate":
+            payload = self._read_body()
+            texts = payload.get("texts", [])
+            known = {}
+            queued = []
+            with _RPGRM_LIVE_SERVER_LOCK:
+                for t in texts:
+                    t_str = str(t).strip()
+                    if not t_str:
+                        continue
+                    target = ""
+                    for key in _rpgmaker_live_candidates(t_str):
+                        target = _RPGRM_LIVE_SERVER_STATE["translations"].get(key, "")
+                        if target:
+                            break
+                    if target:
+                        known[t_str] = target
+                    elif t_str not in _RPGRM_LIVE_SERVER_STATE["seen"]:
+                        queued.append(t_str)
+                _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"].extend(queued)
+            self._json_response(200, {"ok": True, "translations": known, "queued": len(queued)})
+        elif path == "/translation_batch":
+            payload = self._read_body()
+            texts = payload.get("texts", [])
+            result = {}
+            with _RPGRM_LIVE_SERVER_LOCK:
+                for t in texts:
+                    t_str = str(t).strip()
+                    if not t_str:
+                        continue
+                    for key in _rpgmaker_live_candidates(t_str):
+                        target = _RPGRM_LIVE_SERVER_STATE["translations"].get(key, "")
+                        if target:
+                            result[t_str] = target
+                            break
+            self._json_response(200, {"ok": True, "translations": result})
+        else:
+            self._json_response(404, {"ok": False, "error": "not found"})
+
+
+def _rpgmaker_start_live_server() -> None:
+    """Start the tool-side HTTP server for RPG Maker real-time translation."""
+    global _RPGRM_LIVE_SERVER
+    if _RPGRM_LIVE_SERVER is not None:
+        return
+    _RPGRM_LIVE_SERVER = _ThreadingHTTPServer(("127.0.0.1", RPGRM_LIVE_BRIDGE_PORT), _RPGRMLiveBridgeHandler)
+    threading.Thread(target=_RPGRM_LIVE_SERVER.serve_forever, daemon=True).start()
+
+
+def _rpgmaker_stop_live_server() -> None:
+    global _RPGRM_LIVE_SERVER
+    if _RPGRM_LIVE_SERVER:
+        _RPGRM_LIVE_SERVER.shutdown()
+        _RPGRM_LIVE_SERVER = None
 
 
 TEXT_FILES = [
@@ -83,6 +302,14 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     clickTeleport: false
   };
   bridge.lastAutoSaveAt = bridge.lastAutoSaveAt || 0;
+  bridge.seenBatch = [];           // pending seen texts to send to tool
+  bridge.seenDedup = new Set();    // dedup recent seen texts
+  bridge.debugEvents = [];         // debug event log (capped at 2000)
+  bridge.notifySeq = 0;            // monotonic seq for change notification
+  bridge.preTranslateQueue = [];   // texts waiting for translation
+  bridge.toolPort = 32181;         // tool-side server port (for pull/poll)
+  bridge.translationCount = 0;     // count of translations received
+  bridge._pollTimer = null;
 
   function clamp(value, min, max, fallback) {
     const number = Number(value);
@@ -110,6 +337,37 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         catch (_e) { resolve({}); }
       });
     });
+  }
+
+  function reportSeen(text, displayed, event) {
+    if (!text || typeof text !== "string") return;
+    text = text.trim();
+    if (!text || text.length < 2) return;
+    var key = (event || "") + "::" + text;
+    if (bridge.seenDedup.has(key)) return;
+    bridge.seenDedup.add(key);
+    if (bridge.seenDedup.size > 2000) {
+      var arr = Array.from(bridge.seenDedup);
+      bridge.seenDedup = new Set(arr.slice(-1000));
+    }
+    var target = bridge.translations[text] || bridge.translations[text.trim()] || "";
+    bridge.seenBatch.push({
+      text: text,
+      displayed: displayed || text,
+      event: event || "unknown",
+      target: target,
+      matched: !!target
+    });
+    bridge.debugEvents.push({
+      time: Date.now(),
+      kind: event || "unknown",
+      source: text,
+      displayed: displayed || text,
+      target: target,
+      matched: !!target
+    });
+    if (bridge.debugEvents.length > 2000) bridge.debugEvents = bridge.debugEvents.slice(-1500);
+    bridge.notifySeq++;
   }
 
   function translate(text) {
@@ -173,8 +431,19 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (window.$gameMap) $gameMap.requestRefresh();
     if (window.SceneManager && SceneManager._scene) {
       try {
-        if (SceneManager._scene._messageWindow && SceneManager._scene._messageWindow.refresh) SceneManager._scene._messageWindow.refresh();
-        if (SceneManager._scene._choiceListWindow && SceneManager._scene._choiceListWindow.refresh) SceneManager._scene._choiceListWindow.refresh();
+        // Force redraw of message and choice windows
+        var msgWin = SceneManager._scene._messageWindow;
+        if (msgWin) {
+          msgWin._needsRefresh = true;
+          if (msgWin.refresh) msgWin.refresh();
+        }
+        var choiceWin = SceneManager._scene._choiceListWindow;
+        if (choiceWin) {
+          if (choiceWin.refresh) choiceWin.refresh();
+        }
+        // Also refresh the scroll text window if present
+        var scrollWin = SceneManager._scene._scrollTextWindow;
+        if (scrollWin && scrollWin.refresh) scrollWin.refresh();
         if (SceneManager._scene.refresh) SceneManager._scene.refresh();
       } catch (_e) {}
     }
@@ -409,12 +678,251 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
 
   const _convert = Window_Base.prototype.convertEscapeCharacters;
   Window_Base.prototype.convertEscapeCharacters = function(text) {
-    return _convert.call(this, translate(text));
+    try { var result = _convert.call(this, translate(text)); } catch(_e) { var result = _convert.call(this, text); }
+    if (text && typeof text === "string" && text.trim() && text.length > 1) {
+      try { reportSeen(text, text, "convertEscapeCharacters"); } catch(_e) {}
+    }
+    return result;
   };
   const _drawText = Bitmap.prototype.drawText;
   Bitmap.prototype.drawText = function(text, x, y, maxWidth, lineHeight, align) {
-    return _drawText.call(this, translate(text), x, y, maxWidth, lineHeight, align);
+    try { var result = _drawText.call(this, translate(text), x, y, maxWidth, lineHeight, align); }
+    catch(_e) { var result = _drawText.call(this, text, x, y, maxWidth, lineHeight, align); }
+    if (text && typeof text === "string" && text.trim() && text.length > 1) {
+      try { reportSeen(text, text, "bitmap_drawText"); } catch(_e) {}
+    }
+    return result;
   };
+
+  // Hook: Game_Message.setText — capture dialogue text at source
+  if (typeof Game_Message !== "undefined" && Game_Message.prototype.setText) {
+    var _origSetText = Game_Message.prototype.setText;
+    Game_Message.prototype.setText = function(text) {
+      _origSetText.call(this, text);
+      if (text && typeof text === "string" && text.trim()) {
+        reportSeen(text, text, "game_message_setText");
+      }
+    };
+  }
+
+  // --- Hook Game_Interpreter commands for real-time text extraction ---
+  // These capture dialogue/choices/scroll text as the game EXECUTES them,
+  // which covers all event types (map, common, parallel, autorun).
+  if (typeof Game_Interpreter !== "undefined") {
+    // Command 401: dialogue continuation line
+    if (Game_Interpreter.prototype.command401) {
+      var _origCmd401 = Game_Interpreter.prototype.command401;
+      Game_Interpreter.prototype.command401 = function() {
+        var result = _origCmd401.call(this);
+        try {
+          if (this._params && Array.isArray(this._params) && typeof this._params[0] === "string" && this._params[0].trim()) {
+            reportSeen(this._params[0], this._params[0], "cmd_401_dialogue");
+          }
+        } catch (_e) {}
+        return result;
+      };
+    }
+    // Command 102: show choices
+    if (Game_Interpreter.prototype.command102) {
+      var _origCmd102 = Game_Interpreter.prototype.command102;
+      Game_Interpreter.prototype.command102 = function() {
+        var result = _origCmd102.call(this);
+        try {
+          if (this._params && Array.isArray(this._params[0])) {
+            for (var ci = 0; ci < this._params[0].length; ci++) {
+              var ch = this._params[0][ci];
+              if (typeof ch === "string" && ch.trim()) {
+                reportSeen(ch, ch, "cmd_102_choice");
+              }
+            }
+          }
+        } catch (_e) {}
+        return result;
+      };
+    }
+    // Command 405: scroll text
+    if (Game_Interpreter.prototype.command405) {
+      var _origCmd405 = Game_Interpreter.prototype.command405;
+      Game_Interpreter.prototype.command405 = function() {
+        var result = _origCmd405.call(this);
+        try {
+          if (this._params && typeof this._params[0] === "string" && this._params[0].trim()) {
+            reportSeen(this._params[0], this._params[0], "cmd_405_scroll");
+          }
+        } catch (_e) {}
+        return result;
+      };
+    }
+  }
+
+  // Hook: Game_Message.setChoices — capture menu choices at source
+  if (typeof Game_Message !== "undefined" && Game_Message.prototype.setChoices) {
+    var _origSetChoices = Game_Message.prototype.setChoices;
+    Game_Message.prototype.setChoices = function(choices, defaultId, cancelType) {
+      _origSetChoices.call(this, choices, defaultId, cancelType);
+      if (Array.isArray(choices)) {
+        for (var i = 0; i < choices.length; i++) {
+          var c = choices[i];
+          if (typeof c === "string" && c.trim()) {
+            reportSeen(c, c, "game_message_setChoice");
+          }
+        }
+      }
+    };
+  }
+
+  // Hook: Window_ChoiceList.drawItem — capture choice rendering
+  if (typeof Window_ChoiceList !== "undefined" && Window_ChoiceList.prototype.drawItem) {
+    var _origDrawItem = Window_ChoiceList.prototype.drawItem;
+    Window_ChoiceList.prototype.drawItem = function(index) {
+      var choice = this.commandName(index);
+      if (choice && typeof choice === "string" && choice.trim()) {
+        reportSeen(choice, choice, "choice_drawItem");
+      }
+      return _origDrawItem.call(this, index);
+    };
+  }
+
+  // Hook: Game_Map.setup — pre-scan map events for upcoming text
+  if (typeof Game_Map !== "undefined" && Game_Map.prototype.setup) {
+    var _origSetup = Game_Map.prototype.setup;
+    Game_Map.prototype.setup = function(mapId) {
+      _origSetup.call(this, mapId);
+      try { scanMapEventsForText(); } catch (_e) {}
+    };
+  }
+
+  function scanEventListForText(list, kind) {
+    if (!list) return 0;
+    var count = 0;
+    for (var j = 0; j < list.length; j++) {
+      var cmd = list[j];
+      if (!cmd) continue;
+      // Code 401: dialogue text
+      if (cmd.code === 401 && cmd.parameters && typeof cmd.parameters[0] === "string" && cmd.parameters[0].trim()) {
+        reportSeen(cmd.parameters[0], cmd.parameters[0], kind);
+        count++;
+      }
+      // Code 102: menu choices
+      if (cmd.code === 102 && Array.isArray(cmd.parameters[0])) {
+        for (var k = 0; k < cmd.parameters[0].length; k++) {
+          var ch = cmd.parameters[0][k];
+          if (typeof ch === "string" && ch.trim()) {
+            reportSeen(ch, ch, kind);
+            count++;
+          }
+        }
+      }
+      // Code 405: scroll text
+      if (cmd.code === 405 && cmd.parameters && typeof cmd.parameters[0] === "string" && cmd.parameters[0].trim()) {
+        reportSeen(cmd.parameters[0], cmd.parameters[0], kind);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  function scanMapEventsForText() {
+    var count = 0;
+    // Scan current map events
+    if ($dataMap && $dataMap.events) {
+      for (var i = 0; i < $dataMap.events.length; i++) {
+        var event = $dataMap.events[i];
+        if (!event || !event.pages) continue;
+        for (var p = 0; p < event.pages.length; p++) {
+          count += scanEventListForText(event.pages[p] && event.pages[p].list, "map_event_dialogue");
+        }
+      }
+    }
+    // Scan common events (these run globally, not tied to a specific map)
+    if (typeof $dataCommonEvents !== "undefined" && $dataCommonEvents) {
+      for (var ci = 0; ci < $dataCommonEvents.length; ci++) {
+        var ce = $dataCommonEvents[ci];
+        if (!ce || !ce.list) continue;
+        count += scanEventListForText(ce.list, "common_event_dialogue");
+      }
+    }
+    if (count > 0) {
+      bridge.debugEvents.push({time: Date.now(), kind: "map_scan", source: "scanned " + count + " texts from map/events", displayed: "", target: "", matched: false});
+    }
+  }
+
+  // Background: poll tool server for translations
+  function pollToolForTranslations() {
+    if (!bridge.toolPort) return;
+    var body = JSON.stringify({pid: process.pid});
+    var options = {
+      hostname: "127.0.0.1",
+      port: bridge.toolPort,
+      path: "/pull",
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Content-Length": Buffer.byteLength(body)},
+      timeout: 3000
+    };
+    var req = http.request(options, function(res2) {
+      var data = "";
+      res2.on("data", function(chunk) { data += chunk; });
+      res2.on("end", function() {
+        try {
+          var payload = JSON.parse(data);
+          if (payload && payload.ok && payload.translations) {
+            var keys = Object.keys(payload.translations);
+            if (keys.length > 0) {
+              for (var k = 0; k < keys.length; k++) bridge.translations[keys[k]] = payload.translations[keys[k]];
+              bridge.translationCount = keys.length;
+              bridge.translationEnabled = true;
+              applyTranslationsToLoadedData();
+              if (SceneManager && SceneManager._scene && SceneManager._scene.refresh) SceneManager._scene.refresh();
+            }
+          }
+        } catch (_e) {}
+      });
+    });
+    req.on("error", function() {});
+    req.write(body);
+    req.end();
+  }
+
+  // Background: send seen batch to tool
+  function sendSeenBatchToTool() {
+    if (bridge.seenBatch.length === 0 || !bridge.toolPort) return;
+    var batch = bridge.seenBatch.splice(0, 200);
+    var body = JSON.stringify({items: batch});
+    var options = {
+      hostname: "127.0.0.1",
+      port: bridge.toolPort,
+      path: "/seen_batch",
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Content-Length": Buffer.byteLength(body)},
+      timeout: 3000
+    };
+    var req = http.request(options, function(res2) {
+      var data = "";
+      res2.on("data", function(chunk) { data += chunk; });
+      res2.on("end", function() {
+        try {
+          var payload = JSON.parse(data);
+          if (payload && payload.ok && payload.targets) {
+            for (var i = 0; i < batch.length && i < payload.targets.length; i++) {
+              if (payload.targets[i]) bridge.translations[batch[i].text] = payload.targets[i];
+            }
+          }
+        } catch (_e) {}
+      });
+    });
+    req.on("error", function() {});
+    req.write(body);
+    req.end();
+  }
+
+  // Start background polling
+  function startBackgroundPolling() {
+    if (bridge._pollTimer) return;
+    bridge._pollTimer = setInterval(function() {
+      sendSeenBatchToTool();
+      pollToolForTranslations();
+    }, 500);
+  }
 
   bridge.server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") return json(res, 200, { ok: true });
@@ -429,9 +937,78 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         const payload = await readBody(req);
         bridge.translations = payload.dict || {};
         bridge.translationEnabled = payload.enabled !== false;
+        bridge.translationCount = Object.keys(bridge.translations).length;
         const applied = applyTranslationsToLoadedData();
         if (SceneManager && SceneManager._scene && SceneManager._scene.refresh) SceneManager._scene.refresh();
-        return json(res, 200, { ok: true, count: Object.keys(bridge.translations).length, applied });
+        return json(res, 200, { ok: true, count: bridge.translationCount, applied });
+      }
+      if (req.url === "/seen_batch" && req.method === "POST") {
+        const payload = await readBody(req);
+        var items = payload.items || [];
+        var targets = [];
+        for (var i = 0; i < items.length; i++) {
+          var item = items[i];
+          var text = (item.text || "").trim();
+          var target = "";
+          if (text) {
+            target = bridge.translations[text] || bridge.translations[text.trim()] || "";
+            if (!target && item.target) target = item.target;
+          }
+          targets.push(target);
+        }
+        return json(res, 200, { ok: true, targets: targets });
+      }
+      if (req.url === "/seen_batch" && req.method === "GET") {
+        var batch = bridge.seenBatch.splice(0, 200);
+        return json(res, 200, { ok: true, items: batch });
+      }
+      if (req.url === "/pull" && req.method === "POST") {
+        return json(res, 200, { ok: true, translations: bridge.translations });
+      }
+      if (req.url === "/notify") {
+        return json(res, 200, { ok: true, seq: bridge.notifySeq, translationCount: bridge.translationCount });
+      }
+      if (req.url && req.url.indexOf("/debug") === 0) {
+        var limit = 200;
+        var parts = req.url.split("?");
+        if (parts.length > 1) {
+          var params = parts[1].split("&");
+          for (var p = 0; p < params.length; p++) {
+            var kv = params[p].split("=");
+            if (kv[0] === "limit") limit = parseInt(kv[1]) || 200;
+          }
+        }
+        var events = bridge.debugEvents.slice(-limit);
+        return json(res, 200, { ok: true, events: events, translationCount: bridge.translationCount });
+      }
+      if (req.url === "/pre_translate" && req.method === "POST") {
+        const payload = await readBody(req);
+        var texts = payload.texts || [];
+        var known = {};
+        var queued = [];
+        for (var i = 0; i < texts.length; i++) {
+          var t = texts[i];
+          var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
+          if (tr) { known[t] = tr; } else { queued.push(t); }
+        }
+        for (var q = 0; q < queued.length; q++) bridge.preTranslateQueue.push(queued[q]);
+        return json(res, 200, { ok: true, translations: known, queued: queued.length });
+      }
+      if (req.url === "/translation_batch" && req.method === "POST") {
+        const payload = await readBody(req);
+        var texts = payload.texts || [];
+        var result = {};
+        for (var i = 0; i < texts.length; i++) {
+          var t = texts[i];
+          var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
+          if (tr) result[t] = tr;
+        }
+        return json(res, 200, { ok: true, translations: result });
+      }
+      if (req.url === "/set_tool_port" && req.method === "POST") {
+        const payload = await readBody(req);
+        if (payload.port) bridge.toolPort = Number(payload.port) || 32181;
+        return json(res, 200, { ok: true, toolPort: bridge.toolPort });
       }
       json(res, 404, { ok: false, error: "not found" });
     } catch (e) {
@@ -445,6 +1022,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.server.listen(PORT, HOST, () => {
     bridge.started = true;
     bridge.lastError = "";
+    startBackgroundPolling();
   });
 })();
 """
@@ -662,6 +1240,84 @@ class RPGMakerService:
     def uninstall_runtime_bridge(self) -> None:
         plugins_js = self.project.root / "js" / "plugins.js"
         self._disable_plugin(plugins_js, RUNTIME_BRIDGE_NAME)
+
+    # --- Real-time translation server methods ---
+
+    def start_live_bridge_server(self, clear_events: bool = False) -> None:
+        """Start tool-side HTTP server for RPG Maker real-time translation."""
+        _rpgmaker_start_live_server()
+        if clear_events:
+            with _RPGRM_LIVE_SERVER_LOCK:
+                _RPGRM_LIVE_SERVER_STATE["events"] = []
+                _RPGRM_LIVE_SERVER_STATE["seen"] = {}
+                _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"] = []
+                _RPGRM_LIVE_SERVER_STATE["notify_seq"] = 0
+
+    def stop_live_bridge_server(self) -> None:
+        _rpgmaker_stop_live_server()
+
+    def read_live_debug_events(self, limit: int = 200) -> list[dict]:
+        with _RPGRM_LIVE_SERVER_LOCK:
+            return list(_RPGRM_LIVE_SERVER_STATE["events"][-limit:])
+
+    def append_live_debug_event(self, kind: str, source: str, displayed: str, target: str, matched: bool) -> None:
+        with _RPGRM_LIVE_SERVER_LOCK:
+            _RPGRM_LIVE_SERVER_STATE["events"].append({
+                "time": time.time(),
+                "kind": kind,
+                "source": source,
+                "displayed": displayed,
+                "target": target,
+                "matched": matched,
+            })
+            if len(_RPGRM_LIVE_SERVER_STATE["events"]) > 2000:
+                _RPGRM_LIVE_SERVER_STATE["events"] = _RPGRM_LIVE_SERVER_STATE["events"][-1500:]
+
+    def merge_live_translation(self, source: str, target: str, kind: str = "realtime_translated") -> None:
+        source = str(source or "").strip()
+        target = str(target or "").strip()
+        if not source or not target or source == target:
+            return
+        with _RPGRM_LIVE_SERVER_LOCK:
+            _RPGRM_LIVE_SERVER_STATE["translations"][source] = target
+            # Also set common variants
+            stripped = source.strip()
+            if stripped != source:
+                _RPGRM_LIVE_SERVER_STATE["translations"][stripped] = target
+            normalized = re.sub(r"\s+", " ", stripped)
+            if normalized != source and normalized != stripped:
+                _RPGRM_LIVE_SERVER_STATE["translations"][normalized] = target
+            _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
+        self.append_live_debug_event(kind, source, source, target, True)
+
+    def notify_game_refresh(self) -> None:
+        with _RPGRM_LIVE_SERVER_LOCK:
+            _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
+
+    def write_live_translation_table(self, translations: dict[str, str]) -> tuple[str, int]:
+        """Write translations to disk only. Server state is managed by merge_live_translation."""
+        workspace = self.project.root / ".rpgrtl_workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        path = workspace / "rpgmaker_live_translation.json"
+        # Merge with existing server state for the disk file (don't lose anything)
+        with _RPGRM_LIVE_SERVER_LOCK:
+            existing = dict(_RPGRM_LIVE_SERVER_STATE["translations"])
+        for source, target in translations.items():
+            if source == target or not target.strip():
+                continue
+            existing[source] = target
+        payload = {"version": 1, "updated_at": time.time(), "translations": dict(sorted(existing.items()))}
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        return str(path), len(existing)
+
+    def live_bridge_status(self) -> dict:
+        with _RPGRM_LIVE_SERVER_LOCK:
+            return {
+                "translation_count": len(_RPGRM_LIVE_SERVER_STATE["translations"]),
+                "event_count": len(_RPGRM_LIVE_SERVER_STATE["events"]),
+                "seen_count": len(_RPGRM_LIVE_SERVER_STATE["seen"]),
+                "queue_count": len(_RPGRM_LIVE_SERVER_STATE["pre_translate_queue"]),
+            }
 
     def _enable_plugin(self, plugins_js: Path, plugin_name: str) -> None:
         plugins = self._load_plugins_js(plugins_js)

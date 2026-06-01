@@ -52,6 +52,12 @@ class BootstrapWindow:
         self.log.configure(state="disabled")
 
     def prepare_and_run(self) -> None:
+        # 冻结模式下不需要虚拟环境，直接启动
+        if getattr(sys, "frozen", False):
+            self.status_var.set("打包环境，正在启动...")
+            self._append("打包模式下无需虚拟环境，直接进入主界面。")
+            self.launch_app()
+            return
         try:
             if not VENV_DIR.exists():
                 self.status_var.set("正在创建虚拟环境...")
@@ -76,6 +82,13 @@ class BootstrapWindow:
             messagebox.showerror("启动失败", str(exc))
 
     def _auto_boot(self) -> None:
+        # 冻结模式（打包 exe）下不需要虚拟环境，直接启动主工具
+        if getattr(sys, "frozen", False):
+            self.status_var.set("已检测到打包环境，正在自动启动...")
+            self.detail_var.set("打包模式下无需虚拟环境，自动进入主界面。")
+            self._append("打包模式，跳过虚拟环境检查，直接启动主工具。")
+            self.root.after(250, self.launch_app)
+            return
         if VENV_DIR.exists() and VENV_PYTHON.exists():
             self.status_var.set("环境已就绪，正在自动启动...")
             self.detail_var.set("已检测到可用环境，自动进入主界面。")

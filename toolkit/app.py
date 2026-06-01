@@ -624,6 +624,7 @@ class ToolkitApp:
         second.pack(fill="x", pady=(8, 0))
         ttk.Button(second, text="打开目录", command=self.open_selected_library_item, width=8).pack(side="left", padx=(0, 6))
         ttk.Button(second, text="移除", command=self.remove_selected_library_item, width=6).pack(side="left")
+        ttk.Button(second, text="清缓存", command=self.clear_selected_game_cache, width=6).pack(side="left", padx=(6, 0))
 
     def _build_overview_panel(self, parent: tk.Frame, include_recent: bool = True) -> None:
         content = tk.Frame(parent, bg=PANEL_BG, padx=18, pady=18)
@@ -2242,36 +2243,50 @@ class ToolkitApp:
         if not self.project:
             messagebox.showerror("错误", "请先加载项目。")
             return
-        if self.project.engine != "Ren'Py":
-            messagebox.showinfo("提示", "实时文本调试仅用于 Ren'Py 项目。")
+        engine = self.project.engine or ""
+        if engine != "Ren'Py" and "RPG Maker" not in engine:
+            messagebox.showinfo("提示", "实时文本调试仅用于 Ren'Py / RPG Maker MV/MZ 项目。")
             return
         self._refresh_renpy_live_debug_dialog()
 
     def _refresh_renpy_live_debug_dialog(self, dialog: tk.Toplevel | None = None) -> None:
-        if not self.project or self.project.engine != "Ren'Py":
+        if not self.project:
+            return
+        engine = self.project.engine or ""
+        is_rpgmaker = "RPG Maker" in engine
+        is_renpy = engine == "Ren'Py"
+        if not is_rpgmaker and not is_renpy:
             return
         service = self._get_service()
-        if hasattr(service, "start_live_bridge_server"):
+        if is_rpgmaker and hasattr(service, "start_live_bridge_server"):
             service.start_live_bridge_server(clear_events=False)
-        entries = service.read_live_debug_entries(300) if hasattr(service, "read_live_debug_entries") else []
+        elif is_renpy and hasattr(service, "start_live_bridge_server"):
+            service.start_live_bridge_server(clear_events=False)
+        if is_rpgmaker:
+            entries = service.read_live_debug_events(300) if hasattr(service, "read_live_debug_events") else []
+        else:
+            entries = service.read_live_debug_entries(300) if hasattr(service, "read_live_debug_entries") else []
+        title = "RPG Maker 实时翻译调试" if is_rpgmaker else "Ren'Py 实时翻译调试"
         if dialog is None:
             dialog = tk.Toplevel(self.root)
-            dialog.title("Ren'Py 实时翻译调试")
+            dialog.title(title)
             dialog.geometry("920x520")
             dialog.configure(bg=PANEL_BG)
             dialog.transient(self.root)
             header = tk.Frame(dialog, bg=PANEL_BG, padx=12, pady=10)
             header.pack(fill="x")
+            desc = "显示 RPG Maker 对话/选项捕获、实时翻译队列状态和翻译替换。" if is_rpgmaker else "显示 Ren'Py 对话/选项捕获、实时翻译队列状态和真正写入游戏桥接表的中文替换。"
             tk.Label(
                 header,
-                text="显示 Ren'Py 对话/选项捕获、实时翻译队列状态和真正写入游戏桥接表的中文替换。",
+                text=desc,
                 bg=PANEL_BG,
                 fg=TEXT_MAIN,
                 justify="left",
             ).pack(side="left", fill="x", expand=True)
             ttk.Button(header, text="刷新", command=lambda d=dialog: self._refresh_renpy_live_debug_dialog(d), width=8).pack(side="right")
-            ttk.Button(header, text="注入 hello", command=lambda: self._force_renpy_live_text(service, "hello"), width=10).pack(side="right", padx=(0, 6))
-            ttk.Button(header, text="嵌入翻译", command=lambda: self._embed_live_translations_to_game(service), width=10).pack(side="right", padx=(0, 6))
+            ttk.Button(header, text="导出日志", command=lambda: self._export_live_debug_log(entries), width=10).pack(side="right", padx=(0, 6))
+            if is_renpy:
+                ttk.Button(header, text="注入 hello", command=lambda: self._force_renpy_live_text(service, "hello"), width=10).pack(side="right", padx=(0, 6))
             status_var = tk.StringVar(value="实时状态读取中...")
             tk.Label(dialog, textvariable=status_var, bg=PANEL_BG, fg=TEXT_MUTED, anchor="w", padx=12).pack(fill="x", pady=(0, 6))
             dialog._rpgrtl_status_var = status_var  # type: ignore[attr-defined]
@@ -2291,20 +2306,39 @@ class ToolkitApp:
         status_var = getattr(dialog, "_rpgrtl_status_var", None)
         if status_var is not None:
             realtime_running = self._renpy_realtime_stop is not None and not self._renpy_realtime_stop.is_set()
-            cache_count = len(self._load_renpy_realtime_cache()) if self.project and self.project.engine == "Ren'Py" else 0
-            bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
-            bridge_count = int(bridge_status.get("translation_count", 0) or 0) if isinstance(bridge_status, dict) else 0
-            seen_count = int(bridge_status.get("seen_count", 0) or 0) if isinstance(bridge_status, dict) else 0
-            last_event = bridge_status.get("last_event", {}) if isinstance(bridge_status, dict) else {}
-            last_kind = str(last_event.get("kind", "") or "-") if isinstance(last_event, dict) else "-"
-            status_var.set(
-                f"实时后台：{'运行中' if realtime_running else '未启动'} | "
-                f"桥接表：{bridge_count} 条 | 实时缓存：{cache_count} 条 | 已见文本：{seen_count} 条 | 最新状态：{last_kind} | 日志：{_live_log_path().name}"
-            )
+            if is_rpgmaker:
+                cache_count = 0
+                try:
+                    workspace = self.project.root / ".rpgrtl_workspace"
+                    cache_path = workspace / "rpgmaker_realtime_translation.json"
+                    if cache_path.exists():
+                        data = json.loads(cache_path.read_text(encoding="utf-8"))
+                        cache_count = len(data.get("translations", {}))
+                except Exception:
+                    pass
+                bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
+                event_count = int(bridge_status.get("event_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+                queue_count = int(bridge_status.get("queue_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+                status_var.set(
+                    f"实时后台：{'运行中' if realtime_running else '未启动'} | "
+                    f"翻译缓存：{cache_count} 条 | 事件：{event_count} 条 | 预翻译队列：{queue_count} 条 | "
+                    f"日志：{_live_log_path().name}"
+                )
+            else:
+                cache_count = len(self._load_renpy_realtime_cache()) if self.project and self.project.engine == "Ren'Py" else 0
+                bridge_status = service.live_bridge_status() if hasattr(service, "live_bridge_status") else {}
+                bridge_count = int(bridge_status.get("translation_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+                seen_count = int(bridge_status.get("seen_count", 0) or 0) if isinstance(bridge_status, dict) else 0
+                last_event = bridge_status.get("last_event", {}) if isinstance(bridge_status, dict) else {}
+                last_kind = str(last_event.get("kind", "") or "-") if isinstance(last_event, dict) else "-"
+                status_var.set(
+                    f"实时后台：{'运行中' if realtime_running else '未启动'} | "
+                    f"桥接表：{bridge_count} 条 | 实时缓存：{cache_count} 条 | 已见文本：{seen_count} 条 | 最新状态：{last_kind} | 日志：{_live_log_path().name}"
+                )
         for item in tree.get_children():
             tree.delete(item)
         if not entries:
-            tree.insert("", "end", values=("等待", "无事件", "尚未捕获到文本。请使用顶部“实时游戏翻译”启动并推进 Ren'Py 对话/选项。", "", ""))
+            tree.insert("", "end", values=("等待", "无事件", "尚未捕获到文本。请使用顶部“实时游戏翻译”启动并推进游戏。", "", ""))
             return
         for payload in reversed(entries):
             kind = str(payload.get("kind", "") or payload.get("event", ""))
@@ -2312,7 +2346,45 @@ class ToolkitApp:
             displayed = str(payload.get("displayed", ""))
             target = str(payload.get("target", ""))
             matched = "命中" if payload.get("matched") else "未命中"
-            if kind == "realtime_queued":
+            # RPG Maker specific event kinds
+            if kind == "rpgmaker_batch":
+                matched = "批量"
+            elif kind == "rpgmaker_idle":
+                matched = "空闲"
+            elif kind == "rpgmaker_requesting":
+                matched = "请求中"
+            elif kind == "rpgmaker_response":
+                matched = "响应"
+            elif kind == "rpgmaker_done":
+                matched = "完成"
+            elif kind == "rpgmaker_failed":
+                matched = "失败"
+            elif kind == "rpgmaker_worker_exception":
+                matched = "异常"
+            elif kind == "rpgmaker_realtime_auto_started":
+                matched = "已启动"
+            elif kind == "rpgmaker_seen_cleanup":
+                matched = "清理"
+            elif kind == "map_scan":
+                matched = "地图扫描"
+            elif kind == "map_event_dialogue":
+                matched = "对话"
+            elif kind == "map_event_choice":
+                matched = "选项"
+            elif kind == "map_event_scroll":
+                matched = "滚屏"
+            elif kind == "game_message_setText":
+                matched = "对话"
+            elif kind == "game_message_setChoice":
+                matched = "选项"
+            elif kind == "convertEscapeCharacters":
+                matched = "转义"
+            elif kind == "bitmap_drawText":
+                matched = "绘制"
+            elif kind == "choice_drawItem":
+                matched = "选项绘制"
+            # Ren'Py specific event kinds
+            elif kind == "realtime_queued":
                 matched = "排队"
             elif kind == "realtime_requesting":
                 matched = "请求中"
@@ -2366,6 +2438,65 @@ class ToolkitApp:
                 messagebox.showinfo("调试注入", "当前 Ren'Py 服务不支持强制注入。")
         except Exception as exc:
             messagebox.showerror("调试注入失败", str(exc))
+
+    def _export_live_debug_log(self, entries: list[dict] | None = None) -> None:
+        """Export current debug events to a local log file."""
+        if not self.project:
+            return
+        engine = self.project.engine or ""
+        is_rpgmaker = "RPG Maker" in engine
+        is_renpy = engine == "Ren'Py"
+        if not is_rpgmaker and not is_renpy:
+            return
+        service = self._get_service()
+        if entries is None:
+            if is_rpgmaker:
+                entries = service.read_live_debug_events(5000) if hasattr(service, "read_live_debug_events") else []
+            else:
+                entries = service.read_live_debug_entries(5000) if hasattr(service, "read_live_debug_entries") else []
+        if not entries:
+            messagebox.showinfo("导出日志", "当前没有调试事件可导出。")
+            return
+        # Default save path
+        engine_tag = "rpgmaker" if is_rpgmaker else "renpy"
+        default_name = f"live_debug_{engine_tag}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+        workspace = self.project.root / ".rpgrtl_workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        default_path = workspace / default_name
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            title="导出调试日志",
+            initialdir=str(workspace),
+            initialfile=default_name,
+            defaultextension=".log",
+            filetypes=[("日志文件", "*.log"), ("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            if path.endswith(".json"):
+                import json as _json
+                Path(path).write_text(_json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                lines = []
+                engine_name = "RPG Maker" if is_rpgmaker else "Ren'Py"
+                lines.append(f"# 实时翻译调试日志 — {engine_name}")
+                lines.append(f"# 导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+                lines.append(f"# 总事件数: {len(entries)}")
+                lines.append("")
+                for ev in entries:
+                    ts = time.strftime("%H:%M:%S", time.localtime(ev.get("time", 0)))
+                    kind = ev.get("kind", "")
+                    source = ev.get("source", "")
+                    target = ev.get("target", "")
+                    matched = "✓" if ev.get("matched") else "✗"
+                    lines.append(f"[{ts}] {matched} [{kind}] {source}")
+                    if target:
+                        lines.append(f"         → {target}")
+                Path(path).write_text("\n".join(lines), encoding="utf-8")
+            messagebox.showinfo("导出成功", f"已导出 {len(entries)} 条事件到：\n{path}")
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
 
     def save_ai_settings(self) -> None:
         settings = self.workspace.load_settings()
@@ -2936,6 +3067,35 @@ class ToolkitApp:
                 self.workspace.save_project_translation_memory(self.project.root, project_tm)
             self._tm_dirty = False
 
+    def _clear_translation_memory_for_project(self) -> None:
+        """清除当前项目的翻译缓存（切换游戏/路径时调用）。"""
+        project_root = self.project.root if self.project else None
+        if project_root:
+            # Remove project-specific keys from global translation_memory
+            keys_to_remove = [k for k in self._project_tm_keys if k in self.translation_memory]
+            for k in keys_to_remove:
+                del self.translation_memory[k]
+            self._project_tm_keys.clear()
+            self._invalidate_translation_memory_index()
+            self._tm_dirty = True
+            self._flush_translation_memory()
+            # Delete the project-specific cache file
+            try:
+                self.workspace.delete_project_translation_memory(project_root)
+            except Exception:
+                pass
+
+    def _clean_stale_translation_memory(self) -> None:
+        """清除翻译记忆中 source==target 的无效条目（启动时调用）。"""
+        stale_keys = [k for k, v in self.translation_memory.items() if not v.strip() or k.strip() == v.strip()]
+        for k in stale_keys:
+            del self.translation_memory[k]
+        if stale_keys:
+            self._invalidate_translation_memory_index()
+            self._tm_dirty = True
+            self._flush_translation_memory()
+            _append_live_log("tool", "rpgmaker_cache_cleaned", {"count": len(stale_keys)})
+
     def _unique_ai_requests(self, entries: list[TranslationEntry]) -> list[TranslationEntry]:
         """去重：使用归一化后的缓存键去重，避免 'Hello!' 和 'hello ！' 重复请求。"""
         unique: list[TranslationEntry] = []
@@ -3236,7 +3396,9 @@ class ToolkitApp:
         key_map = {str(index): entry.entry_id for index, entry in enumerate(entries, start=1)}
         prompt_entries = [self._sanitize_entry_for_provider(entry) if sanitize_for_provider else entry for entry in entries]
         system_prompt = (
-            "你是专业游戏本地化译者。只翻译真正的游戏对白、台词、选项、菜单说明或叙述文本。"
+            "你是专业游戏本地化译者，将日文游戏文本翻译成简体中文。"
+            "只翻译真正的游戏对白、台词、选项、菜单说明或叙述文本。"
+            "绝对不要返回原文（日文）作为翻译结果。翻译结果必须是简体中文，不能包含日文字符（平假名、片假名）。"
             "如果输入更像文件路径、图片名、资源名、URL、脚本代码、变量名、乱码、纯符号串、调试信息或其他非对白内容，"
             "请在对应 id 的值里返回空字符串，表示跳过，不要改写。"
             "文本中可能包含 RPG Maker/Ren'Py 控制符或占位符，例如 \\C[0]、\\V[1]、\\N[2]、\\I[64]、\\{、\\}、%1、{player}、[name]。"
@@ -3288,8 +3450,20 @@ class ToolkitApp:
                 continue
             if self._looks_like_non_dialogue_translation(text):
                 continue
+            # Language consistency check: reject if source is Japanese but result is also Japanese
+            if source_entry and self._is_likely_japanese(source_entry.source) and self._is_likely_japanese(text):
+                continue
             result[key_map[key]] = text
         return result
+
+    @staticmethod
+    def _is_likely_japanese(text: str) -> bool:
+        """Check if text contains Japanese kana (hiragana/katakana) — reliable indicator of Japanese."""
+        for ch in text:
+            cp = ord(ch)
+            if 0x3040 <= cp <= 0x309F or 0x30A0 <= cp <= 0x30FF:  # hiragana or katakana
+                return True
+        return False
 
     @staticmethod
     def _looks_like_non_dialogue_translation(text: str) -> bool:
@@ -5183,6 +5357,11 @@ class ToolkitApp:
                     self.runtime_status_var.set("实时组件已安装，正在随游戏启动自动连接...")
             except Exception as exc:
                 self.runtime_status_var.set(f"实时组件安装失败：{exc}")
+            # Auto-start real-time translation server + worker
+            try:
+                self._auto_start_rpgmaker_realtime()
+            except Exception as exc:
+                self.runtime_status_var.set(f"RPG Maker 实时翻译启动失败：{exc}")
         self.game_process = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
         _append_live_log("tool", "launch_game", {"launcher": str(launcher), "project": str(self.project.root), "engine": self.project.engine})
         self.run_status_var.set("已启动")
@@ -5199,6 +5378,9 @@ class ToolkitApp:
         if self.project and self.project.engine == "Ren'Py":
             self.start_renpy_realtime_game_translation()
             return
+        if self.project and self.project.engine == "RPG Maker MV/MZ":
+            self.start_rpgmaker_realtime_game_translation()
+            return
         self.launch_current_game()
 
     def _sync_header_launch_button(self) -> None:
@@ -5207,6 +5389,8 @@ class ToolkitApp:
             return
         if self.project and self.project.engine == "Ren'Py":
             button.configure(text="实时游戏翻译", command=self.start_renpy_realtime_game_translation)
+        elif self.project and self.project.engine == "RPG Maker MV/MZ":
+            button.configure(text="实时游戏翻译", command=self.start_rpgmaker_realtime_game_translation)
         else:
             button.configure(text="启动游戏", command=self.launch_current_game)
 
@@ -5380,6 +5564,403 @@ class ToolkitApp:
         if translations:
             self._schedule_translation_tree_refresh(delay_ms=80)
             self._save_project_translation_cache()
+
+    # ===================== RPG Maker Real-Time Translation =====================
+
+    def _auto_start_rpgmaker_realtime(self) -> None:
+        """Auto-start RPG Maker real-time translation (called from launch_current_game)."""
+        if not self.project or "RPG Maker" not in (self.project.engine or ""):
+            return
+        service = self._get_service()
+        if not hasattr(service, "start_live_bridge_server"):
+            return
+        provider_config = self._renpy_realtime_provider_config()
+        if provider_config is None:
+            return
+        # Auto-save channel settings
+        try:
+            _s = self.workspace.load_settings()
+            _s["translation_channel"] = self.translation_channel_var.get()
+            _s["mt_source_lang"] = self.mt_source_lang_var.get()
+            _s["mt_target_lang"] = self.mt_target_lang_var.get()
+            self.workspace.save_settings(_s)
+        except Exception:
+            pass
+        # Start tool-side server
+        service.start_live_bridge_server(clear_events=True)
+        # Tell game bridge our port
+        import urllib.request as _urlreq
+        try:
+            req = _urlreq.Request(
+                "http://127.0.0.1:32179/set_tool_port",
+                data=json.dumps({"port": 32181}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = _urlreq.urlopen(req, timeout=3)
+            _append_live_log("tool", "rpgmaker_set_tool_port", {"ok": True, "status": resp.status, "source": "auto_start"})
+        except Exception as exc:
+            _append_live_log("tool", "rpgmaker_set_tool_port", {"ok": False, "error": str(exc), "source": "auto_start"})
+        # Start worker (reuse the same stop event slot)
+        if self._renpy_realtime_stop:
+            self._renpy_realtime_stop.set()
+        self._renpy_realtime_stop = threading.Event()
+        threading.Thread(
+            target=self._rpgmaker_realtime_worker,
+            args=(service, provider_config, self._renpy_realtime_stop),
+            daemon=True,
+        ).start()
+        self.runtime_status_var.set("RPG Maker 实时翻译已启动，等待游戏连接...")
+        _append_live_log("tool", "rpgmaker_realtime_auto_started", {"provider": provider_config.get("provider", "")})
+        # Add startup diagnostic event
+        if hasattr(service, "append_live_debug_event"):
+            service.append_live_debug_event("rpgmaker_realtime_started", "翻译器已启动(自动)", f"引擎:{provider_config.get('provider', '?')} 端口:32179↔32181", "", False)
+
+    def start_rpgmaker_realtime_game_translation(self) -> None:
+        """Start real-time translation for RPG Maker MV/MZ games."""
+        if not self.project or "RPG Maker" not in (self.project.engine or ""):
+            self.launch_current_game()
+            return
+        # If game is not running, install bridge and launch it
+        if not self.game_process or self.game_process.poll() is not None:
+            service = self._get_service()
+            if hasattr(service, "install_runtime_bridge"):
+                try:
+                    service.install_runtime_bridge()
+                except Exception:
+                    pass
+            self.launch_current_game()
+            return
+        service = self._get_service()
+        if not hasattr(service, "start_live_bridge_server"):
+            messagebox.showinfo("提示", "当前 RPG Maker 项目暂不支持实时游戏翻译。")
+            return
+        provider_config = self._renpy_realtime_provider_config()
+        if provider_config is None:
+            return
+        # Auto-save channel settings
+        try:
+            _s = self.workspace.load_settings()
+            _s["translation_channel"] = self.translation_channel_var.get()
+            _s["mt_source_lang"] = self.mt_source_lang_var.get()
+            _s["mt_target_lang"] = self.mt_target_lang_var.get()
+            self.workspace.save_settings(_s)
+        except Exception:
+            pass
+        # Start tool-side server
+        service.start_live_bridge_server(clear_events=True)
+        # Configure game bridge to use tool server port
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://127.0.0.1:32179/set_tool_port",
+                data=json.dumps({"port": 32181}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=3)
+            _append_live_log("tool", "rpgmaker_set_tool_port", {"ok": True, "status": resp.status})
+        except Exception as exc:
+            _append_live_log("tool", "rpgmaker_set_tool_port", {"ok": False, "error": str(exc)})
+        # Start worker
+        if self._renpy_realtime_stop:
+            self._renpy_realtime_stop.set()
+        self._renpy_realtime_stop = threading.Event()
+        # Clean stale entries from shared translation_memory before starting worker
+        self._clean_stale_translation_memory()
+        threading.Thread(
+            target=self._rpgmaker_realtime_worker,
+            args=(service, provider_config, self._renpy_realtime_stop),
+            daemon=True,
+        ).start()
+        self.runtime_status_var.set("RPG Maker 实时游戏翻译已启动")
+        self._set_status_text("RPG Maker 实时翻译运行中，等待游戏文本...")
+        _append_live_log("tool", "rpgmaker_realtime_started", {"provider": provider_config.get("provider", "")})
+        # Add startup diagnostic event
+        if hasattr(service, "append_live_debug_event"):
+            service.append_live_debug_event("rpgmaker_realtime_started", "翻译器已启动", f"引擎:{provider_config.get('provider', '?')} 端口:32179↔32181", "", False)
+
+    def _rpgmaker_realtime_worker(self, service: object, provider_config: dict[str, str], stop_event: threading.Event) -> None:
+        """Background worker for RPG Maker real-time translation. Prioritizes dialogue over items/UI."""
+        cache: dict[str, str] = {}
+        # Load existing cache from disk — filter out stale entries where source==target
+        # (untranslated items that got stuck in the cache block retranslation)
+        try:
+            workspace = self.project.root / ".rpgrtl_workspace" if self.project else None
+            if workspace:
+                cache_path = workspace / "rpgmaker_realtime_translation.json"
+                if cache_path.exists():
+                    data = json.loads(cache_path.read_text(encoding="utf-8"))
+                    raw_cache = data.get("translations", {})
+                    cache = {k: v for k, v in raw_cache.items() if v.strip() and k != v}
+        except Exception:
+            pass
+        seen_sources: set[str] = set(cache)
+        failed_texts: dict[str, int] = {}  # text -> retry count
+        max_retries = 3
+        last_scan_report = 0.0
+        last_idle_report = 0.0
+        last_table_write = 0.0
+        worker_interval = 0.3
+        total_translated = 0
+        while not stop_event.is_set():
+            try:
+                # 1. Collect from pre_translate_queue (priority-aware)
+                high_sources: list[str] = []
+                low_sources: list[str] = []
+                try:
+                    from .rpgmaker import _RPGRM_LIVE_SERVER_LOCK, _RPGRM_LIVE_SERVER_STATE
+                    with _RPGRM_LIVE_SERVER_LOCK:
+                        pre_queue = list(_RPGRM_LIVE_SERVER_STATE.get("pre_translate_queue", []))
+                        _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"] = []
+                except Exception:
+                    pre_queue = []
+                for item in pre_queue:
+                    # Support both old format (str) and new format (dict)
+                    if isinstance(item, dict):
+                        t = str(item.get("text", "")).strip()
+                        priority = item.get("priority", "low")
+                    else:
+                        t = str(item).strip()
+                        priority = "low"
+                    if not t or t in cache or t in seen_sources or t in failed_texts:
+                        continue
+                    seen_sources.add(t)
+                    if priority == "high":
+                        high_sources.append(t)
+                    else:
+                        low_sources.append(t)
+
+                # 2. Collect from debug events (skip worker-generated rpgmaker_* events)
+                #    Classify events by priority
+                events = service.read_live_debug_events(300) if hasattr(service, "read_live_debug_events") else []
+                now = time.time()
+                DIALOGUE_KINDS = {"map_event_dialogue", "map_event_choice", "map_event_scroll",
+                                  "game_message_setText", "game_message_setChoice", "choice_drawItem",
+                                  "showText", "scrollText", "dialogue_block",
+                                  "cmd_401_dialogue", "cmd_102_choice", "cmd_405_scroll",
+                                  "common_event_dialogue"}
+                # convertEscapeCharacters blocks are complete multi-line messages — HIGH priority
+                COMPLETE_KINDS = {"convertEscapeCharacters"}
+                # bitmap_drawText is often a truncated fragment from window rendering
+                FRAGMENT_KINDS = {"bitmap_drawText"}
+                # Collect complete blocks first (for fragment filtering)
+                complete_blocks: list[str] = []
+                for event in reversed(events):
+                    source = str(event.get("source", "") or "").strip()
+                    if not source or source == "hook_status":
+                        continue
+                    kind = str(event.get("kind", "") or "")
+                    if kind.startswith("realtime_") or kind.startswith("live_") or kind.startswith("rpgmaker_"):
+                        continue
+                    if source in cache or source in seen_sources or source in failed_texts:
+                        continue
+                    if self._looks_like_non_dialogue_translation(source):
+                        continue
+                    if kind in COMPLETE_KINDS:
+                        complete_blocks.append(source)
+
+                # Then collect all events, filtering fragments against complete blocks
+                for event in reversed(events):
+                    source = str(event.get("source", "") or "").strip()
+                    if not source or source == "hook_status":
+                        continue
+                    kind = str(event.get("kind", "") or "")
+                    if kind.startswith("realtime_") or kind.startswith("live_") or kind.startswith("rpgmaker_"):
+                        continue
+                    if source in cache or source in seen_sources or source in failed_texts:
+                        continue
+                    if self._looks_like_non_dialogue_translation(source):
+                        continue
+                    # Skip bitmap_drawText fragments that are substrings of complete blocks
+                    if kind in FRAGMENT_KINDS and complete_blocks:
+                        is_fragment = any(source in block or block.startswith(source.rstrip("。、！？")[:10])
+                                          for block in complete_blocks)
+                        if is_fragment:
+                            seen_sources.add(source)
+                            continue
+                    seen_sources.add(source)
+                    if kind in DIALOGUE_KINDS or kind in COMPLETE_KINDS:
+                        high_sources.append(source)
+                    else:
+                        low_sources.append(source)
+
+                # 3. Dedup within each priority list
+                def _dedup(lst: list[str]) -> list[str]:
+                    seen: set[str] = set()
+                    out: list[str] = []
+                    for s in lst:
+                        if s not in seen:
+                            seen.add(s)
+                            out.append(s)
+                    return out
+                high_sources = _dedup(high_sources)
+                low_sources = _dedup(low_sources)
+                all_count = len(high_sources) + len(low_sources)
+
+                # 4. Logging
+                if hasattr(service, "append_live_debug_event"):
+                    if all_count:
+                        if now - last_scan_report >= 5:
+                            last_scan_report = now
+                            samples = [s[:25] for s in (high_sources + low_sources)[:3]]
+                            _append_live_log("tool", "rpgmaker_batch", {"high": len(high_sources), "low": len(low_sources), "total": all_count, "samples": samples})
+                            service.append_live_debug_event("rpgmaker_batch", (high_sources + low_sources)[0], f"对话:{len(high_sources)} 其他:{len(low_sources)} 待译", "", False)
+                    elif now - last_idle_report >= 15:
+                        last_idle_report = now
+                        try:
+                            with _RPGRM_LIVE_SERVER_LOCK:
+                                q_count = len(_RPGRM_LIVE_SERVER_STATE.get("pre_translate_queue", []))
+                                ev_count = len(_RPGRM_LIVE_SERVER_STATE.get("events", []))
+                                tr_count = len(_RPGRM_LIVE_SERVER_STATE.get("translations", {}))
+                                sn_count = len(_RPGRM_LIVE_SERVER_STATE.get("seen", {}))
+                        except Exception:
+                            q_count = ev_count = tr_count = sn_count = 0
+                        idle_msg = f"已译:{total_translated} 缓存:{len(cache)} 失败:{len(failed_texts)} 队列:{q_count} 事件:{ev_count} 翻译表:{tr_count} 已见:{sn_count}"
+                        _append_live_log("tool", "rpgmaker_idle", {"msg": idle_msg})
+                        service.append_live_debug_event("rpgmaker_idle", "后台空闲", idle_msg, "", False)
+
+                if all_count == 0:
+                    stop_event.wait(worker_interval)
+                    continue
+
+                # 5. Translate with interleaved priority: dialogue small chunks first,
+                #    items only when dialogue queue is draining, both interleaved for throughput
+                translated_all: dict[str, str] = {}
+                failed_all: list[str] = []
+                DIALOGUE_CHUNK = 5   # small for fast feedback
+                ITEM_CHUNK = 20      # larger for throughput
+                di = 0  # dialogue index
+                it = 0  # item index
+                while di < len(high_sources) or it < len(low_sources):
+                    if stop_event.is_set():
+                        break
+                    # Priority: always process one dialogue chunk first if available
+                    if di < len(high_sources):
+                        chunk = high_sources[di:di + DIALOGUE_CHUNK]
+                        di += DIALOGUE_CHUNK
+                        priority_label = "high"
+                    elif it < len(low_sources):
+                        chunk = low_sources[it:it + ITEM_CHUNK]
+                        it += ITEM_CHUNK
+                        priority_label = "low"
+                    else:
+                        break
+                    if not chunk:
+                        break
+                    samples = [s[:30] for s in chunk[:3]]
+                    _append_live_log("tool", "rpgmaker_requesting", {"count": len(chunk), "priority": priority_label, "provider": provider_config.get("provider", ""), "samples": samples})
+                    try:
+                        translations = self._renpy_realtime_translate_sources(chunk, provider_config)
+                    except Exception as exc:
+                        error_msg = str(exc)[:200]
+                        _append_live_log("tool", "rpgmaker_failed", {"error": error_msg, "count": len(chunk), "priority": priority_label})
+                        for src in chunk:
+                            failed_texts[src] = failed_texts.get(src, 0) + 1
+                            if failed_texts[src] >= max_retries:
+                                seen_sources.discard(src)
+                        stop_event.wait(worker_interval)
+                        continue
+
+                    # Filter: reject source==target (API returned untranslated text)
+                    translated = {src: tgt for src, tgt in translations.items() if tgt.strip() and src != tgt}
+                    not_translated = [src for src in chunk if src not in translated]
+
+                    # Expand block translations to individual lines for in-game lookup
+                    expanded: dict[str, str] = {}
+                    for src, tgt in translated.items():
+                        if "\\n" in src:
+                            src_lines = src.split("\\n")
+                            tgt_lines = tgt.split("\\n")
+                            for j, sl in enumerate(src_lines):
+                                sl_stripped = sl.strip()
+                                if sl_stripped and j < len(tgt_lines):
+                                    tl = tgt_lines[j].strip()
+                                    if tl:
+                                        expanded[sl_stripped] = tl
+                    translated.update(expanded)
+
+                    translated_all.update(translated)
+
+                    # Clean bad entries from translation_memory (source-as-target = bad cache)
+                    for src in chunk:
+                        bad_mem = self.translation_memory.get(src.strip(), "")
+                        if bad_mem and bad_mem.strip() == src.strip():
+                            del self.translation_memory[src.strip()]
+
+                    # Only add REAL failures (API error or empty response), not source-as-target
+                    for src in not_translated:
+                        raw_val = translations.get(src, "").strip()
+                        if raw_val == src:
+                            # API returned source text — NOT a failure, just untranslated.
+                            # Do NOT add to failed_texts so it can be retried next cycle.
+                            # Also don't add to failed_all (UI "failed" list) since it's retryable.
+                            pass
+                        else:
+                            # Actual failure (API error, empty response, etc.)
+                            failed_texts[src] = failed_texts.get(src, 0) + 1
+                            if failed_texts[src] >= max_retries:
+                                seen_sources.discard(src)
+                            failed_all.append(src)
+
+                    # Inject DIALOGUE translations IMMEDIATELY after each chunk
+                    # so the game picks them up on next poll (even while other chunks translate)
+                    if translated and priority_label == "high":
+                        if hasattr(service, "merge_live_translation"):
+                            for src, tgt in translated.items():
+                                service.merge_live_translation(src, tgt, kind="realtime_translated")
+                        _append_live_log("tool", "rpgmaker_dialogue_injected", {"count": len(translated)})
+
+                # 6. Batch persist (all priorities combined) — project-specific cache only
+                if translated_all:
+                    total_translated += len(translated_all)
+                    for src, tgt in translated_all.items():
+                        cache[src] = tgt
+                    # Save to project-specific cache file (NOT global translation_memory)
+                    try:
+                        workspace = self.project.root / ".rpgrtl_workspace" if self.project else None
+                        if workspace:
+                            workspace.mkdir(parents=True, exist_ok=True)
+                            cache_path = workspace / "rpgmaker_realtime_translation.json"
+                            cache_path.write_text(json.dumps({"version": 1, "updated_at": time.time(), "translations": cache}, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+                    except Exception:
+                        pass
+                    # Merge to server state (low priority items need this too)
+                    if hasattr(service, "merge_live_translation"):
+                        for src, tgt in translated_all.items():
+                            service.merge_live_translation(src, tgt, kind="realtime_translated")
+                    if hasattr(service, "write_live_translation_table"):
+                        service.write_live_translation_table(cache)
+                    last_table_write = time.time()
+
+                if hasattr(service, "append_live_debug_event"):
+                    _append_live_log("tool", "rpgmaker_done", {"translated": len(translated_all), "failed": len(failed_all), "total_session": total_translated})
+                    if translated_all:
+                        service.append_live_debug_event("rpgmaker_response", list(translated_all.keys())[0], f"已译 {len(translated_all)}/{all_count} 条", list(translated_all.values())[0], True)
+
+                self.root.after(0, lambda c=total_translated: self.runtime_status_var.set(f"RPG Maker 实时翻译运行中：已译 {c} 条"))
+
+                # 7. Periodic cleanup
+                if len(seen_sources) > 2000:
+                    before = len(seen_sources)
+                    seen_sources.intersection_update(cache)
+                    _append_live_log("tool", "rpgmaker_seen_cleanup", {"before": before, "after": len(seen_sources)})
+
+            except Exception as exc:
+                if hasattr(service, "append_live_debug_event"):
+                    _append_live_log("tool", "rpgmaker_worker_exception", {"error": str(exc)})
+                    service.append_live_debug_event("rpgmaker_worker_exception", "实时后台异常", str(exc), "", False)
+                self.root.after(0, lambda err=exc: self.runtime_status_var.set(f"RPG Maker 实时翻译异常：{err}"))
+            stop_event.wait(worker_interval)
+        # Final save
+        try:
+            workspace = self.project.root / ".rpgrtl_workspace" if self.project else None
+            if workspace:
+                cache_path = workspace / "rpgmaker_realtime_translation.json"
+                cache_path.write_text(json.dumps({"version": 1, "updated_at": time.time(), "translations": cache}, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        except Exception:
+            pass
+        self.root.after(0, lambda: self.runtime_status_var.set("RPG Maker 实时翻译已停止"))
 
     def _renpy_realtime_worker(self, service: object, provider_config: dict[str, str], stop_event: threading.Event) -> None:
         cache = self._load_renpy_realtime_cache()
@@ -5691,9 +6272,12 @@ class ToolkitApp:
         pending: list[TranslationEntry] = []
         for index, source in enumerate(sources, start=1):
             cached = self.translation_memory.get(source.strip(), "").strip()
-            if cached:
+            if cached and cached != source.strip():
                 result[source] = cached
                 continue
+            elif cached == source.strip():
+                # Bad cache entry — remove it and re-translate
+                del self.translation_memory[source.strip()]
             pending.append(TranslationEntry(entry_id=f"renpy_realtime::{index}", source=source, category="dialogue"))
         if not pending:
             return result
@@ -5703,18 +6287,11 @@ class ToolkitApp:
             raw = self._request_mt_translations(pending, provider_config.get("source_lang", "auto"), provider_config.get("target_lang", "zh-CN"))
         else:
             raw = self._request_ai_translations(pending, provider_config.get("api_key", ""), provider_config.get("model", ""), provider_config.get("provider", "OpenAI"), provider_config.get("base_url", ""))
-        memory_changed = False
         for index, entry in enumerate(pending, start=1):
             target = str(raw.get(entry.entry_id, "") or raw.get(str(index), "") or "").strip()
             if not target:
                 continue
             result[entry.source] = target
-            self.translation_memory[entry.source.strip()] = target
-            memory_changed = True
-        if memory_changed:
-            self._invalidate_translation_memory_index()
-            self._tm_dirty = True
-            self._flush_translation_memory()
         return result
 
     def _apply_renpy_realtime_translation_to_table(self, source: str, target: str) -> None:
@@ -5729,6 +6306,10 @@ class ToolkitApp:
     def prepare_local_env(self) -> None:
         project_root = self._project_root()
         venv_dir = project_root / ".venv"
+        # 冻结模式下跳过虚拟环境创建（exe 不能用来创建 venv）
+        if getattr(sys, "frozen", False):
+            self._append_env_log("打包模式下无需虚拟环境，跳过环境准备。")
+            return
         self._append_env_log(f"准备环境目录：{venv_dir}")
         try:
             if not venv_dir.exists():
@@ -5787,6 +6368,37 @@ class ToolkitApp:
         self.library_entries = [entry for entry in self.library_entries if entry.path != target.path]
         self.workspace.save_library(self.library_entries)
         self._refresh_library()
+
+    def clear_selected_game_cache(self) -> None:
+        """Clear translation cache for the selected game."""
+        index = self._selected_library_index()
+        if index is None:
+            return
+        target = self._filtered_library()[index]
+        game_path = Path(target.path)
+        # 1. Clear .rpgrtl_workspace cache files
+        workspace = game_path / ".rpgrtl_workspace"
+        removed = 0
+        if workspace.exists():
+            for f in workspace.glob("rpgmaker_*translation*.json"):
+                try:
+                    f.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+        # 2. Clear project-specific translation_memory entries
+        hash_id = hashlib.md5(str(game_path.resolve()).encode()).hexdigest()[:12]
+        project_tm_path = self.workspace.config_dir / f"tm_project_{hash_id}.json"
+        try:
+            if project_tm_path.exists():
+                project_tm_path.unlink()
+                removed += 1
+        except Exception:
+            pass
+        # 3. If this game is currently loaded, also clear in-memory cache
+        if self.project and Path(target.path) == self.project.root:
+            self._clear_translation_memory_for_project()
+        messagebox.showinfo("缓存已清空", f"已清除 {target.name} 的 {removed} 个缓存文件。")
 
     def open_selected_library_item(self) -> None:
         index = self._selected_library_index()

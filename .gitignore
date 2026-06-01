@@ -1,0 +1,55 @@
+# APK 解包结果（太大，不推送）
+MTool/_decoded/
+Joi/_decoded/
+
+# APKTool
+apktool.jar
+apktool.bat
+
+# 原始 APK（如需保留可上传 Release，不塞进仓库）
+MTool/*.apk
+Joi/*.apk
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 项目本地缓存
+RPGRenPyLocalizer/toolkit/.rpgrtl_workspace/
+
+# ========== 敏感文件：签名 & 密钥 ==========
+*.keystore
+*.jks
+
+# Android 本地配置（含 AppKey、签名密码等）
+*.properties
+
+# ========== Claude / MCP 本地环境 ==========
+.claude/
+.agent-memory-store/
+.mcp.json
+opencode.json
+
+# ========== 调试 / 临时文件 ==========
+nul
+traceback.txt
+sdk_list.txt

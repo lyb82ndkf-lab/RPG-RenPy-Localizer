@@ -1,0 +1,85 @@
+﻿{
+  "id": "uni-upgrade-center-app",
+  "displayName": "鍗囩骇涓績 uni-upgrade-center - App",
+  "version": "0.7.9",
+  "description": "uni鍗囩骇涓績 - 瀹㈡埛绔鏌ユ洿鏂?,
+  "keywords": [
+    "uniCloud",
+    "update",
+    "鍗囩骇",
+    "wgt"
+],
+  "repository": "https://gitee.com/dcloud/uni-upgrade-center/tree/master/uni_modules/uni-upgrade-center-app",
+  "engines": {
+    "HBuilderX": "^3.97"
+  },
+"dcloudext": {
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "鏃?,
+      "data": "鎻掍欢涓嶉噰闆嗕换浣曟暟鎹?,
+      "permissions": "鏃?
+    },
+    "npmurl": "",
+    "type": "unicloud-template-page"
+  },
+  "uni_modules": {
+    "dependencies": [
+      "uni-installApk",
+      "uts-progressNotification"
+    ],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y"
+      },
+      "client": {
+        "App": {
+          "app-vue": "y",
+          "app-nvue": "u"
+        },
+        "H5-mobile": {
+          "Safari": "y",
+          "Android Browser": "y",
+          "寰俊娴忚鍣?Android)": "y",
+          "QQ娴忚鍣?Android)": "y"
+        },
+        "H5-pc": {
+          "Chrome": "y",
+          "IE": "y",
+          "Edge": "y",
+          "Firefox": "y",
+          "Safari": "y"
+        },
+        "灏忕▼搴?: {
+          "寰俊": "u",
+          "闃块噷": "u",
+          "鐧惧害": "u",
+          "瀛楄妭璺冲姩": "u",
+        "QQ": "u",
+        "浜笢": "u"
+        },
+        "蹇簲鐢?: {
+          "鍗庝负": "u",
+          "鑱旂洘": "u"
+        },
+        "Vue": {
+            "vue2": "y",
+            "vue3": "y"
+        }
+      }
+    }
+  }
+}
+

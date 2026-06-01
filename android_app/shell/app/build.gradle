@@ -1,0 +1,120 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace "com.rpgrtl.shell"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.rpgrtl.shell"
+        minSdk 26
+        targetSdk 34
+        versionCode 39
+        versionName "3.9"
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    // 从 local.properties 或环境变量读取签名配置，避免密码泄露
+    def signingProps = new Properties()
+    def signingPropsFile = rootProject.file('../local.properties')
+    if (signingPropsFile.exists()) {
+        signingPropsFile.withInputStream { signingProps.load(it) }
+    }
+
+    signingConfigs {
+        release {
+            storeFile file(signingProps.getProperty('signingStoreFile', '../rpgrtl-release.keystore'))
+            keyAlias signingProps.getProperty('signingKeyAlias', System.getenv('RPGRTL_KEY_ALIAS') ?: '')
+            storePassword signingProps.getProperty('signingStorePassword', System.getenv('RPGRTL_STORE_PASSWORD') ?: '')
+            keyPassword signingProps.getProperty('signingKeyPassword', System.getenv('RPGRTL_KEY_PASSWORD') ?: '')
+        }
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include "arm64-v8a", "armeabi-v7a"
+            universalApk true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    ndkVersion "24.0.8215888"
+
+    externalNativeBuild {
+        cmake {
+            version "3.22.1"
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        noCompress += [
+            "json",
+            "ogg",
+            "m4a",
+            "mp3",
+            "wav",
+            "mid",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "gif",
+            "rpa",
+            "rpyc",
+            "rvdata2",
+            "rgss3a",
+            "rgss2a",
+            "rgssad",
+            "so",
+            "zst",
+            "tzst"
+        ]
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+tasks.register("syncMobileUi", Copy) {
+    from("../../mobile_ui")
+    into("src/main/assets/mobile_ui")
+}
+
+preBuild.dependsOn("syncMobileUi")
+
+dependencies {
+    implementation "androidx.core:core-ktx:1.13.1"
+    implementation "androidx.documentfile:documentfile:1.0.1"
+    implementation "androidx.appcompat:appcompat:1.4.0"
+    implementation "androidx.preference:preference:1.2.1"
+    implementation "com.google.android.material:material:1.4.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    implementation "com.github.luben:zstd-jni:1.5.2-3@aar"
+    implementation "org.tukaani:xz:1.7"
+    implementation "org.apache.commons:commons-compress:1.20"
+}

@@ -1,0 +1,7 @@
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\include\adrenotools\bcenabler.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\include\adrenotools\driver.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\include\adrenotools\priv.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\src\hook\hook_impl.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\src\hook\hook_impl_params.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\lib\linkernsbypass\android_linker_ns.h
+D:\程序\RPG tool\RPGRenPyLocalizer\android_app\shell\app\src\main\cpp\libadrenotools\lib\linkernsbypass\elf_soname_patcher.h

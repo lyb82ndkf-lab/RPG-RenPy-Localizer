@@ -1,0 +1,84 @@
+﻿{
+  "id": "uni-open-bridge-common",
+  "displayName": "uni-open-bridge-common",
+  "version": "1.2.1",
+  "description": "缁熶竴鎺ョ寰俊绛変笁鏂瑰钩鍙拌璇佸嚟鎹?,
+  "keywords": [
+    "access_token",
+    "session_key",
+    "ticket"
+],
+  "repository": "",
+  "engines": {
+    "HBuilderX": "^3.5.2"
+  },
+  "dcloudext": {
+    "type": "unicloud-template-function",
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "鏃?,
+      "data": "鏃?,
+      "permissions": "鏃?
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y",
+        "alipay": "n"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "u",
+          "vue3": "u"
+        },
+        "App": {
+          "app-vue": "u",
+          "app-nvue": "u"
+        },
+        "H5-mobile": {
+          "Safari": "u",
+          "Android Browser": "u",
+          "寰俊娴忚鍣?Android)": "u",
+          "QQ娴忚鍣?Android)": "u"
+        },
+        "H5-pc": {
+          "Chrome": "u",
+          "IE": "u",
+          "Edge": "u",
+          "Firefox": "u",
+          "Safari": "u"
+        },
+        "灏忕▼搴?: {
+          "寰俊": "u",
+          "闃块噷": "u",
+          "鐧惧害": "u",
+          "瀛楄妭璺冲姩": "u",
+          "QQ": "u",
+          "閽夐拤": "u",
+          "蹇墜": "u",
+          "椋炰功": "u",
+          "浜笢": "u"
+        },
+        "蹇簲鐢?: {
+          "鍗庝负": "u",
+          "鑱旂洘": "u"
+        }
+      }
+    }
+  }
+}

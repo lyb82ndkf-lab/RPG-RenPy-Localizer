@@ -1,0 +1,84 @@
+﻿{
+  "id": "uts-progressNotification",
+  "displayName": "uts-progressNotification",
+  "version": "1.1.0",
+  "description": "uts-progressNotification",
+  "keywords": [
+    "uts-progressNotification"
+],
+  "repository": "",
+  "engines": {
+    "HBuilderX": "^3.91"
+  },
+  "dcloudext": {
+    "type": "uts",
+    "sale": {
+      "regular": {
+        "price": "0.00"
+      },
+      "sourcecode": {
+        "price": "0.00"
+      }
+    },
+    "contact": {
+      "qq": ""
+    },
+    "declaration": {
+      "ads": "鏃?,
+      "data": "鎻掍欢涓嶉噰闆嗕换浣曟暟鎹?,
+      "permissions": "TargetSDKVersion33浠ヤ笂鏃堕渶閰嶇疆\n`android.permission.POST_NOTIFICATIONS`"
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "y",
+        "aliyun": "y"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "y",
+          "vue3": "y"
+        },
+        "App": {
+          "app-android": {
+            "minVersion": "19"
+        },
+          "app-ios": "n"
+        },
+        "H5-mobile": {
+          "Safari": "n",
+          "Android Browser": "n",
+          "寰俊娴忚鍣?Android)": "n",
+          "QQ娴忚鍣?Android)": "n"
+        },
+        "H5-pc": {
+          "Chrome": "n",
+          "IE": "n",
+          "Edge": "n",
+          "Firefox": "n",
+          "Safari": "n"
+        },
+        "灏忕▼搴?: {
+          "寰俊": "n",
+          "闃块噷": "n",
+          "鐧惧害": "n",
+          "瀛楄妭璺冲姩": "n",
+          "QQ": "n",
+          "閽夐拤": "n",
+          "蹇墜": "n",
+          "椋炰功": "n",
+          "浜笢": "n"
+        },
+        "蹇簲鐢?: {
+          "鍗庝负": "n",
+          "鑱旂洘": "n"
+        }
+      }
+    }
+  }
+}
+

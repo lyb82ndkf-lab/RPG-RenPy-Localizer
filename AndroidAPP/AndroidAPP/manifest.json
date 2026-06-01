@@ -1,0 +1,67 @@
+{
+    "name":  "RPG-RenPy-Localizer",
+    "appid":  "__UNI__C81328E",
+    "description":  "RPG Maker / Ren\u0027Py localizer toolkit",
+    "versionName":  "0.5.0",
+    "versionCode":  "5",
+    "transformPx":  false,
+    "vueVersion":  "3",
+    "app-plus":  {
+                     "usingComponents":  true,
+                     "nvueCompiler":  "uni-app",
+                     "nvueStyleCompiler":  "uni-app",
+                     "compilerVersion":  3,
+                     "nvueLaunchMode":  "fast",
+                     "splashscreen":  {
+                                          "alwaysShowBeforeRender":  false,
+                                          "waiting":  false,
+                                          "autoclose":  true,
+                                          "delay":  0
+                                      },
+                     "modules":  {
+
+                                 },
+                     "distribute":  {
+                                        "orientation":  [
+                                                            "landscape-primary"
+                                                        ],
+                                        "android":  {
+                                                        "package":  "com.rpgrtl.localizer",
+                                                        "permissions":  [
+                                                                            "\u003cuses-permission android:name=\"android.permission.INTERNET\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.MANAGE_EXTERNAL_STORAGE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.FOREGROUND_SERVICE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.VIBRATE\"/\u003e",
+                                                                            "\u003cuses-permission android:name=\"android.permission.WAKE_LOCK\"/\u003e"
+                                                                        ]
+                                                    },
+                                        "icons":  {
+                                                      "android":  {
+                                                                      "hdpi":  "unpackage/res/icons/72x72.png",
+                                                                      "xhdpi":  "unpackage/res/icons/96x96.png",
+                                                                      "xxhdpi":  "unpackage/res/icons/144x144.png",
+                                                                      "xxxhdpi":  "unpackage/res/icons/192x192.png"
+                                                                  }
+                                                  },
+                                        "ios":  {
+                                                    "dSYMs":  false
+                                                }
+                                    },
+                     "uniStatistics":  {
+                                           "enable":  false
+                                       }
+                 },
+    "h5":  {
+               "publicPath":  "./",
+               "router":  {
+                              "mode":  "hash",
+                              "base":  "./"
+                          }
+           }
+}
+

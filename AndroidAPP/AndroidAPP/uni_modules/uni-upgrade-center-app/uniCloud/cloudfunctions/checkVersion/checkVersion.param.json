@@ -1,0 +1,15 @@
+﻿// 鏈枃浠朵腑鐨刯son鍐呭灏嗗湪浜戝璞°€愯繍琛屻€戞椂浣滀负鍙傛暟浼犵粰浜戝璞°€?
+// 閰嶇疆鏁欑▼鍙傝€冿細https://uniapp.dcloud.net.cn/uniCloud/quickstart?id=runparam
+{
+    // 璋冪敤浜戝璞＄殑鏂规硶鍚嶇О
+    "method": "checkVersion",
+    // 浼犻€掔粰璋冪敤鏂规硶鐨勫弬鏁板垪琛?
+    "params": [
+		{
+			"appid": "__UNI__HelloUNIApp",
+			"appVersion": "1.0.0",
+			"wgtVersion": "1.0.0"
+		}
+    ]
+}
+

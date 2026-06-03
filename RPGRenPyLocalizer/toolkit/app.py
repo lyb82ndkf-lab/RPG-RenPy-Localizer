@@ -62,6 +62,7 @@ AI_PROVIDER_URLS = {
     "GLM": "https://z.ai/manage-apikey/apikey-list",
     "NVIDIA": "https://build.nvidia.com/",
     "百度翻译": "https://fanyi-api.baidu.com/manage/apiKey",
+    "Ollama 本地模型": "https://ollama.com/",
 }
 
 
@@ -869,9 +870,15 @@ class ToolkitApp:
         self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.ai_settings_frame.grid_columnconfigure(1, weight=1)
         tk.Label(self.ai_settings_frame, text="AI 厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API"), state="readonly", width=20)
+        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API", "Ollama 本地模型"), state="readonly", width=20)
         provider_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         provider_box.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
+        self._ollama_guide_btn = ttk.Button(self.ai_settings_frame, text="📖 使用指南", command=self._show_ollama_guide)
+        self._ollama_guide_btn.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self._ollama_guide_btn.grid_remove()  # hidden by default
+        self._ollama_test_btn = ttk.Button(self.ai_settings_frame, text="🔗 测试连接", command=self._test_ollama_connection)
+        self._ollama_test_btn.grid(row=0, column=3, sticky="e", padx=(6, 0))
+        self._ollama_test_btn.grid_remove()  # hidden by default
         self.ai_base_url_label = tk.Label(self.ai_settings_frame, text="Base URL", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_base_url_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.ai_base_url_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_base_url_var)
@@ -888,7 +895,8 @@ class ToolkitApp:
         self.xiaomi_cluster_box.bind("<<ComboboxSelected>>", self._on_xiaomi_cluster_change)
         self.ai_api_key_label = tk.Label(self.ai_settings_frame, text="API Key", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_api_key_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*").grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_api_key_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*")
+        self.ai_api_key_entry.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         self.ai_model_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_model_var, values=self._ai_model_options(), state="normal", width=24)
         self.ai_model_label = tk.Label(self.ai_settings_frame, text="模型", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_model_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
@@ -969,9 +977,15 @@ class ToolkitApp:
         self.ai_settings_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.ai_settings_frame.grid_columnconfigure(1, weight=1)
         tk.Label(self.ai_settings_frame, text="AI 厂商", bg=PANEL_BG, fg=TEXT_MUTED).grid(row=0, column=0, sticky="w")
-        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API"), state="readonly", width=20)
+        provider_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_provider_var, values=("OpenAI", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Custom OpenAI API", "Ollama 本地模型"), state="readonly", width=20)
         provider_box.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         provider_box.bind("<<ComboboxSelected>>", self._on_ai_provider_change)
+        self._ollama_guide_btn = ttk.Button(self.ai_settings_frame, text="📖 使用指南", command=self._show_ollama_guide)
+        self._ollama_guide_btn.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self._ollama_guide_btn.grid_remove()  # hidden by default
+        self._ollama_test_btn = ttk.Button(self.ai_settings_frame, text="🔗 测试连接", command=self._test_ollama_connection)
+        self._ollama_test_btn.grid(row=0, column=3, sticky="e", padx=(6, 0))
+        self._ollama_test_btn.grid_remove()  # hidden by default
         self.ai_base_url_label = tk.Label(self.ai_settings_frame, text="Base URL", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_base_url_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.ai_base_url_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_base_url_var)
@@ -988,7 +1002,8 @@ class ToolkitApp:
         self.xiaomi_cluster_box.bind("<<ComboboxSelected>>", self._on_xiaomi_cluster_change)
         self.ai_api_key_label = tk.Label(self.ai_settings_frame, text="API Key", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_api_key_label.grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*").grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_api_key_entry = ttk.Entry(self.ai_settings_frame, textvariable=self.ai_api_key_var, show="*")
+        self.ai_api_key_entry.grid(row=4, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
         self.ai_model_box = ttk.Combobox(self.ai_settings_frame, textvariable=self.ai_model_var, values=self._ai_model_options(), state="normal", width=24)
         self.ai_model_label = tk.Label(self.ai_settings_frame, text="模型", bg=PANEL_BG, fg=TEXT_MUTED)
         self.ai_model_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
@@ -2149,6 +2164,8 @@ class ToolkitApp:
             raw = self._request_glm_translations(api_key, model, system_prompt, user_prompt)
         elif provider == "NVIDIA":
             raw = self._request_nvidia_translations(api_key, model, system_prompt, user_prompt, base_url)
+        elif provider == "Ollama 本地模型":
+            raw = self._request_ollama_translations(model, system_prompt, user_prompt, base_url)
         else:
             raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt, base_url)
         report = str(raw.get("report", "")).strip()
@@ -2583,8 +2600,8 @@ class ToolkitApp:
         current_key = self.ai_api_key_var.get().strip()
         configured = [
             provider
-            for provider in ("OpenAI", "Custom OpenAI API", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA")
-            if (provider == current_provider and current_key) or str(keys.get(provider, "")).strip()
+            for provider in ("OpenAI", "Custom OpenAI API", "Xiaomi Token Plan", "DeepSeek", "Doubao", "GLM", "NVIDIA", "Ollama 本地模型")
+            if (provider == current_provider and (current_key or provider == "Ollama 本地模型")) or str(keys.get(provider, "")).strip()
         ]
         for child in self.ai_parallel_frame.winfo_children():
             child.destroy()
@@ -2646,6 +2663,8 @@ class ToolkitApp:
             self.ai_model_var.set(model)
         if provider == "Custom OpenAI API" and not self.ai_base_url_var.get().strip():
             self.ai_base_url_var.set("https://api.openai.com/v1")
+        if provider == "Ollama 本地模型" and not self.ai_base_url_var.get().strip():
+            self.ai_base_url_var.set("http://localhost:11434")
         if hasattr(self, "ai_provider_link") and not self._using_baidu_channel():
             self.ai_provider_link.configure(text=self._provider_link_label(provider))
         self._refresh_ai_base_url_visibility(provider)
@@ -2662,6 +2681,291 @@ class ToolkitApp:
                 "中国集群可能受账号注册地限制，不通时建议用新加坡集群。"
             )
 
+    def _show_ollama_guide(self) -> None:
+        """Show a help dialog explaining how to set up and use Ollama for local translation."""
+        guide = tk.Toplevel(self.root)
+        guide.title("Ollama 本地模型使用指南")
+        guide.geometry("680x580")
+        guide.resizable(True, True)
+        guide.configure(bg=PANEL_BG)
+        guide.transient(self.root)
+        guide.grab_set()
+
+        text_widget = tk.Text(guide, wrap="word", bg=PANEL_BG, fg=TEXT_MAIN,
+                              font=("Microsoft YaHei UI", 10), padx=16, pady=16,
+                              relief="flat", spacing1=2, spacing3=2)
+        scrollbar = ttk.Scrollbar(guide, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        text_widget.pack(fill="both", expand=True)
+
+        guide_text = """📖 Ollama 本地模型使用指南
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 什么是 Ollama？
+
+Ollama 是一个在本地电脑上运行 AI 大模型的工具。
+优点：完全免费、无需 API Key、无需联网、数据不外传。
+缺点：需要较好的显卡（建议 4GB 以上显存），翻译速度比在线 API 慢。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 第一步：安装 Ollama
+
+1. 访问官网 https://ollama.com/ 下载安装包
+2. 运行安装程序，按提示完成安装
+3. 安装完成后 Ollama 会自动启动（任务栏右下角可见图标）
+   如果没有自动启动，在 cmd 执行：ollama serve
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 第二步：下载翻译模型
+
+打开命令提示符（Win+R 输入 cmd 回车），执行以下命令：
+
+  日文翻译模型（推荐，适合日系游戏）：
+  ollama pull zincles/sakura-1.5b-qwen2.5-v1.0-q5ks
+
+  通用翻译模型（适合英文等其他语言）：
+  ollama pull qwen2.5:7b
+
+模型下载需要一些时间，请耐心等待。
+
+下载完成后执行 ollama list 可以查看已安装的模型。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 第三步：在本工具中使用
+
+1. 翻译渠道选择「AI翻译」
+2. AI 厂商选择「Ollama 本地模型」
+3. Base URL 保持默认 http://localhost:11434 即可
+4. 模型下拉框会自动检测已安装的模型，选择你要用的模型
+   如果下拉框没有显示，手动输入模型名，格式如：
+     zincles/sakura-1.5b-qwen2.5-v1.0-q5ks:latest
+     qwen2.5:7b
+   注意：模型名必须和 ollama list 显示的完全一致
+5. 点击「🔗 测试连接」确认服务正常
+6. 点击「翻译」按钮开始翻译
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 如何停止 Ollama
+
+Ollama 安装后会作为后台服务常驻运行，停止方法：
+
+  方法1：任务管理器（最简单）
+  → Ctrl+Shift+Esc 打开任务管理器
+  → 找到 ollama.exe 或 ollama app.exe，右键结束任务
+
+  方法2：命令行
+  → 打开 cmd 执行：taskkill /f /im ollama.exe
+
+  方法3：停止后台服务
+  → 打开 cmd 执行：sc stop OllamaService
+
+停止后翻译功能将无法使用，需要重新启动才能使用本地模型。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 常见问题
+
+❓ 提示"无法连接 Ollama"
+  → 检查 Ollama 是否已启动（任务栏右下角图标）
+  → 在 cmd 中执行 ollama serve 启动服务
+  → 浏览器访问 http://localhost:11434 确认显示 Ollama is running
+
+❓ 翻译速度很慢
+  → 本地模型速度取决于显卡性能，这是正常现象
+  → 可以尝试更小的模型，如 qwen2.5:3b
+
+❓ 显存不足 (OOM)
+  → 使用更小的量化模型（如 Q4 量化）
+  → 关闭其他占用显卡的程序
+
+❓ 如何查看已安装的模型
+  → 在 cmd 中执行 ollama list
+
+❓ 如何安装其他模型
+  → 访问 https://ollama.com/library 浏览可用模型
+  → 使用 ollama pull <模型名> 安装
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔹 当前系统状态
+
+"""
+        text_widget.insert("1.0", guide_text)
+        text_widget.configure(state="disabled")
+
+        # Check Ollama status
+        def check_status():
+            import urllib.request as _urllib_req
+            try:
+                req = _urllib_req.Request("http://localhost:11434/api/tags", method="GET")
+                with _urllib_req.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+                status = "✅ Ollama 服务运行中\n"
+                if models:
+                    status += f"✅ 已安装 {len(models)} 个模型：\n"
+                    for m in models:
+                        status += f"    • {m}\n"
+                else:
+                    status += "⚠️ 未检测到已安装的模型，请执行 ollama pull 命令下载模型\n"
+                return status
+            except Exception:
+                return "❌ Ollama 服务未运行\n    请先启动 Ollama（在 cmd 中执行 ollama serve）\n"
+
+        status = check_status()
+        text_widget.configure(state="normal")
+        text_widget.insert("end", status)
+        text_widget.configure(state="disabled")
+
+        ttk.Button(guide, text="关闭", command=guide.destroy).pack(pady=(0, 12))
+
+    def _test_ollama_connection(self) -> None:
+        """Ollama test panel: user selects a sentence, clicks translate, sees result."""
+        import threading
+        base_url = (self.ai_base_url_var.get().strip() or "http://localhost:11434").rstrip("/")
+        model = self.ai_model_var.get().strip() or "zincles/sakura-1.5b-qwen2.5-v1.0-q5ks:latest"
+
+        SAMPLES = [
+            ("日文（短）", "おはようございます。"),
+            ("日文（中）", "彼女は図書館で静かに本を読んでいる。"),
+            ("日文（长）", "昔々ある所におじいさんとおばあさんが住んでいました。ある日おじいさんは山へ柴刈りに行き、おばあさんは川で洗濯をしています。"),
+            ("英文（短）", "Hello, how are you?"),
+            ("英文（中）", "The quick brown fox jumps over the lazy dog."),
+            ("英文（长）", "In the beginning, there was nothing but darkness and silence. Then a single light appeared in the void, and the world began to take shape."),
+        ]
+
+        win = tk.Toplevel(self.root)
+        win.title("Ollama 翻译测试")
+        win.geometry("600x520")
+        win.configure(bg=PANEL_BG)
+        win.transient(self.root)
+
+        # --- header ---
+        tk.Label(win, text="Ollama 本地模型翻译测试", font=("Microsoft YaHei UI", 14, "bold"),
+                 bg=PANEL_BG, fg=TEXT_MAIN).pack(pady=(14, 4))
+        tk.Label(win, text=f"服务：{base_url}    模型：{model}",
+                 bg=PANEL_BG, fg=TEXT_MUTED).pack(pady=(0, 8))
+
+        # --- sample selector ---
+        sel_frame = tk.Frame(win, bg=PANEL_BG)
+        sel_frame.pack(fill="x", padx=20)
+        tk.Label(sel_frame, text="选择测试文本：", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        sample_var = tk.StringVar(value=SAMPLES[0][0])
+        for label_text, _ in SAMPLES:
+            tk.Radiobutton(sel_frame, text=label_text, variable=sample_var, value=label_text,
+                           bg=PANEL_BG, fg=TEXT_MAIN, selectcolor=PANEL_BG,
+                           activebackground=PANEL_BG, font=("Microsoft YaHei UI", 10)).pack(anchor="w", padx=12)
+
+        # --- source display ---
+        src_frame = tk.Frame(win, bg=PANEL_BG)
+        src_frame.pack(fill="x", padx=20, pady=(6, 2))
+        tk.Label(src_frame, text="原文：", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        src_box = tk.Text(src_frame, height=2, wrap="word", font=("Consolas", 11),
+                          bg="#f0f4f8", fg=TEXT_MAIN, relief="solid", bd=1, padx=6, pady=4)
+        src_box.pack(fill="x")
+        src_box.insert("1.0", SAMPLES[0][1])
+        src_box.configure(state="disabled")
+
+        def _on_sample_change(*_args):
+            name = sample_var.get()
+            for lbl, txt in SAMPLES:
+                if lbl == name:
+                    src_box.configure(state="normal")
+                    src_box.delete("1.0", "end")
+                    src_box.insert("1.0", txt)
+                    src_box.configure(state="disabled")
+                    break
+        sample_var.trace_add("write", _on_sample_change)
+
+        # --- output display ---
+        out_frame = tk.Frame(win, bg=PANEL_BG)
+        out_frame.pack(fill="both", expand=True, padx=20, pady=(4, 2))
+        tk.Label(out_frame, text="翻译结果：", bg=PANEL_BG, fg=TEXT_MAIN, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        out_box = tk.Text(out_frame, height=5, wrap="word", font=("Consolas", 11),
+                          bg="#1a1a2e", fg="#e0e0e0", relief="solid", bd=1, padx=6, pady=4)
+        out_box.pack(fill="both", expand=True)
+        out_box.insert("1.0", "点击「开始测试」查看翻译结果")
+        out_box.configure(state="disabled")
+
+        def _show_output(msg: str):
+            out_box.configure(state="normal")
+            out_box.delete("1.0", "end")
+            out_box.insert("1.0", msg)
+            out_box.configure(state="disabled")
+
+        # --- buttons ---
+        btn_frame = tk.Frame(win, bg=PANEL_BG)
+        btn_frame.pack(fill="x", padx=20, pady=(6, 12))
+
+        def _do_test():
+            name = sample_var.get()
+            text_to_translate = ""
+            for lbl, txt in SAMPLES:
+                if lbl == name:
+                    text_to_translate = txt
+                    break
+            if not text_to_translate:
+                return
+            _show_output("正在连接 Ollama...")
+
+            def _worker():
+                import urllib.request as _urllib_req
+                import urllib.error as _urllib_err
+                try:
+                    # check service
+                    req = _urllib_req.Request(f"{base_url}/api/tags", method="GET")
+                    with _urllib_req.urlopen(req, timeout=5) as resp:
+                        tags = json.loads(resp.read().decode("utf-8"))
+                    installed = [m.get("name", "") for m in tags.get("models", []) if m.get("name")]
+                    if not installed:
+                        win.after(0, _show_output, "Ollama 已连接但没有已安装的模型\n请先执行：ollama pull qwen2.5:7b")
+                        return
+                except Exception as e:
+                    win.after(0, _show_output, f"无法连接 Ollama 服务\n地址：{base_url}\n错误：{e}\n\n请确认 Ollama 已启动")
+                    return
+
+                # translate
+                win.after(0, _show_output, f"✅ 已连接，正在翻译 ({model})...\n原文：{text_to_translate}")
+                try:
+                    endpoint = f"{base_url}/v1/chat/completions"
+                    payload = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": "你是翻译专家。将用户输入翻译成中文，只输出译文。"},
+                            {"role": "user", "content": text_to_translate},
+                        ],
+                        "stream": False,
+                    }
+                    data = json.dumps(payload).encode("utf-8")
+                    req = _urllib_req.Request(endpoint, data=data,
+                                              headers={"Content-Type": "application/json"}, method="POST")
+                    with _urllib_req.urlopen(req, timeout=120) as resp:
+                        raw = json.loads(resp.read().decode("utf-8"))
+                    translated = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if not translated:
+                        translated = "(模型返回空内容)"
+                    win.after(0, _show_output,
+                              f"✅ 翻译成功\n模型：{model}\n\n原文：{text_to_translate}\n\n译文：{translated}")
+                except _urllib_err.HTTPError as exc:
+                    try:
+                        detail = exc.read().decode("utf-8", errors="replace")[:300]
+                    except Exception:
+                        detail = str(exc)
+                    win.after(0, _show_output, f"❌ API 错误 {exc.code}\n{detail}")
+                except Exception as e:
+                    win.after(0, _show_output, f"❌ 翻译失败：{e}")
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        ttk.Button(btn_frame, text="开始测试", command=_do_test).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frame, text="关闭", command=win.destroy).pack(side="right")
+
     def _ai_model_options(self, provider: str | None = None) -> tuple[str, ...]:
         provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
         if provider == "DeepSeek":
@@ -2674,6 +2978,32 @@ class ToolkitApp:
             return ("glm-4.5", "glm-4.5-air", "glm-4.5-flash")
         if provider == "NVIDIA":
             return ("minimaxai/minimax-m2.7",)
+        if provider == "Ollama 本地模型":
+            # Try to fetch models from running Ollama instance
+            base_url = (self.ai_base_url_var.get().strip() if hasattr(self, "ai_base_url_var") else "") or "http://localhost:11434"
+            base_url = base_url.rstrip("/")
+            try:
+                import urllib.request as _urllib_req
+                # Try native Ollama API first
+                req = _urllib_req.Request(f"{base_url}/api/tags", method="GET")
+                with _urllib_req.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                models = tuple(m.get("name", "") for m in data.get("models", []) if m.get("name"))
+                if models:
+                    return models
+            except Exception:
+                pass
+            try:
+                import urllib.request as _urllib_req
+                req = _urllib_req.Request(f"{base_url}/v1/models", method="GET")
+                with _urllib_req.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                models = tuple(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+                if models:
+                    return models
+            except Exception:
+                pass
+            return ("zincles/sakura-1.5b-qwen2.5-v1.0-q5ks:latest",)
         return ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
 
     def _default_ai_model(self, provider: str | None = None) -> str:
@@ -2688,6 +3018,8 @@ class ToolkitApp:
             return "glm-4.5"
         if provider == "NVIDIA":
             return "minimaxai/minimax-m2.7"
+        if provider == "Ollama 本地模型":
+            return "zincles/sakura-1.5b-qwen2.5-v1.0-q5ks:latest"
         return "gpt-5.5"
 
     @staticmethod
@@ -2708,13 +3040,15 @@ class ToolkitApp:
             return "https://integrate.api.nvidia.com/v1"
         if provider == "Custom OpenAI API":
             return "https://api.openai.com/v1"
+        if provider == "Ollama 本地模型":
+            return "http://localhost:11434"
         return ""
 
     def _refresh_ai_base_url_visibility(self, provider: str | None = None) -> None:
         provider = provider or self.ai_provider_var.get().strip() or "OpenAI"
         if not hasattr(self, "ai_base_url_label") or not hasattr(self, "ai_base_url_entry"):
             return
-        if provider in {"NVIDIA", "Xiaomi Token Plan", "Custom OpenAI API"}:
+        if provider in {"NVIDIA", "Xiaomi Token Plan", "Custom OpenAI API", "Ollama 本地模型"}:
             self.ai_base_url_label.grid()
             self.ai_base_url_entry.grid()
             if provider == "Xiaomi Token Plan":
@@ -2737,6 +3071,25 @@ class ToolkitApp:
                 self.xiaomi_plan_box.grid_remove()
                 self.xiaomi_cluster_label.grid_remove()
                 self.xiaomi_cluster_box.grid_remove()
+        # Ollama: hide API Key (local service, no auth needed)
+        if hasattr(self, "ai_api_key_label") and hasattr(self, "ai_api_key_entry"):
+            if provider == "Ollama 本地模型":
+                self.ai_api_key_label.grid_remove()
+                self.ai_api_key_entry.grid_remove()
+            else:
+                self.ai_api_key_label.grid()
+                self.ai_api_key_entry.grid()
+        # Show/hide Ollama guide + test button
+        if hasattr(self, "_ollama_guide_btn"):
+            if provider == "Ollama 本地模型":
+                self._ollama_guide_btn.grid()
+            else:
+                self._ollama_guide_btn.grid_remove()
+        if hasattr(self, "_ollama_test_btn"):
+            if provider == "Ollama 本地模型":
+                self._ollama_test_btn.grid()
+            else:
+                self._ollama_test_btn.grid_remove()
 
     def _provider_link_label(self, provider: str) -> str:
         return f"打开 {provider} API 页面"
@@ -2844,7 +3197,8 @@ class ToolkitApp:
             )
             return
         api_key = self.ai_api_key_var.get().strip()
-        if not api_key:
+        is_ollama = (provider == "Ollama 本地模型")
+        if not api_key and not is_ollama:
             self._stop_activity()
             messagebox.showerror("缺少 API Key", "请先在右侧 AI 翻译设置里输入 API Key。")
             return
@@ -3164,7 +3518,8 @@ class ToolkitApp:
                 continue
             seen.add(provider)
             api_key = current_api_key if provider == current_provider else str(keys.get(provider, "")).strip()
-            if not api_key:
+            is_ollama = (provider == "Ollama 本地模型")
+            if not api_key and not is_ollama:
                 continue
             model = current_model if provider == current_provider else str(models.get(provider, self._default_ai_model(provider))).strip()
             configs.append(
@@ -3434,6 +3789,8 @@ class ToolkitApp:
             raw = self._request_glm_translations(api_key, model, system_prompt, user_prompt)
         elif provider == "NVIDIA":
             raw = self._request_nvidia_translations(api_key, model, system_prompt, user_prompt, base_url)
+        elif provider == "Ollama 本地模型":
+            raw = self._request_ollama_translations(model, system_prompt, user_prompt, base_url)
         else:
             raw = self._request_openai_translations(api_key, model, system_prompt, user_prompt, base_url)
         result: dict[str, str] = {}
@@ -3524,6 +3881,45 @@ class ToolkitApp:
         parsed = self._load_llm_json(text, "OpenAI")
         if not isinstance(parsed, dict):
             raise RuntimeError("AI 返回内容不是 JSON 对象。")
+        return {str(key): str(value) for key, value in parsed.items()}
+
+    def _request_ollama_translations(self, model: str, system_prompt: str, user_prompt: str, base_url: str = "") -> dict[str, str]:
+        """Ollama local model translation. OpenAI-compatible endpoint, no API key needed.
+        Falls back gracefully if response_format is not supported."""
+        endpoint_url = (base_url.strip() or "http://localhost:11434").rstrip("/")
+        endpoint = f"{endpoint_url}/v1/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        # Try with response_format first; if it fails, retry without it
+        for attempt in range(2):
+            req = urllib.request.Request(endpoint, data=data, headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=180) as response:
+                    raw = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                if attempt == 0 and exc.code in (400, 422):
+                    # Retry without response_format (some models don't support it)
+                    payload.pop("response_format", None)
+                    data = json.dumps(payload).encode("utf-8")
+                    continue
+                raise RuntimeError(f"Ollama API 返回错误：{exc.code}\n{detail}") from exc
+        resp_payload = json.loads(raw)
+        text = resp_payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not text:
+            text = self._extract_response_text(resp_payload)
+        parsed = self._load_llm_json(text, "Ollama")
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Ollama 返回内容不是 JSON 对象。")
         return {str(key): str(value) for key, value in parsed.items()}
 
     def _request_deepseek_translations(self, api_key: str, model: str, system_prompt: str, user_prompt: str) -> dict[str, str]:
@@ -6193,6 +6589,31 @@ class ToolkitApp:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("responseData", {}).get("translatedText", "")
 
+    def _probe_mt_apis(self) -> list[str]:
+        """Auto-probe each MT API with short timeout, return list of working API names.
+        Results are cached for 30 minutes to avoid repeated probing."""
+        import time as _time
+        # Use cached result if fresh enough
+        if hasattr(self, '_mt_available_apis') and hasattr(self, '_mt_probe_time'):
+            if _time.time() - self._mt_probe_time < 1800:  # 30 minutes
+                return self._mt_available_apis
+        apis = [
+            ("mymemory", lambda: self._request_mymemory_translate("Hello", "auto", "zh-CN")),
+            ("google", lambda: self._request_google_translate("Hello", "auto", "zh-CN")),
+            ("libre", lambda: self._request_libre_translate("Hello", "auto", "zh-CN")),
+        ]
+        available = []
+        for name, fn in apis:
+            try:
+                result = fn()
+                if result:
+                    available.append(name)
+            except Exception:
+                pass
+        self._mt_available_apis = available
+        self._mt_probe_time = _time.time()
+        return available
+
     def _test_mt_connection(self) -> None:
         """Test all machine translation APIs and report results."""
         import threading
@@ -6212,6 +6633,19 @@ class ToolkitApp:
                         results.append(f"  {name}: 返回为空")
                 except Exception as e:
                     results.append(f"  {name}: 失败 ({type(e).__name__})")
+            # Also update the cached probe results
+            available = []
+            for line in results:
+                if "成功" in line:
+                    if "MyMemory" in line:
+                        available.append("mymemory")
+                    elif "Google" in line:
+                        available.append("google")
+                    elif "LibreTranslate" in line:
+                        available.append("libre")
+            self._mt_available_apis = available
+            import time as _time
+            self._mt_probe_time = _time.time()
             msg = "机翻接口测试结果：\n" + "\n".join(results)
             self.root.after(0, lambda: self.ai_status_var.set(msg.replace("\n", " | ")))
             self.root.after(0, lambda m=msg: messagebox.showinfo("机翻接口测试", m))
@@ -6220,12 +6654,17 @@ class ToolkitApp:
     def _request_mt_translations(self, entries: list[TranslationEntry], source_lang: str, target_lang: str) -> dict[str, str]:
         """Translate multiple entries using free APIs — flat parallel dispatch.
 
-        All (entry × API) combinations are submitted to a single thread pool.
+        Auto-probes available APIs first. Only working APIs are called.
         Per entry, the first successful result wins.
-        MyMemory (shortest latency from China) is submitted first with shorter timeout.
         """
         from concurrent.futures import ThreadPoolExecutor, Future
         import threading
+
+        # Auto-probe which APIs are available
+        available = self._probe_mt_apis()
+        if not available:
+            # Fallback: try all APIs if probe returned nothing
+            available = ["mymemory", "google", "libre"]
 
         result: dict[str, str] = {}
         done_entries: set[str] = set()
@@ -6242,13 +6681,21 @@ class ToolkitApp:
             except Exception:
                 pass
 
-        with ThreadPoolExecutor(max_workers=24) as pool:
-            # Submit MyMemory first (fastest from China), then Google, then Libre
-            api_funcs = [
-                (self._request_mymemory_translate, source_lang, target_lang),
-                (self._request_google_translate, source_lang, target_lang),
-                (self._request_libre_translate, source_lang, target_lang),
-            ]
+        # Build API function list from available APIs
+        api_map = {
+            "mymemory": (self._request_mymemory_translate, source_lang, target_lang),
+            "google": (self._request_google_translate, source_lang, target_lang),
+            "libre": (self._request_libre_translate, source_lang, target_lang),
+        }
+        api_funcs = [api_map[name] for name in available if name in api_map]
+        if not api_funcs:
+            api_funcs = [api_map["mymemory"]]
+
+        # MyMemory-only mode: higher concurrency, shorter timeout
+        is_mymemory_only = len(api_funcs) == 1 and available[0] == "mymemory"
+        max_workers = 32 if is_mymemory_only else 24
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = []
             for index, entry in enumerate(entries, start=1):
                 text = entry.source.strip()

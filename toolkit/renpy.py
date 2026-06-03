@@ -498,6 +498,7 @@ init -7 python:
     _rpgrtl_force_applied = False
     _rpgrtl_debug_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "rpgrtl_bridge_debug.log")
     _rpgrtl_local_cache_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "renpy_live_translation.json")
+    _rpgrtl_skip_mode = False  # True when Ren'Py is in fast-forward/skip mode
 
     # CJK font setup — ensure Chinese characters render correctly
     try:
@@ -700,6 +701,9 @@ init -7 python:
 
     def _rpgrtl_restart_interaction(reason="refresh"):
         global _rpgrtl_last_restart_interaction
+        # Never restart during skip/fast-forward mode — causes dialogue advancement crash
+        if _rpgrtl_skip_mode:
+            return False
         now = time.time()
         if now - _rpgrtl_last_restart_interaction < _rpgrtl_restart_interval:
             return False
@@ -948,7 +952,7 @@ init -7 python:
             _rpgrtl_remember_active_widget(self, old_text)
             _rpgrtl_debug("set_text TRACK: widget=" + repr(type(self).__name__) + " text=" + repr(old_text[:60]))
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and old_text and _rpgrtl_is_translatable(old_text):
+        if forced and old_text and _rpgrtl_is_translatable(old_text) and not _rpgrtl_skip_mode:
             _rpgrtl_debug("set_text FORCE: old_text=" + repr(old_text[:60]) + " forced=" + repr(forced[:60]))
             try:
                 self.text = [forced]
@@ -1002,7 +1006,7 @@ init -7 python:
         if body is None or thing not in ("what", "who"):
             return res
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and thing == "what":
+        if forced and thing == "what" and not _rpgrtl_skip_mode:
             _rpgrtl_debug("prefix_suffix FORCE: body=" + repr(body[:60]) + " forced=" + repr(forced[:60]))
             # Do NOT clear _rpgrtl_force_text here — let do_display handle it.
             # do_display will display the forced text and wait for player input.
@@ -1023,7 +1027,8 @@ init -7 python:
             except Exception:
                 return (prefix or "") + translated + (suffix or "")
         _rpgrtl_report_seen(body, res, "", "prefix_suffix")
-        _rpgrtl_pending_lookup.add(body.strip())
+        if not _rpgrtl_skip_mode:
+            _rpgrtl_pending_lookup.add(body.strip())
         return res
 
     # Hook: ADVCharacter.do_display (projz pattern - replace who/what, handle DTT)
@@ -1042,9 +1047,9 @@ init -7 python:
     def _rpgrtl_hook_do_display(self, who, what, **display_args):
         global _rpgrtl_force_text, _rpgrtl_force_applied
         # Check force_text FIRST — this is the primary injection mechanism.
-        # When restart_interaction re-enters do_display, force_text is set by prefix_suffix.
+        # Skip during fast-forward mode to avoid race conditions.
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced:
+        if forced and not _rpgrtl_skip_mode:
             forced = _rpgrtl_wrap_font(forced)
             _rpgrtl_debug("do_display FORCE: forced=" + repr(forced[:60]) + " what=" + repr(what[:60]))
             _rpgrtl_force_text = ""
@@ -1068,7 +1073,7 @@ init -7 python:
         tid, raw_what = _rpgrtl_tid_what
         source_what = raw_what if tid == context_tid and isinstance(raw_what, string_types) else what
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and source_what:
+        if forced and source_what and not _rpgrtl_skip_mode:
             _rpgrtl_debug("do_display FORCE: source=" + repr(source_what[:60]) + " forced=" + repr(forced[:60]))
             new_what = forced
             _rpgrtl_force_text = ""
@@ -1090,7 +1095,8 @@ init -7 python:
                 _rpgrtl_log("do_display_replace", {"source": source_what[:180], "target": translated[:180]})
             else:
                 _rpgrtl_report_seen(source_what, what, "", "do_display")
-                _rpgrtl_pending_lookup.add(source_what.strip())
+                if not _rpgrtl_skip_mode:
+                    _rpgrtl_pending_lookup.add(source_what.strip())
         new_who = who
         if isinstance(who, string_types):
             who_translated = _rpgrtl_lookup(who)
@@ -1264,8 +1270,8 @@ init -7 python:
             global _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_render_diag_count
             forced = _rpgrtl_force_text
             wid = id(self)
-            # --- Force text injection (manual "hello" test) ---
-            if forced and isinstance(forced, string_types):
+            # --- Force text injection (manual "hello" test) — skip during fast-forward ---
+            if forced and isinstance(forced, string_types) and not _rpgrtl_skip_mode:
                 if wid not in _rpgrtl_text_modified:
                     _rpgrtl_force_apply_count += 1
                     _rpgrtl_debug("Text.render FORCE apply: " + repr(forced[:60]) + " count=" + str(_rpgrtl_force_apply_count))
@@ -1316,8 +1322,8 @@ init -7 python:
                         # Remember this widget for live patching
                         _rpgrtl_active_widget = self
                         _rpgrtl_active_source = raw
-                        # Queue for translation if not cached
-                        if raw not in _rpgrtl_translation_cache:
+                        # Queue for translation if not cached (skip during fast-forward to avoid overload)
+                        if raw not in _rpgrtl_translation_cache and not _rpgrtl_skip_mode:
                             _rpgrtl_pending_lookup.add(raw.strip())
                         translated = _rpgrtl_lookup(raw)
                         if translated and translated != raw:
@@ -1426,11 +1432,23 @@ init -7 python:
         _rpgrtl_last_pull_time = [0.0]
         _rpgrtl_last_lookahead_time = [0.0]
         def _update_loop():
-            global _rpgrtl_last_notify_seq, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text
+            global _rpgrtl_last_notify_seq, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text, _rpgrtl_skip_mode
+            _rpgrtl_was_skip = False
             while True:
                 try:
                     time.sleep(_rpgrtl_bg_loop_interval)
                     now = time.time()
+                    # Detect Ren'Py skip/fast-forward mode to prevent crash
+                    try:
+                        _rpgrtl_skip_mode = bool(getattr(renpy.config, 'skipping', None))
+                    except Exception:
+                        _rpgrtl_skip_mode = False
+                    # When skip mode ends, do a single refresh to show translations
+                    if _rpgrtl_was_skip and not _rpgrtl_skip_mode:
+                        _rpgrtl_was_skip = False
+                        _rpgrtl_restart_interaction("skip_ended")
+                    if _rpgrtl_skip_mode:
+                        _rpgrtl_was_skip = True
                     # Periodic pull: every 1 second, refresh full translation table from server
                     if now - _rpgrtl_last_pull_time[0] >= 2.0:
                         _rpgrtl_last_pull_time[0] = now
@@ -1505,17 +1523,18 @@ init -7 python:
                                 _rpgrtl_pending_lookup.add(text)
                     # Proactively request translation for current active source
                     active_src = _rpgrtl_active_source
-                    if active_src and active_src.strip() and active_src not in _rpgrtl_translation_cache:
+                    if active_src and active_src.strip() and active_src not in _rpgrtl_translation_cache and not _rpgrtl_skip_mode:
                         _rpgrtl_pending_lookup.add(active_src.strip())
-                    # Patch active widget if translation just arrived — use the working
-                    # injection method (screen.widgets + set_text + pygame event)
-                    if active_src and _rpgrtl_is_translatable(active_src):
+                    # Patch active widget if translation just arrived
+                    # Skip during fast-forward mode to avoid race conditions
+                    if not _rpgrtl_skip_mode and active_src and _rpgrtl_is_translatable(active_src):
                         translated = _rpgrtl_lookup(active_src)
                         if translated and translated != active_src:
                             _rpgrtl_debug("active_src has translation: " + repr(active_src[:40]) + " -> " + repr(translated[:40]))
                             _rpgrtl_force_update_current_text(translated)
                     # If new translations arrived and a menu is active, patch choice buttons
-                    if new_translations and _rpgrtl_menu_active[0]:
+                    # Skip during fast-forward to avoid race conditions
+                    if not _rpgrtl_skip_mode and new_translations and _rpgrtl_menu_active[0]:
                         try:
                             _rpgrtl_force_update_choice_buttons()
                         except Exception:
@@ -1534,12 +1553,14 @@ init -7 python:
                                 _rpgrtl_debug("notify FORCE_TEXT received: " + repr(force_text[:100]))
                                 _rpgrtl_log("force_text_received", {"target": force_text[:180]})
                                 # Directly update the Text widget via screen API.
-                                # Does NOT restart interaction (which would advance dialogue).
-                                _rpgrtl_force_update_current_text(force_text)
+                                # Skip during fast-forward to avoid race conditions.
+                                if not _rpgrtl_skip_mode:
+                                    _rpgrtl_force_update_current_text(force_text)
                                 _rpgrtl_force_text = ""
                             else:
-                                _rpgrtl_patch_active_widget("notify_refresh")
-                                _rpgrtl_restart_interaction("notify_refresh")
+                                if not _rpgrtl_skip_mode:
+                                    _rpgrtl_patch_active_widget("notify_refresh")
+                                _rpgrtl_restart_interaction("notify_refresh")  # Already guarded internally
                         else:
                             _rpgrtl_debug("notify response not dict: " + repr(type(notify_payload)))
                     except Exception as _notify_exc:

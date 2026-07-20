@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import json
+import os
 import sys
 import time
 import threading
@@ -32,11 +33,11 @@ LIVE_TRANSLATIONS_NAME = "renpy_live_translation.json"
 LIVE_SEEN_NAME = "renpy_live_seen.jsonl"
 LIVE_LOG_NAME = "rpgrtl_live_debug.log"
 LIVE_BRIDGE_PORT = 32180
-LIVE_BRIDGE_VERSION = "2026-05-29.6"
+LIVE_BRIDGE_VERSION = "2026-07-20.2"
 
 _LIVE_SERVER_LOCK = threading.Lock()
 _LIVE_SERVER: ThreadingHTTPServer | None = None
-_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}, "notify_seq": 0, "force_text": "", "pre_translate_queue": []}
+_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}, "notify_seq": 0, "force_text": "", "pre_translate_queue": [], "project_root": "", "server_id": "", "last_heartbeat": 0.0, "game_pid": 0}
 
 
 def _live_log_path() -> Path:
@@ -142,9 +143,11 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                 seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
                 force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
                 force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                server_id = str(_LIVE_SERVER_STATE.get("server_id", "") or "")
+                translation_count = len(_LIVE_SERVER_STATE.get("translations", {}))
                 if force_text:
                     _LIVE_SERVER_STATE["force_text"] = ""
-            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq})
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
             return
         if parsed.path != "/debug":
             self._send_json({"ok": False, "error": "not found"})
@@ -165,12 +168,17 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
         payload = self._read_json()
         if parsed.path == "/notify":
             with _LIVE_SERVER_LOCK:
+                if payload.get("pid"):
+                    _LIVE_SERVER_STATE["game_pid"] = int(payload.get("pid") or 0)
+                    _LIVE_SERVER_STATE["last_heartbeat"] = time.time()
                 seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
                 force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
                 force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                server_id = str(_LIVE_SERVER_STATE.get("server_id", "") or "")
+                translation_count = len(_LIVE_SERVER_STATE.get("translations", {}))
                 if force_text:
                     _LIVE_SERVER_STATE["force_text"] = ""
-            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq})
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
             return
         if parsed.path == "/log":
             _append_live_log("game", str(payload.get("event", "log") or "log"), payload)
@@ -190,6 +198,11 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
             if target:
                 self._send_json({"code": 0, "ok": True, "new_text": target})
             else:
+                if source.strip():
+                    with _LIVE_SERVER_LOCK:
+                        queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+                        if isinstance(queue, list) and source not in queue:
+                            queue.append(source)
                 self._send_json({"code": -1, "ok": False, "error": "not found"})
             return
         if parsed.path == "/boot":
@@ -266,21 +279,23 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
             texts = payload.get("texts", []) if hasattr(payload, "get") else []
             if not isinstance(texts, list):
                 texts = []
+            found = {}
+            queued = []
             with _LIVE_SERVER_LOCK:
                 translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
                 pre_queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
-            found = {}
-            queued = []
-            for text in texts:
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                target = _lookup_live_translation_value(translations, text, text)
-                if target:
-                    found[text] = target
-                else:
-                    if text not in pre_queue:
-                        pre_queue.append(text)
-                    queued.append(text)
+                for text in texts:
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    target = _lookup_live_translation_value(translations, text, text)
+                    if target:
+                        found[text] = target
+                    else:
+                        if text not in pre_queue:
+                            pre_queue.append(text)
+                        queued.append(text)
+                if isinstance(pre_queue, list) and len(pre_queue) > 1000:
+                    del pre_queue[: len(pre_queue) - 1000]
             _append_live_log("server", "pre_translate", {"total": len(texts), "found": len(found), "queued": len(queued)})
             self._send_json({"ok": True, "translations": found, "queued": queued})
             return
@@ -322,15 +337,20 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
             texts = payload.get("texts", []) if hasattr(payload, "get") else []
             if not isinstance(texts, list):
                 texts = []
+            results = {}
             with _LIVE_SERVER_LOCK:
                 trans = _LIVE_SERVER_STATE.get("translations", {})
-            results = {}
-            for text in texts:
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                t = _lookup_live_translation_value(trans, text, text)
-                if t:
-                    results[text] = t
+                queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+                for text in texts:
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    t = _lookup_live_translation_value(trans, text, text)
+                    if t:
+                        results[text] = t
+                    elif isinstance(queue, list) and text not in queue:
+                        queue.append(text)
+                if isinstance(queue, list) and len(queue) > 1000:
+                    del queue[: len(queue) - 1000]
             self._send_json({"ok": True, "translations": results})
             return
         self._send_json({"ok": False, "error": "not found"})
@@ -490,6 +510,7 @@ init -7 python:
     _rpgrtl_last_restart_interaction = 0
     _rpgrtl_restart_interval = 0.1
     _rpgrtl_last_notify_seq = 0
+    _rpgrtl_server_id = ""
     _rpgrtl_bg_loop_interval = 1.0
     _rpgrtl_tid_what = (None, None)
     _rpgrtl_active_widget = None
@@ -652,20 +673,15 @@ init -7 python:
         """Strip any existing {font=...}...{/font} tags, handling both half/fullwidth braces."""
         if not isinstance(text, string_types):
             return text
-        # Normalize ALL fullwidth ASCII chars to halfwidth first
-        text = _rpgrtl_normalize_fullwidth(text)
-        # Remove any existing {font=...}...{/font} wrappers (could be nested/malformed)
-        text = re.sub(r"\{font=[^}]*\}", "", text)
-        text = text.replace("{/font}", "")
-        return text
+        # Keep arbitrary fullwidth braces neutralized. Only remove font tags,
+        # including spaced, fullwidth, nested, and orphan closing variants.
+        return re.sub(r"[\{｛]\s*/?\s*font(?:\s*=\s*[^\}｝]*)?\s*[\}｝]", "", text, flags=re.I).strip()
 
     def _rpgrtl_wrap_font(text):
         """Wrap text with CJK font tag, stripping any existing/broken font tags first."""
-        if not _rpgrtl_cjk_font:
-            return text
         clean = _rpgrtl_strip_font_tags(text)
-        if not clean or not _rpgrtl_has_cjk(clean):
-            return text
+        if not _rpgrtl_cjk_font or not clean or not _rpgrtl_has_cjk(clean):
+            return clean
         return "{font=" + _rpgrtl_cjk_font + "}" + clean + "{/font}"
 
     def _rpgrtl_candidates(source):
@@ -693,10 +709,7 @@ init -7 python:
         for key in _rpgrtl_candidates(text):
             if key in translations:
                 result = translations[key]
-                # Strip any existing/broken font tags — _rpgrtl_wrap_font will re-add clean ones
-                if _rpgrtl_cjk_font:
-                    result = _rpgrtl_strip_font_tags(result)
-                return result
+                return _rpgrtl_strip_font_tags(result)
         return None
 
     def _rpgrtl_restart_interaction(reason="refresh"):
@@ -724,8 +737,7 @@ init -7 python:
                 if (hasattr(data, "get") and hasattr(data, "keys")):
                     cached = data.get("translations", {})
                     if (hasattr(cached, "get") and hasattr(cached, "keys")):
-                        # Normalize fullwidth chars in cached translations
-                        _rpgrtl_local_cache = {k: _rpgrtl_normalize_fullwidth(v) for k, v in cached.items()}
+                        _rpgrtl_local_cache = {k: _rpgrtl_strip_font_tags(v) for k, v in cached.items()}
                         _rpgrtl_log("local_cache_loaded", {"count": len(cached)})
         except Exception:
             pass
@@ -737,8 +749,7 @@ init -7 python:
             if (hasattr(payload, "get") and hasattr(payload, "keys")):
                 translations = payload.get("translations", {})
                 if (hasattr(translations, "get") and hasattr(translations, "keys")):
-                    # Normalize fullwidth chars in translations
-                    translations = {k: _rpgrtl_normalize_fullwidth(v) for k, v in translations.items()}
+                    translations = {k: _rpgrtl_strip_font_tags(v) for k, v in translations.items()}
                     _rpgrtl_translation_cache = translations
                     _rpgrtl_local_cache.update(translations)
                     _rpgrtl_log("pull_success", {"count": len(translations)})
@@ -1305,9 +1316,6 @@ init -7 python:
                 current_text_list = self.text
                 if isinstance(current_text_list, list) and len(current_text_list) >= 1:
                     raw = current_text_list[0]
-                    if isinstance(raw, string_types) and raw.strip():
-                        # Normalize fullwidth chars that AI translation may introduce
-                        raw = _rpgrtl_normalize_fullwidth(raw)
                     if isinstance(raw, string_types) and raw.strip() and _rpgrtl_is_translatable(raw):
                         # If already translated (self.text was set to translated), skip
                         prev_translated = _rpgrtl_text_modified.get(wid)
@@ -1429,10 +1437,9 @@ init -7 python:
 
     # Background thread: poll for new translations
     def _rpgrtl_background_update():
-        _rpgrtl_last_pull_time = [0.0]
         _rpgrtl_last_lookahead_time = [0.0]
         def _update_loop():
-            global _rpgrtl_last_notify_seq, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text, _rpgrtl_skip_mode
+            global _rpgrtl_last_notify_seq, _rpgrtl_server_id, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text, _rpgrtl_skip_mode
             _rpgrtl_was_skip = False
             while True:
                 try:
@@ -1449,14 +1456,6 @@ init -7 python:
                         _rpgrtl_restart_interaction("skip_ended")
                     if _rpgrtl_skip_mode:
                         _rpgrtl_was_skip = True
-                    # Periodic pull: every 1 second, refresh full translation table from server
-                    if now - _rpgrtl_last_pull_time[0] >= 2.0:
-                        _rpgrtl_last_pull_time[0] = now
-                        old_count = len(_rpgrtl_translation_cache)
-                        _rpgrtl_pull_translations()
-                        new_count = len(_rpgrtl_translation_cache)
-                        if new_count > old_count and old_count == 0:
-                            _rpgrtl_restart_interaction("cache_warmed")
                     # AST lookahead: every 5 seconds, send upcoming texts for pre-translation
                     if now - _rpgrtl_last_lookahead_time[0] >= _rpgrtl_lookahead_interval:
                         _rpgrtl_last_lookahead_time[0] = now
@@ -1540,12 +1539,17 @@ init -7 python:
                         except Exception:
                             pass
                     try:
-                        notify_payload = _rpgrtl_send("/notify", {}, timeout=0.3)
+                        notify_payload = _rpgrtl_send("/notify", {"pid": os.getpid()}, timeout=0.3)
                         if hasattr(notify_payload, "get") and hasattr(notify_payload, "keys"):
                             server_seq = int(notify_payload.get("seq", 0))
+                            server_id = str(notify_payload.get("server_id", "") or "")
+                            translation_count = int(notify_payload.get("translation_count", 0) or 0)
                             force_text = str(notify_payload.get("force_text", "") or "")
                             _rpgrtl_debug("notify parsed: seq=" + str(server_seq) + " force_text=" + repr(force_text[:60]) + " last_seq=" + str(_rpgrtl_last_notify_seq))
-                            if server_seq > _rpgrtl_last_notify_seq:
+                            server_changed = bool(server_id and server_id != _rpgrtl_server_id)
+                            cache_changed = translation_count != len(_rpgrtl_translation_cache)
+                            if server_changed or server_seq != _rpgrtl_last_notify_seq or cache_changed:
+                                _rpgrtl_server_id = server_id
                                 _rpgrtl_last_notify_seq = server_seq
                                 _rpgrtl_pull_translations()
                             if force_text:
@@ -1653,14 +1657,55 @@ class RenPyService:
                 pass
         return path
 
-    def start_live_bridge_server(self, clear_events: bool = False) -> None:
-        global _LIVE_SERVER
+    def _read_live_translation_mapping(self) -> dict[str, str]:
+        path = self.live_translation_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        raw = payload.get("translations", {}) if isinstance(payload, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(source): self._sanitize_renpy_text(str(source), str(target))
+            for source, target in raw.items()
+            if str(source).strip() and str(target).strip()
+        }
+
+    def _activate_live_project(self, clear_events: bool = False) -> None:
+        project_root = str(self.project.root.resolve())
+        persisted = self._read_live_translation_mapping()
         with _LIVE_SERVER_LOCK:
+            project_changed = str(_LIVE_SERVER_STATE.get("project_root", "") or "") != project_root
+            if project_changed:
+                _LIVE_SERVER_STATE["translations"] = dict(persisted)
+                _LIVE_SERVER_STATE["events"] = []
+                _LIVE_SERVER_STATE["seen"] = {}
+                _LIVE_SERVER_STATE["pre_translate_queue"] = []
+                _LIVE_SERVER_STATE["force_text"] = ""
+                _LIVE_SERVER_STATE["notify_seq"] = 0
+                _LIVE_SERVER_STATE["last_heartbeat"] = 0.0
+                _LIVE_SERVER_STATE["game_pid"] = 0
+            elif persisted:
+                translations = _LIVE_SERVER_STATE.setdefault("translations", {})
+                if isinstance(translations, dict):
+                    for source, target in persisted.items():
+                        translations.setdefault(source, target)
             if clear_events:
                 _LIVE_SERVER_STATE["events"] = []
                 _LIVE_SERVER_STATE["seen"] = {}
-                _LIVE_SERVER_STATE["translations"] = {}
+                _LIVE_SERVER_STATE["pre_translate_queue"] = []
                 _LIVE_SERVER_STATE["force_text"] = ""
+            _LIVE_SERVER_STATE["project_root"] = project_root
+        if persisted:
+            self._write_live_translation_mapping(persisted)
+
+    def start_live_bridge_server(self, clear_events: bool = False) -> None:
+        global _LIVE_SERVER
+        self._activate_live_project(clear_events=clear_events)
+        with _LIVE_SERVER_LOCK:
             if _LIVE_SERVER is not None:
                 _append_live_log("tool", "live_bridge_server_reuse", {"port": LIVE_BRIDGE_PORT, "clear_events": clear_events})
                 return
@@ -1669,9 +1714,21 @@ class RenPyService:
             except OSError as exc:
                 _LIVE_SERVER = None
                 raise RuntimeError(f"本地 Ren'Py 实时桥接端口 {LIVE_BRIDGE_PORT} 被占用或无法启动：{exc}") from exc
+            _LIVE_SERVER_STATE["server_id"] = f"{os.getpid()}-{time.time_ns()}"
             thread = threading.Thread(target=_LIVE_SERVER.serve_forever, daemon=True)
             thread.start()
             _append_live_log("tool", "live_bridge_server_started", {"port": LIVE_BRIDGE_PORT})
+
+    def stop_live_bridge_server(self) -> None:
+        global _LIVE_SERVER
+        with _LIVE_SERVER_LOCK:
+            server = _LIVE_SERVER
+            _LIVE_SERVER = None
+            _LIVE_SERVER_STATE["server_id"] = ""
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            _append_live_log("tool", "live_bridge_server_stopped", {"port": LIVE_BRIDGE_PORT})
 
     def live_translation_path(self) -> Path:
         return self.project.root / ".rpgrtl_workspace" / LIVE_TRANSLATIONS_NAME
@@ -1689,49 +1746,50 @@ class RenPyService:
                 mapping.setdefault(candidate, target)
         with _LIVE_SERVER_LOCK:
             _LIVE_SERVER_STATE["translations"] = dict(mapping)
-        workspace = self.project.root / ".rpgrtl_workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        output = workspace / LIVE_TRANSLATIONS_NAME
-        payload = {
-            "version": 1,
-            "updated_at": time.time(),
-            "translations": mapping,
-        }
-        output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        output = self._write_live_translation_mapping(mapping)
         _append_live_log("tool", "write_live_translation_table", {"path": str(output), "count": len(mapping)})
         return output, len(mapping)
 
+    def _write_live_translation_mapping(self, mapping: dict[str, str]) -> Path:
+        output = self.live_translation_path()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"version": 1, "updated_at": time.time(), "translations": dict(sorted(mapping.items()))}
+        temporary = output.with_suffix(output.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        temporary.replace(output)
+        return output
+
     def merge_live_translation(self, source: str, target: str, kind: str = "realtime_translated") -> None:
-        source = str(source or "").strip()
-        target = str(target or "").strip()
-        if not source or not target:
-            return
-        sanitized = self._sanitize_renpy_text(source, target)
+        self.merge_live_translations({source: target}, kind=kind)
+
+    def merge_live_translations(self, values: dict[str, str], kind: str = "realtime_translated") -> int:
+        sanitized_values: dict[str, str] = {}
+        for raw_source, raw_target in values.items():
+            source = str(raw_source or "").strip()
+            target = str(raw_target or "").strip()
+            if source and target:
+                sanitized_values[source] = self._sanitize_renpy_text(source, target)
+        if not sanitized_values:
+            return int(_LIVE_SERVER_STATE.get("notify_seq", 0))
         with _LIVE_SERVER_LOCK:
             translations = _LIVE_SERVER_STATE.setdefault("translations", {})
-            if isinstance(translations, dict):
-                translations[source] = sanitized
-                for candidate in _live_translation_candidates(source):
-                    translations.setdefault(candidate, sanitized)
-            event = {
-                "time": time.time(),
-                "kind": kind,
-                "source": source,
-                "displayed": source,
-                "target": sanitized,
-                "matched": True,
-                "type": "",
-                "interact": True,
-            }
-            _LIVE_SERVER_STATE.setdefault("events", []).append(event)
             seen = _LIVE_SERVER_STATE.setdefault("seen", {})
-            if isinstance(seen, dict):
-                seen[f"{kind}\0{source}"] = sanitized
-            events = _LIVE_SERVER_STATE.get("events", [])
+            events = _LIVE_SERVER_STATE.setdefault("events", [])
+            for source, sanitized in sanitized_values.items():
+                if isinstance(translations, dict):
+                    translations[source] = sanitized
+                    for candidate in _live_translation_candidates(source):
+                        translations.setdefault(candidate, sanitized)
+                if isinstance(events, list):
+                    events.append({"time": time.time(), "kind": kind, "source": source, "displayed": source, "target": sanitized, "matched": True, "type": "", "interact": True})
+                if isinstance(seen, dict):
+                    seen[f"{kind}\0{source}"] = sanitized
             if isinstance(events, list) and len(events) > 2000:
                 del events[: len(events) - 2000]
-        _append_live_log("tool", "merge_live_translation", {"source": source[:180], "target": sanitized[:180], "kind": kind})
-        self.notify_game_refresh()
+            snapshot = dict(translations) if isinstance(translations, dict) else {}
+        self._write_live_translation_mapping(snapshot)
+        _append_live_log("tool", "merge_live_translations", {"count": len(sanitized_values), "kind": kind})
+        return self.notify_game_refresh()
 
     def notify_game_refresh(self) -> int:
         with _LIVE_SERVER_LOCK:
@@ -1794,6 +1852,48 @@ class RenPyService:
                 entries.append(payload)
         return entries
 
+    def take_live_translation_candidates(self, limit: int = 50) -> list[str]:
+        limit = max(1, min(int(limit), 200))
+        candidates: list[str] = []
+        seen: set[str] = set()
+        with _LIVE_SERVER_LOCK:
+            queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+            if isinstance(queue, list):
+                queued = queue[:limit]
+                del queue[: len(queued)]
+            else:
+                queued = []
+            events = list(_LIVE_SERVER_STATE.get("events", []))
+            translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
+        for value in queued:
+            source = str(value or "").strip()
+            if source and source not in seen and not _lookup_live_translation_value(translations, source, source):
+                seen.add(source)
+                candidates.append(source)
+        for event in reversed(events):
+            if len(candidates) >= limit or not isinstance(event, dict):
+                break
+            source = str(event.get("source", "") or "").strip()
+            if not source or source in seen or event.get("matched") or _lookup_live_translation_value(translations, source, str(event.get("displayed", "") or source)):
+                continue
+            seen.add(source)
+            candidates.append(source)
+        return candidates[:limit]
+
+    def requeue_live_translation_candidates(self, values: list[str]) -> None:
+        with _LIVE_SERVER_LOCK:
+            queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+            if not isinstance(queue, list):
+                return
+            existing = set(str(item) for item in queue)
+            for value in values:
+                source = str(value or "").strip()
+                if source and source not in existing:
+                    queue.append(source)
+                    existing.add(source)
+            if len(queue) > 1000:
+                del queue[: len(queue) - 1000]
+
     def live_bridge_status(self) -> dict[str, object]:
         with _LIVE_SERVER_LOCK:
             events = _LIVE_SERVER_STATE.get("events", [])
@@ -1801,6 +1901,11 @@ class RenPyService:
             seen = _LIVE_SERVER_STATE.get("seen", {})
             last_event = events[-1] if isinstance(events, list) and events else {}
             return {
+                "running": _LIVE_SERVER is not None,
+                "connected": time.time() - float(_LIVE_SERVER_STATE.get("last_heartbeat", 0.0) or 0.0) < 3.5,
+                "game_pid": int(_LIVE_SERVER_STATE.get("game_pid", 0) or 0),
+                "project_root": str(_LIVE_SERVER_STATE.get("project_root", "") or ""),
+                "queue_count": len(_LIVE_SERVER_STATE.get("pre_translate_queue", [])),
                 "event_count": len(events) if isinstance(events, list) else 0,
                 "translation_count": len(translations) if isinstance(translations, dict) else 0,
                 "seen_count": len(seen) if isinstance(seen, dict) else 0,
@@ -2158,6 +2263,7 @@ class RenPyService:
         output.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
     def list_data_records(self) -> list[DataRecord]:
+        return []
         records: list[DataRecord] = []
         for file_path in sorted(self._candidate_files()):
             if self._is_translation_file(file_path):
@@ -2358,7 +2464,7 @@ class RenPyService:
     @staticmethod
     def _sanitize_renpy_text(source: str, text: str) -> str:
         source_tokens = [token for token in re.findall(r'\[[^\]]+\]|\{[^}]+\}', source)]
-        sanitized = RenPyService._clean_translation_target(text)
+        sanitized = RenPyService._strip_renpy_font_tags(RenPyService._clean_translation_target(text))
         sanitized = MARKDOWN_LINK_PATTERN.sub(lambda match: f"{match.group(1)} (LINK)", sanitized)
         sanitized = re.sub(r"https?://\S+", "LINK", sanitized)
 
@@ -2374,6 +2480,15 @@ class RenPyService:
         for placeholder, token in protected:
             sanitized = sanitized.replace(placeholder, token)
         return sanitized
+
+    @staticmethod
+    def _strip_renpy_font_tags(text: str) -> str:
+        return re.sub(r"[\{｛]\s*/?\s*font(?:\s*=\s*[^\}｝]*)?\s*[\}｝]", "", str(text or ""), flags=re.IGNORECASE).strip()
+
+    @staticmethod
+    def control_tokens_preserved(source: str, target: str) -> bool:
+        pattern = r'\[[^\]]+\]|\{[^}]+\}'
+        return re.findall(pattern, str(source or "")) == re.findall(pattern, str(target or ""))
 
     @staticmethod
     def _clean_translation_target(text: str) -> str:

@@ -47,3 +47,10 @@ Thumbs.db
 tmp_detect_case/
 *.backup
 .rpgrtl_backup/
+
+# Electron
+node_modules/
+release-electron/
+*.blockmap
+.playwright-cli/
+.codex-*.log

@@ -258,7 +258,6 @@ EDITABLE_DB_FILES = {
     "Weapons.json",
     "System.json",
     "MapInfos.json",
-    "CommonEvents.json",
 }
 
 SKIP_DATA_KEYS = {"note", "traits", "effects"}
@@ -517,6 +516,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         y: window.$gamePlayer ? $gamePlayer.y : 0,
         through: window.$gamePlayer ? $gamePlayer.isThrough() : false
       },
+      locks: bridge.locks,
       options: bridge.options,
       translationEnabled: bridge.translationEnabled
     };
@@ -578,7 +578,12 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         try { Graphics._maxFps = 60; } catch (_e) {}
       }
     }
-    if (payload.locks) bridge.locks = payload.locks;
+    if (payload.locks) {
+      for (const [actorId, lock] of Object.entries(payload.locks)) {
+        if (!lock || !Object.keys(lock).length) delete bridge.locks[String(actorId)];
+        else bridge.locks[String(actorId)] = lock;
+      }
+    }
     if (payload.battle === "win" && window.BattleManager) BattleManager.processVictory();
     if (payload.battle === "lose" && window.BattleManager) BattleManager.processDefeat();
     if (payload.battle === "escape" && window.BattleManager) BattleManager.processEscape();
@@ -1067,7 +1072,7 @@ class RPGMakerService:
     def list_data_records(self) -> list[DataRecord]:
         records: list[DataRecord] = []
         for json_path in sorted(self.data_dir.glob("*.json")):
-            if json_path.name not in EDITABLE_DB_FILES and not json_path.stem.startswith("Map"):
+            if json_path.name not in EDITABLE_DB_FILES:
                 continue
             data = load_json(json_path)
             if json_path.name == "System.json":
@@ -1126,14 +1131,6 @@ class RPGMakerService:
                                 json_path=[index, "name"],
                             )
                         )
-                continue
-
-            if json_path.name == "CommonEvents.json":
-                records.extend(self._list_event_records(json_path.name, data))
-                continue
-
-            if json_path.stem.startswith("Map"):
-                records.extend(self._list_event_records(json_path.name, data))
                 continue
 
             records.extend(self._list_database_records(json_path.name, data))
@@ -1543,7 +1540,7 @@ class RPGMakerService:
                     commands = page.get("list") or []
                     if isinstance(commands, list):
                         command_count += len(commands)
-                        commands_summary.extend(self._event_command_summary(commands))
+                        commands_summary.extend(self._event_command_summary(commands, page_index))
                         transfers.extend(self._event_transfers(commands))
             result.append(
                 MapEventInfo(
@@ -1593,28 +1590,35 @@ class RPGMakerService:
         return transfers
 
     @staticmethod
-    def _event_command_summary(commands: list[Any]) -> list[str]:
+    def _event_command_summary(commands: list[Any], page_index: int = 1) -> list[str]:
         summary: list[str] = []
         for command in commands:
             if not isinstance(command, dict):
                 continue
             code = command.get("code")
             params = command.get("parameters") or []
+            if code in {None, 0}:
+                continue
+            label = ""
             if code == 101 and len(params) > 4 and isinstance(params[4], str):
-                summary.append(f"对话：{params[4][:32]}")
+                label = f"对话开始：{params[4]}"
             elif code in {401, 405} and params and isinstance(params[0], str):
-                summary.append(f"对话：{params[0][:32]}")
+                label = f"对话：{params[0]}"
             elif code == 121 and len(params) >= 3:
-                summary.append(f"开关：{params[0]}-{params[1]}")
+                label = f"开关：{params[0]}-{params[1]}"
             elif code == 122 and len(params) >= 5:
-                summary.append(f"变量：{params[0]}-{params[1]}")
+                label = f"变量：{params[0]}-{params[1]}"
             elif code == 201 and len(params) >= 5:
-                summary.append(f"传送：地图 {params[1]} ({params[2]}, {params[3]})")
+                label = f"传送：地图 {params[1]} ({params[2]}, {params[3]})"
             elif code == 230:
-                summary.append("等待")
+                label = f"等待：{params[0] if params else 0} 帧"
             elif code == 355:
-                summary.append("脚本")
-        return summary[:12]
+                label = f"脚本：{params[0] if params else ''}"
+            else:
+                encoded = json.dumps(params, ensure_ascii=False, separators=(",", ":"))
+                label = f"指令 {code}：{encoded}"
+            summary.append(f"页{page_index} · {label}")
+        return summary
 
     def _backup_save(self, save_path: Path) -> None:
         if not save_path.exists():

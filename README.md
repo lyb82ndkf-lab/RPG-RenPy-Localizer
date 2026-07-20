@@ -1,293 +1,308 @@
 # RPGRenPyLocalizer
 
-**Windows PC 本地化工具**，面向 RPG Maker MV/MZ 和 Ren'Py 单机游戏。支持实时游戏翻译、文本提取与 AI 翻译、数据编辑、存档修改、实时控制。
+面向 Windows 单机游戏的 RPG Maker MV/MZ 与 Ren'Py 本地化、实时翻译和数据辅助工具。
 
----
+当前重置版：**2.2.2**
 
-## 核心功能：实时游戏翻译
+- 下载版本：[GitHub Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)
+- 查看更新：[GitHub Tags](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/tags)
+- 提交建议：[lyb82ndkf@gmail.com](mailto:lyb82ndkf@gmail.com)
 
-这是本工具最大的特色 — 不用事先翻译所有文本，而是**运行时实时 hook 游戏文本、实时调用 AI 翻译、实时嵌入到游戏中**。
+> 本工具面向本地单机游戏的翻译、调试与个人存档管理。修改游戏文件或存档前请保留备份，并遵守游戏许可和当地法律。
 
-### 工作流
+## 2.2.2 重置版更新
 
-```
-游戏渲染文本
-     ↓
-实时 hook 拦截（猴子补丁 / JS 注入）
-     ↓
-文本发送到本地桥接服务器
-     ↓
-桌面工具轮询获取 → 调用 AI/百度翻译
-     ↓
-翻译结果写回桥接翻译表
-     ↓
-游戏轮询拉取 → 替换当前对话/菜单文本
-     ↓
-（无感，游戏不重启、不 Reload）
-```
+2.2.2 将桌面端重构为 Electron + Vue + Element Plus 界面，并继续使用本地 Python 后端处理游戏分析、翻译和实时桥接。
 
-### Ren'Py 实时翻译
+### 游戏库
 
-通过 `zz_rpgrtl_live_bridge.rpy` 脚本在 Ren'Py 引擎内注入 **6 个猴子补丁**，拦截对话、菜单、Text widget 的渲染路径：
+- 添加游戏时必须选择实际的游戏 `.exe`，工具自动识别 Ren'Py 或 RPG Maker 项目。
+- 游戏运行期间显示“游戏运行中”，并禁止切换或启动其他游戏，避免项目状态串线。
+- 游戏被移动或删除后，启动时显示可读的中文提示，并询问是否从游戏库移除失效记录。
+- 支持筛选、启动、移除和重新载入游戏。
 
-| 钩子 | 作用 |
-|------|------|
-| `ADVCharacter.__call__` | 追踪对话标识符与原文 |
-| `ADVCharacter.prefix_suffix` | 对话显示前替换——**实时嵌入核心路径** |
-| `ADVCharacter.do_display` | 最终渲染前替换，处理对话文本标签 |
-| `Text.set_text` | 通用 Text widget 替换，支持强制注入 |
-| `Text.render` | 最彻底的兜底替换 |
-| `config.replace_text` | 全部文本渲染前替换 |
+### 翻译工作台
 
-**操作步骤**：
+- 使用状态列表展示每条文本是否已翻译，减少超长原文、译文挤压表格的问题。
+- 支持分页浏览、搜索和状态筛选。
+- 点击条目后打开详情窗口编辑原文、译文和上下文。
+- 支持提取、导入、导出、保存译文、永久写入和运行时翻译表。
+- Ren'Py 游戏载入后自动隐藏仅适用于 RPG Maker 的地图和存档入口。
 
-1. 加载 Ren'Py 游戏 exe
-2. 点击 **「实时游戏翻译」** 按钮
-3. 工具自动：安装桥接脚本 → 启动游戏 → 启动本地 HTTP 服务器
-4. 游戏中显示对话时，工具实时捕获并 AI 翻译
-5. 翻译结果实时替换到游戏画面上 — **所见即所得，无需重启**
+### Ren'Py 实时 Hook
 
-### RPG Maker MV/MZ 实时桥接
+- 安装 `zz_rpgrtl_live_bridge.rpy`，在游戏运行时捕获对话、菜单和 Text 组件文本。
+- 本地桥接服务异步调用 AI，翻译结果写入缓存并通知游戏刷新。
+- 增加队列、批量持久化、心跳和项目隔离，降低切换页面与持续翻译时的卡顿。
+- 修复 2.2.1 及更早缓存中畸形 `{font}` 标签可能导致的崩溃。
+- 安装新版 Hook 时会清理旧缓存里的孤立、全角或带空格的字体标签。
+- 未配置 API 时不会把无效字体标签注入游戏；状态会显示需要配置翻译渠道。
 
-通过 `RPGRenPyBridge.js` 插件在 RPG Maker 的 NW.js/Electron 进程内启动 HTTP 服务器，直接读写游戏内存对象：
+### RPG Maker 工具
 
-| 功能 | 说明 |
-|------|------|
-| 实时翻译注入 | 通过 `/translation` 接口注入翻译字典，替换对话框/菜单/位图文字 |
-| 实时属性修改 | HP/MP/TP/金币/开关/变量/经验倍率 |
-| 游戏加速 | 游戏速度 / 移动速度 / 战斗速度倍率 |
-| 穿墙 / 上帝模式 / 自动战斗 | 进程内 JavaScript 补丁 |
-| 地图点击瞬移 | 勾选后点击地图格子即可传送 |
+- 地图支持拖拽、横向/纵向滚动、格子悬停高亮和事件格点击。
+- 事件详情可查看事件页、触发方式、出现条件和事件指令。
+- 数据修改支持物品、装备、武器、开关、变量和角色。
+- 存档修改支持金钱、物品、角色等级、开关、变量和完整数据查看。
+- 实时修改支持玩家 HP/MP/TP、金币、移动速度、经验倍率、穿墙、无敌、自动战斗、自动存档和地图传送等能力。
+- 战斗控制能力取决于具体游戏版本与桥接兼容性，连接后才会显示可用操作。
 
----
+### AI 翻译
 
-## 功能总览
+AI 配置精简为三种渠道：
 
-| 模块 | RPG Maker MV/MZ | Ren'Py |
-|------|:--:|:--:|
-| **实时游戏翻译** | ✅ JS 桥接注入 | ✅ 6 层猴子补丁 + HTTP 桥接 |
-| 文本提取 | ✅ JSON / 地图事件 / 系统文本 | ✅ 编译脚本 / 运行时提取 |
-| AI 翻译 | ✅ 7 个渠道，并行批量，缓存去重 | ✅ 同左 |
-| 翻译工作台 | ✅ 提取/翻译/导入/导出/嵌入 | ✅ 同左 |
-| 数据编辑器 | ✅ 物品/角色/职业/敌人/技能/状态 | — |
-| 地图查看 | ✅ 瓦片地图 + 事件 + 坐标传送 | — |
-| 存档修改 | ✅ 金币/物品/角色/开关/变量 | — |
-| 实时作弊 | ✅ 穿墙/上帝/自动战斗/瞬移/加速 | — |
+| 渠道 | 默认接口 | API Key | 模型获取 |
+| --- | --- | :---: | --- |
+| OpenAI | `https://api.openai.com/v1` | 需要 | 从兼容接口读取模型 |
+| Anthropic | `https://api.anthropic.com` | 需要 | 从兼容接口读取模型 |
+| Ollama | `http://127.0.0.1:11434` | 不需要 | 自动检测本机已安装模型 |
 
----
+- OpenAI 和 Anthropic 支持自定义兼容接口，只需填写 URL、API Key，再点击获取模型。
+- Ollama 切换后自动访问本机 `/api/tags`，模型会进入下拉列表。
+- 提供独立的“测试翻译”区域，不要求先选择游戏或工作台条目。
+- “读取设置”与“保存设置”均提供明确结果提示。
+- 兼容旧 Python 版本的本机设置缓存，并自动迁移旧渠道名称。
 
-## AI 翻译渠道
+### 设置与更新
 
-| 渠道 | 说明 |
-|------|------|
-| OpenAI | 标准 API（自定义 Base URL） |
-| DeepSeek | 高性价比大模型 |
-| Doubao（豆包） | 字节跳动 |
-| GLM | 智谱 AI |
-| NVIDIA | NVIDIA AI |
-| Xiaomi Token Plan | 小米 token 计划 / 普通 API Key |
-| 百度翻译 API | 百度机器翻译 |
+- 设置页显示的版本来自应用构建信息，不在页面中写死。
+- 可检查 GitHub 最新标签，有新版本时跳转 Releases 下载。
+- 左侧导航可显示新版本状态。
+- 提供项目主页和邮件反馈入口。
 
-支持 **多厂商并行翻译**，自动按批次轮询分配到不同厂商，最大化翻译吞吐量。
+## 支持范围
 
----
+| 功能 | RPG Maker MV/MZ | Ren'Py |
+| --- | :---: | :---: |
+| 游戏识别与启动 | 支持 | 支持 |
+| 文本提取与翻译工作台 | 支持 | 支持 |
+| AI 批量翻译 | 支持 | 支持 |
+| 运行时文本捕获与替换 | JS 实时组件 | Ren'Py Hook |
+| 数据库修改 | 支持 | 不适用 |
+| 地图与事件查看 | 支持 | 不适用 |
+| 存档修改 | 支持 | 不适用 |
+| 实时属性修改 | 支持 | 有限支持 |
 
-## 界面说明
+RPG Maker XP、VX 和 VX Ace 只能识别部分资源，不保证实时组件、地图和存档功能可用。
 
-```
-┌──────────────────────────────────────────────┐
-│  导航栏          │  内容区                    │
-│                   │                            │
-│  游戏库           │  游戏库：已加入的项目列表    │
-│  翻译工作台       │  翻译工作台：提取/翻译/导出  │
-│  数据编辑器       │  数据编辑器：字段查看与编辑  │
-│  存档修改         │  存档修改：金币/物品/角色    │
-│  地图查看         │  地图查看：瓦片地图+事件     │
-│  环境与备份       │  环境与备份：自动备份管理    │
-│                   │                            │
-└──────────────────────────────────────────────┘
-```
+## 安装
 
-- **翻译工作台**：左侧翻译列表 + 右侧译文编辑 + 底部 AI 设置
-- **数据编辑器**：左侧对象列表 + 右侧属性编辑（双击值原地编辑）
-- **存档修改**：左侧存档选择 + 右侧物品/角色/开关/变量多标签页
-- **地图查看**：左侧瓦片地图 + 右侧事件列表与详情
+### 使用 Windows 安装包
 
----
+1. 打开 [Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)。
+2. 下载最新的 `RPGRenPyLocalizer Setup x.x.x.exe`。
+3. 运行安装程序并选择安装目录。
+4. 从桌面或开始菜单启动 RPGRenPyLocalizer。
 
-## 安装与运行
+发布版已经包含 Python 后端，目标电脑不需要单独安装 Python 或 Node.js。
 
-### 使用发布版（推荐）
+### 添加游戏
 
-1. 下载 `dist\RPGRenPyLocalizer\` 整个文件夹
-2. 双击 `RPGRenPyLocalizer.exe`
-3. **不要只发单独 exe** — `_internal` 文件夹包含 Python 运行时，缺了无法启动
+1. 进入“游戏库”。
+2. 点击添加游戏并选择游戏启动 `.exe`，不要只选择文件夹。
+3. 等待工具识别引擎后选择该游戏。
+4. 点击启动，或进入对应功能页面。
 
-目标电脑不需要安装 Python。
+游戏运行时不能切换到其他项目。请先正常退出当前游戏，等待状态变为未运行。
 
-### 从源码运行
+## Ren'Py 实时翻译
 
-```bash
-pip install -r requirements.txt
-python main.py
-```
+### 首次使用
 
----
+1. 在游戏库中添加并选择 Ren'Py 游戏的 `.exe`。
+2. 进入“AI 设置”，选择 OpenAI、Anthropic 或 Ollama。
+3. 填写接口信息、获取并选择模型，然后执行“测试翻译”。
+4. 进入“实时翻译”，点击启动实时翻译。
+5. 工具会安装 Hook、启动本地桥接服务并启动游戏。
+6. 游戏中出现的新文本会被捕获，翻译完成后自动写入运行时翻译表。
 
-## 使用流程
+### 从旧版本升级
 
-### 1. 加载游戏
-- 点击「选择 exe」选择游戏启动文件
-- 或直接拖入 exe 到窗口
-- 工具自动识别引擎类型（RPG Maker MV/MZ / Ren'Py）
+2.2.2 修改了字体标签清理和缓存格式。升级后请执行一次：
 
-### 2. 实时游戏翻译（Ren'Py）
-- 加载项目后，顶部标题栏会出现 **「实时游戏翻译」** 按钮
-- 点击后工具自动安装桥接脚本 + 启动游戏 + 启动翻译服务器
-- 游戏运行时，显示的文本自动捕获、翻译、替换
-- 可在工具的翻译工作台中查看已捕获文本和翻译结果
+1. 选择原来的 Ren'Py 游戏。
+2. 进入“实时翻译”并点击启动，工具会自动重新安装 Ren'Py Hook。
+3. 完全退出并重新启动游戏。
 
-### 3. 离线批量翻译
-- 切换到「翻译工作台」
-- 点击「提取文本」
-- 选择翻译范围和文件
-- 配置 AI 渠道和 API Key → 「保存设置」
-- 点击「一键翻译全部」或「翻译选中」
-- 支持导入/导出翻译包
+安装过程会更新 `game/zz_rpgrtl_live_bridge.rpy`，并清理旧缓存中可能导致 `'/font' closes a text tag that isn't open` 的数据。
 
-### 4. 数据修改
-- 切换到「数据编辑器」
-- 选择分类（物品/角色/职业等）
-- 选中对象 → 右侧双击值 → 修改 → 保存
+### 工作原理
 
-### 5. 存档修改
-- 切换到「存档修改」
-- 点击「刷新存档列表」
-- 选择存档 → 修改金币/物品/角色/开关/变量
-
-### 6. 实时控制（RPG Maker）
-- 点击「安装实时组件」→ 重启游戏 → 「连接实时游戏」
-- 可使用：穿墙、上帝模式、自动战斗、地图点击瞬移、游戏加速
-
----
-
-## 配置保存位置
-
-| 内容 | 路径 |
-|------|------|
-| AI 配置 / API Key | `%APPDATA%\RPGRenPyLocalizer\settings.json` |
-| 翻译记忆缓存 | `%APPDATA%\RPGRenPyLocalizer\translation_memory.json` |
-| 项目级翻译缓存 | `<游戏目录>\.rpgrtl_workspace\` |
-| 自动备份 | `<游戏目录>\.rpgrtl_backup\` |
-
-AI 配置保存在当前 Windows 用户目录，**发给别人时不会泄露你的 API Key**。
-
----
-
-## 实时翻译技术细节
-
-### Ren'Py 桥接架构
-
-```
-桌面工具 (app.py)                    Ren'Py 游戏进程
-┌──────────────────┐                ┌──────────────────────┐
-│  AI 翻译引擎     │                │  zz_rpgrtl_live_bridge.rpy  │
-│  (OpenAI/DeepSeek│                │                      │
-│   /百度... )      │    HTTP :32180  │  ThreadingHTTPServer  │
-│                  │◄──────────────►│  /pull → 翻译表       │
-│  _renpy_realtime │                │  /translation → 单条  │
-│  _worker (1.5s)  │                │  /notify → 刷新通知   │
-│                  │                │  /seen → 记录已见文本  │
-│  轮询 → 翻译     │                │                      │
-│  → 写回 → 通知   │                │  猴子补丁 (6处):      │
-│                  │                │  ADVCharacter.__call__│
-│  每5s 持久化缓存  │                │  Text.set_text        │
-│                  │                │  config.replace_text  │
-└──────────────────┘                └──────────────────────┘
+```text
+Ren'Py 渲染文本
+       |
+       v
+zz_rpgrtl_live_bridge.rpy 捕获并清理文本
+       |
+       v
+本地 HTTP 桥接 <-> RPGRenPyLocalizer Python 后端
+       |
+       v
+OpenAI / Anthropic / Ollama 异步翻译
+       |
+       v
+原子写入项目缓存并通知游戏刷新
+       |
+       v
+游戏下一次渲染时显示译文
 ```
 
-### RPG Maker MV/MZ 桥接架构
+Hook 会保留 Ren'Py 控制标记的顺序，并过滤可能破坏渲染的字体标签。由于不同游戏可能重写 Character、Text 或 screen，少数深度定制项目仍可能需要单独适配。
 
-```
-桌面工具                        RPG Maker (NW.js/Electron)
-┌──────────────┐               ┌────────────────────────┐
-│  HTTP 客户端  │   :32179      │  RPGRenPyBridge.js     │
-│              │◄─────────────►│  HTTP 服务器 (Node.js)  │
-│  /state      │               │                        │
-│  /set        │               │  JS 补丁:               │
-│  /translation│               │  Window_Base.convertEscapeCharacters │
-└──────────────┘               │  Bitmap.drawText        │
-                               │  Scene_Map.update       │
-                               └────────────────────────┘
-```
+## Ollama 本地翻译
 
----
-
-## 打包发布
+1. 安装并启动 Ollama。
+2. 在终端下载模型，例如：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build_release.ps1
+ollama pull qwen2.5:7b
 ```
 
-打包结果：`dist\RPGRenPyLocalizer\`（包含 exe + _internal）
+3. 在工具中选择“Ollama 本地模型”。
+4. 保持默认地址 `http://127.0.0.1:11434`，点击“检测本地模型”。
+5. 从下拉列表选择模型并测试翻译。
 
-分享时把整个 `dist\RPGRenPyLocalizer\` 文件夹打包即可。
+检测失败时，先运行：
 
----
+```powershell
+ollama list
+```
+
+如果命令不可用或服务未启动，工具无法读取本地模型。Ollama 模式不需要也不会保存 API Key。
+
+## RPG Maker 使用说明
+
+### 地图与事件
+
+- 进入地图页后选择地图，使用鼠标拖拽画布或滚动条移动。
+- 悬停格子时格子高亮；点击事件格可查看该位置的事件列表。
+- 事件详情显示事件页条件、触发方式和指令。
+- 连接实时组件后，地图可标记当前玩家位置并执行传送。
+
+### 数据与存档
+
+- “数据修改”用于编辑项目数据库和连接后的实时数据。
+- “存档”页先选择存档槽，再修改金钱、物品、角色、开关或变量。
+- 写回前建议保留原存档；不同插件生成的自定义存档字段可能无法自动解析。
+
+### 实时组件
+
+1. 选择 RPG Maker MV/MZ 游戏。
+2. 进入“实时修改”并安装实时组件。
+3. 完全退出并重新启动游戏，让插件被引擎加载。
+4. 进入地图后连接运行中的游戏。
+
+“安装实时组件”只写入游戏项目所需文件，不会打开 VS Code。
+
+## 配置与缓存
+
+| 内容 | 位置 |
+| --- | --- |
+| AI 渠道、URL、模型和密钥 | `%APPDATA%\RPGRenPyLocalizer\settings.json` |
+| 全局翻译记忆 | `%APPDATA%\RPGRenPyLocalizer\translation_memory.json` |
+| 项目工作区与实时翻译缓存 | `<游戏目录>\.rpgrtl_workspace\` |
+| 自动备份 | `<游戏目录>\.rpgrtl_backup\` |
+| Ren'Py 实时 Hook | `<游戏目录>\game\zz_rpgrtl_live_bridge.rpy` |
+
+API Key 只保存在当前 Windows 用户的本机配置中，不应提交到 Git、截图或问题报告。公开日志前请检查其中是否包含接口地址、文件路径和敏感信息。
+
+## 常见问题
+
+### 启动游戏时提示找不到文件
+
+游戏可能被移动、重命名或删除。确认窗口中可以选择“从游戏库删除”或“保留记录”；如果只是移动了游戏，请删除旧记录后重新选择新的 `.exe`。
+
+### Ren'Py 报错 `/font` closes a text tag that isn't open
+
+安装 2.2.2 后重新安装 Hook并重启游戏。新版会同时清理服务器缓存、项目缓存和运行时文本中的畸形字体标签。
+
+### 开启实时翻译后没有译文
+
+依次确认：
+
+1. AI 设置中的测试翻译成功。
+2. 已选择模型，OpenAI/Anthropic 已填写 API Key。
+3. Ollama 服务正在运行并能执行 `ollama list`。
+4. 实时翻译状态有心跳且捕获数量持续增加。
+5. 游戏已在安装新版 Hook 后完整重启。
+
+### 测试翻译没有反应
+
+2.2.2 已将测试功能与游戏选择解耦。输入测试原文、选择模型并点击“开始测试”，结果或具体错误会显示在测试区域。
+
+### 地图、存档或实时修改不可用
+
+这些页面主要用于 RPG Maker MV/MZ。Ren'Py 项目会隐藏不适用入口。实时数据还要求安装组件、重启游戏并进入地图。
+
+### 修改前如何恢复
+
+优先使用 `.rpgrtl_backup` 中的备份。对重要游戏和存档，建议额外复制整个游戏目录或存档目录。
+
+## 从源码运行
+
+要求：Windows、Python 3.11+、Node.js 20+、npm。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+npm install
+npm run build:renderer
+npm start
+```
+
+开发模式下 Electron 会启动本地 Python API 后端；前端通过 preload 暴露的安全接口访问后端和系统功能。
+
+## 测试与构建
+
+运行后端回归测试：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+检查 Python 文件：
+
+```powershell
+python -m py_compile toolkit/api/server.py toolkit/renpy.py
+```
+
+构建 Windows 安装包：
+
+```powershell
+.\build_electron_release.ps1 -SkipNpmInstall
+```
+
+输出目录：
+
+```text
+release-electron/
+├── RPGRenPyLocalizer Setup x.x.x.exe
+└── win-unpacked/
+```
 
 ## 项目结构
 
 ```text
 RPGRenPyLocalizer/
-├── main.py                    # 入口
-├── launcher.py                # 启动引导窗口
-├── build_release.ps1          # PyInstaller 打包脚本
-├── static/                    # 图标与静态资源
-├── toolkit/                   # 核心工具包
-│   ├── app.py                 # 主界面（~5800 行）
-│   ├── detectors.py           # 游戏引擎检测
-│   ├── models.py              # 数据模型
-│   ├── renpy.py               # Ren'Py 服务（桥接 + 实时翻译）
-│   ├── rpgmaker.py            # RPG Maker 服务（桥接 + 数据解析）
-│   ├── storage.py             # JSON 持久化与翻译包
-│   ├── ui_layout.py           # 响应式布局控制
-│   ├── ui_theme.py            # ttk 主题
-│   ├── workspace.py           # 工作空间与缓存管理
-│   └── core/
-│       ├── facade.py          # 无头核心（CLI/API 复用）
-│       └── __main__.py
-└── dist/                      # 打包输出
+├── electron/                    # Electron 主进程、preload 与 Vue 前端
+│   └── renderer/src/            # 翻译工作台和各功能页面
+├── toolkit/
+│   ├── api/server.py            # Electron 本地 HTTP API
+│   ├── renpy.py                 # Ren'Py 分析、Hook 与实时翻译
+│   ├── rpgmaker.py              # RPG Maker 数据、存档、地图与桥接
+│   ├── storage.py               # 配置、缓存与翻译包
+│   └── workspace.py             # 游戏库和项目工作区
+├── tests/                       # 后端回归测试
+├── api_server_entry.py          # 打包后端入口
+├── build_electron_release.ps1   # 一体化构建脚本
+├── package.json                 # 应用版本和 Electron Builder 配置
+└── README.md
 ```
 
----
+## 反馈与贡献
 
-## 常见问题
+- 问题与建议：[GitHub Issues](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/issues)
+- 版本与下载：[GitHub Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)
+- 邮件：[lyb82ndkf@gmail.com](mailto:lyb82ndkf@gmail.com)
 
-### 为什么没有 Python 也能运行？
-发布版用 PyInstaller 打包，`_internal` 自带 Python 运行时。
-
-### 实时翻译会卡顿吗？
-翻译在后台线程进行，游戏画面替换仅涉及字典查找（毫秒级），不会影响游戏帧率。
-
-### 实时翻译支持哪些 AI 渠道？
-所有 7 个渠道都支持。翻译结果即时写入桥接翻译表，游戏下一次渲染时自动生效。
-
-### 为什么翻译会跳过一些文本？
-工具自动过滤路径、乱码、系统占位文本和非对白内容。
-
-### 地图瞬移没反应？
-需要先安装实时组件 → 重启游戏 → 勾选「地图点击瞬移」→ 点击地图格子。
-
-### API Key 保存在哪？安全吗？
-保存在 `%APPDATA%\RPGRenPyLocalizer\settings.json`，仅当前 Windows 用户可访问。
-
-### 支持哪些引擎版本？
-- RPG Maker MV / MZ（完整支持）
-- Ren'Py（完整支持：批量翻译 + 实时翻译）
-- RPG Maker XP / VX / VX Ace（部分支持）
-
----
-
-## 说明
-
-本工具用于单机游戏汉化与实时翻译，不面向网络游戏，不用于联机作弊。
+提交问题时请附上工具版本、游戏引擎、复现步骤和已脱敏的错误信息。请勿上传游戏本体、付费资源、API Key 或包含个人信息的存档。

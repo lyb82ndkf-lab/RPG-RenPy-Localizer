@@ -1,4 +1,4 @@
-﻿package com.rpgrtl.shell
+package com.rpgrtl.shell
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
@@ -9,6 +9,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.provider.Settings
 import android.content.ComponentCallbacks2
 import android.util.Log
@@ -67,6 +68,7 @@ class MainActivity : Activity() {
     private val touchButtonViews = mutableListOf<View>()
     private var gameToolbarView: LinearLayout? = null
     private var gameToolbarExpanded = false
+    private var gameLoadingOverlay: LinearLayout? = null
     private var touchBlockerView: View? = null
     private var touchBlocked = false
     private var externalSourceApp = ""
@@ -75,11 +77,13 @@ class MainActivity : Activity() {
     private var externalGameTitle = ""
     private var externalGamePath = ""
     private var externalTargetPage = ""
+    private var toolPageGameMode = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         createStartMs = System.nanoTime()
         setTheme(R.style.Theme_RPGRenPyLocalizer)
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         consumeExternalLaunchIntent(intent)
@@ -200,6 +204,9 @@ class MainActivity : Activity() {
             allowFileAccessFromFileURLs = true
             allowUniversalAccessFromFileURLs = true
             cacheMode = WebSettings.LOAD_DEFAULT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                offscreenPreRaster = true
+            }
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             mediaPlaybackRequiresUserGesture = false
             javaScriptCanOpenWindowsAutomatically = true
@@ -214,6 +221,12 @@ class MainActivity : Activity() {
             displayZoomControls = false
         }
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+        webView.isHorizontalScrollBarEnabled = false
+        webView.isVerticalScrollBarEnabled = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
+        }
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
                 val message = consoleMessage.message()
@@ -234,29 +247,47 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadToolPage() {
+    private fun loadToolPage(fromGame: Boolean = false) {
+        val hadRunningGame = fromGame || gameViewActive || lastGameUrl.isNotBlank()
         gameViewActive = false
+        toolPageGameMode = hadRunningGame && fromGame
+        requestedOrientation = if (toolPageGameMode) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
         updateToolButton()
         clearTouchControls()
         removeGameToolbar()
         setGameTouchBlocked(false)
+        hideGameLoadingOverlay(0)
         binding.gameWebView.visibility = View.INVISIBLE
         binding.webView.visibility = View.VISIBLE
         if (binding.webView.url.isNullOrBlank()) {
             binding.webView.loadUrl("file:///android_asset/mobile_ui/index.html")
         }
-        pushExternalLaunchContext()
+        pushToolModeContext()
+        if (toolPageGameMode) {
+            binding.webView.postDelayed({
+                binding.webView.evaluateJavascript("window.onAndroidOpenToolPage&&window.onAndroidOpenToolPage('/cheats')", null)
+            }, 120)
+        } else {
+            pushExternalLaunchContext()
+        }
         reflowWebViewSoon()
-        binding.webView.postDelayed({ preloadGameIfReady() }, 3000)
+        if (!toolPageGameMode) binding.webView.postDelayed({ preloadGameIfReady() }, 3000)
     }
 
     private fun showGamePage() {
         if (lastGameUrl.isBlank()) {
-            loadToolPage()
+            loadToolPage(false)
             return
         }
+        toolPageGameMode = false
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         gameViewActive = true
         updateToolButton()
+        showGameLoadingOverlay("Restoring game view...")
         binding.webView.visibility = View.GONE
         binding.gameWebView.visibility = View.VISIBLE
         if (binding.gameWebView.url.isNullOrBlank()) {
@@ -286,9 +317,70 @@ class MainActivity : Activity() {
 
     fun toggleToolPage() {
         if (gameViewActive) {
-            loadToolPage()
+            loadToolPage(true)
         } else {
             showGamePage()
+        }
+    }
+
+    fun showGameLoadingOverlay(message: String) {
+        runOnUiThread {
+            hideGameLoadingOverlay(0)
+            val panel = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER
+                setPadding(dp(22f), dp(18f), dp(22f), dp(18f))
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(18f).toFloat()
+                    setColor(0xEE101722.toInt())
+                    setStroke(dp(1f), 0x6655D6FF)
+                }
+                elevation = dp(14f).toFloat()
+            }
+            val progress = android.widget.ProgressBar(this).apply {
+                isIndeterminate = true
+            }
+            val title = TextView(this).apply {
+                text = "游戏正在启动"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                gravity = android.view.Gravity.CENTER
+                setPadding(0, dp(10f), 0, dp(4f))
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            val body = TextView(this).apply {
+                text = message
+                textSize = 12f
+                setTextColor(0xFFB7C0CE.toInt())
+                gravity = android.view.Gravity.CENTER
+                maxLines = 3
+            }
+            panel.addView(progress, LinearLayout.LayoutParams(dp(36f), dp(36f)))
+            panel.addView(title, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            panel.addView(body, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            gameLoadingOverlay = panel
+            binding.root.addView(
+                panel,
+                FrameLayout.LayoutParams(dp(280f), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = android.view.Gravity.CENTER
+                }
+            )
+            panel.bringToFront()
+            binding.toolButton.bringToFront()
+        }
+    }
+
+    fun hideGameLoadingOverlay(delayMs: Long = 600L) {
+        runOnUiThread {
+            val overlay = gameLoadingOverlay ?: return@runOnUiThread
+            val remove = Runnable {
+                if (gameLoadingOverlay === overlay) {
+                    binding.root.removeView(overlay)
+                    gameLoadingOverlay = null
+                }
+            }
+            if (delayMs <= 0) remove.run() else overlay.postDelayed(remove, delayMs)
         }
     }
 
@@ -321,14 +413,13 @@ class MainActivity : Activity() {
         val toolbar = gameToolbarView ?: return
         gameToolbarExpanded = expanded
         toolbar.removeAllViews()
-        toolbar.addView(toolbarButton(if (expanded) "‹" else "⚙", if (expanded) "收起" else "工具") {
+        toolbar.addView(toolbarButton(if (expanded) "<" else "Menu", if (expanded) "Collapse" else "Game tools") {
             renderGameToolbar(!gameToolbarExpanded)
         })
         if (!expanded) return
-        toolbar.addView(toolbarButton("↻", "旋转") { toolbarAction("rotate") })
-        toolbar.addView(toolbarButton(if (touchBlocked) "●" else "◌", if (touchBlocked) "恢复触摸" else "禁用触摸", touchBlocked) { toolbarAction("touchToggle") })
-        toolbar.addView(toolbarButton("⌨", "键盘") { toolbarAction("keyboard") })
-        toolbar.addView(toolbarButton("×", "关闭") { toolbarAction("close") })
+        toolbar.addView(toolbarButton(if (touchBlocked) "On" else "Off", if (touchBlocked) "Enable touch" else "Disable touch", touchBlocked) { toolbarAction("touchToggle") })
+        toolbar.addView(toolbarButton("Key", "Keyboard") { toolbarAction("keyboard") })
+        toolbar.addView(toolbarButton("X", "Open panel") { toolbarAction("close") })
         toolbar.postDelayed({
             if (gameToolbarExpanded) renderGameToolbar(false)
         }, 10_000)
@@ -338,23 +429,24 @@ class MainActivity : Activity() {
         return TextView(this).apply {
             text = icon
             contentDescription = label
-            textSize = if (icon == "⚙") 21f else 18f
+            textSize = if (label == "Game tools") 13f else 12f
             gravity = android.view.Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(if (active) 0xFFFFD2D2.toInt() else 0xFFEAF4FF.toInt())
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadii = floatArrayOf(0f, 0f, dp(7f).toFloat(), dp(7f).toFloat(), dp(7f).toFloat(), dp(7f).toFloat(), 0f, 0f)
-                setColor(if (active) 0xCCB23A3A.toInt() else 0x99000000.toInt())
-                setStroke(dp(1f), 0x55FFFFFF)
+                cornerRadii = floatArrayOf(0f, 0f, dp(10f).toFloat(), dp(10f).toFloat(), dp(10f).toFloat(), dp(10f).toFloat(), 0f, 0f)
+                setColor(if (active) 0xCC7F1D1D.toInt() else 0x99101B2B.toInt())
+                setStroke(dp(1f), if (active) 0x88FF8A8A.toInt() else 0x6655D6FF)
             }
+            alpha = if (label == "Game tools") 0.78f else 0.9f
             setOnClickListener {
                 action()
-                if (label != "收起" && label != "工具") {
+                if (label != "Collapse" && label != "Game tools") {
                     gameToolbarView?.postDelayed({ if (gameToolbarExpanded) renderGameToolbar(false) }, 1500)
                 }
             }
-            layoutParams = LinearLayout.LayoutParams(dp(42f), dp(42f)).apply {
-                bottomMargin = dp(2f)
+            layoutParams = LinearLayout.LayoutParams(dp(36f), dp(36f)).apply {
+                bottomMargin = dp(4f)
             }
         }
     }
@@ -364,7 +456,7 @@ class MainActivity : Activity() {
             "rotate" -> toggleOrientation()
             "touchToggle" -> setGameTouchBlocked(!touchBlocked)
             "keyboard" -> showGameKeyboard()
-            "close" -> loadToolPage()
+            "close" -> loadToolPage(true)
         }
     }
 
@@ -449,6 +541,8 @@ class MainActivity : Activity() {
             if (wasGame) {
                 lastGameUrl = ""
                 gameViewActive = false
+                toolPageGameMode = false
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 gamePreloaded = false
                 clearTouchControls()
                 binding.gameWebView.loadUrl("about:blank")
@@ -464,13 +558,16 @@ class MainActivity : Activity() {
     }
 
     private fun updateToolButton() {
-        if (lastGameUrl.isBlank()) {
-            binding.toolButton.visibility = View.GONE
-            return
+        runOnUiThread {
+            if (lastGameUrl.isBlank()) {
+                binding.toolButton.visibility = View.GONE
+                return@runOnUiThread
+            }
+            binding.toolButton.visibility = View.VISIBLE
+            binding.toolButton.text = if (gameViewActive) "Tool" else "Back"
+            binding.toolButton.alpha = if (gameViewActive) 0.72f else 0.86f
+            binding.toolButton.bringToFront()
         }
-        binding.toolButton.visibility = View.VISIBLE
-        binding.toolButton.text = if (gameViewActive) "Tool" else "Back"
-        binding.toolButton.bringToFront()
     }
 
     fun pickGameFolder() {
@@ -551,9 +648,9 @@ class MainActivity : Activity() {
                 notifyWeb("Checking RPG Maker MV/MZ entry...")
                 val source = DocumentFile.fromTreeUri(this, uri)
                     ?: throw IllegalStateException("Cannot read selected folder.")
-                val sourceEntry = cachedEntryPath.takeIf { it.isNotBlank() && findDocumentByPathNoCache(source, it) != null }
+                val sourceEntry = cachedEntryPath.takeIf { it.isNotBlank() && isValidRpgMakerEntryPath(source, it) }
                     ?: findRpgMakerEntryPath(source)
-                    ?: throw IllegalStateException("MV/MZ entry not found. Select a folder containing www/index.html or index.html.")
+                    ?: throw IllegalStateException("MV/MZ entry not found. Select a folder containing a valid RPG Maker www/index.html or index.html, not a tool loader page.")
                 cachedEntryPath = sourceEntry
                 getPreferences(Context.MODE_PRIVATE)
                     .edit()
@@ -570,20 +667,26 @@ class MainActivity : Activity() {
                 buildGameFileIndex(source, uri)
                 val virtualEntry = "https://rpgrtl.local/game/$sourceEntry"
                 lastGameUrl = virtualEntry
+                toolPageGameMode = false
                 gameViewActive = true
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 gamePreloaded = false
                 notifyWeb("On-demand mode enabled. Entry: $sourceEntry")
                 runOnUiThread {
                     if (sessionId != runSessionId) return@runOnUiThread
                     updateToolButton()
                     applyLaunchSettings()
+                    showGameLoadingOverlay("Opening RPG Maker in built-in WebView...")
                     binding.webView.visibility = View.GONE
                     binding.gameWebView.visibility = View.VISIBLE
                     binding.gameWebView.loadUrl(virtualEntry)
                     binding.gameWebView.postDelayed({ if (gameViewActive) applyTouchControls() }, 700)
                 }
             } catch (error: Throwable) {
-                if (sessionId == runSessionId) notifyWeb("Launch failed: ${error.message}")
+                if (sessionId == runSessionId) {
+                    hideGameLoadingOverlay(0)
+                    notifyWeb("Launch failed: ${error.message}")
+                }
             }
         }.start()
     }
@@ -612,11 +715,32 @@ class MainActivity : Activity() {
                 val source = DocumentFile.fromTreeUri(this, uri)
                     ?: throw IllegalStateException("Cannot read selected folder.")
                 val result = scanGameTree(source, uri)
+                if (result.optString("rpgEntry").isNotBlank() && result.optString("engine") == "RPG Maker MV/MZ") {
+                    prepareScannedRpgMakerOnMain(source, result.optString("rpgEntry"), uri)
+                }
                 dispatchProjectScanned(result)
             } catch (error: Throwable) {
                 notifyWeb("Scan failed: ${error.message}")
             }
         }.start()
+    }
+
+    private fun prepareScannedRpgMakerOnMain(root: DocumentFile, rpgEntry: String, uri: Uri) {
+        if (rpgEntry.isBlank()) return
+        runOnUiThread {
+            gameTreeRoot = root
+            gameVirtualBase = rpgEntry.substringBeforeLast("/", "")
+            cachedEntryPath = rpgEntry
+            lastGameUrl = "https://rpgrtl.local/game/$rpgEntry"
+            gamePreloaded = false
+            getPreferences(Context.MODE_PRIVATE)
+                .edit()
+                .putString("last_rpg_entry_path", rpgEntry)
+                .apply()
+            restoreGamePathIndex(uri)
+            buildGameFileIndex(root, uri)
+            updateToolButton()
+        }
     }
 
     fun launchRenpyGame() {
@@ -643,8 +767,11 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         if (sessionId != runSessionId) return@runOnUiThread
                         lastGameUrl = localEntry.toURI().toString()
+                        toolPageGameMode = false
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                         gameViewActive = true
                         updateToolButton()
+                        showGameLoadingOverlay("Preparing RenPy Web runtime files...")
                         binding.webView.visibility = View.GONE
                         binding.gameWebView.visibility = View.VISIBLE
                         binding.gameWebView.loadUrl(lastGameUrl)
@@ -662,7 +789,10 @@ class MainActivity : Activity() {
                 }
                 notifyWeb("RenPy resources found, but no Android/Web entry was found. Use a compatible runner for Windows exe games.")
             } catch (error: Throwable) {
-                if (sessionId == runSessionId) notifyWeb("RenPy launch failed: ${error.message}")
+                if (sessionId == runSessionId) {
+                    hideGameLoadingOverlay(0)
+                    notifyWeb("RenPy launch failed: ${error.message}")
+                }
             }
         }.start()
     }
@@ -774,6 +904,20 @@ class MainActivity : Activity() {
         return androidRpgServiceResult { service -> service.savePath() }
     }
 
+    fun androidAiSettings(): String {
+        val saved = getPreferences(Context.MODE_PRIVATE)
+            .getString("android_ai_settings_json", "") ?: ""
+        if (saved.isNotBlank()) return saved
+        return JSONObject()
+            .put("provider", "openai")
+            .put("baseUrl", "https://api.openai.com/v1")
+            .put("apiKey", "")
+            .put("model", "gpt-4o-mini")
+            .put("batchSize", 20)
+            .put("targetLang", "简体中文")
+            .toString()
+    }
+
     fun saveAiSettings(json: String): String {
         return try {
             JSONObject(json)
@@ -796,10 +940,13 @@ class MainActivity : Activity() {
     fun androidAiTranslate(requestJson: String): String {
         return try {
             val request = JSONObject(requestJson)
-            if (!request.has("settings")) {
+            val currentSettings = request.optJSONObject("settings")
+            if (currentSettings == null || currentSettings.length() == 0) {
                 val saved = getPreferences(Context.MODE_PRIVATE)
                     .getString("android_ai_settings_json", "") ?: ""
                 if (saved.isNotBlank()) request.put("settings", JSONObject(saved))
+            } else if (currentSettings.has("ai")) {
+                request.put("settings", currentSettings.optJSONObject("ai") ?: currentSettings)
             }
             AndroidAiTranslationService().translate(request).toString()
         } catch (error: Throwable) {
@@ -850,6 +997,17 @@ class MainActivity : Activity() {
             })();
         """.trimIndent()
         return evalGameJson(script)
+    }
+
+    fun androidAiModels(settingsJson: String): String {
+        return try {
+            AndroidAiTranslationService().listModels(JSONObject(settingsJson)).toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: error.javaClass.simpleName)
+                .toString()
+        }
     }
 
     fun androidRuntimeEval(script: String): String {
@@ -1016,9 +1174,15 @@ class MainActivity : Activity() {
                 displayZoomControls = false
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 textZoom = 100
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    offscreenPreRaster = true
+                }
             }
             target.setLayerType(if (webgl) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_SOFTWARE, null)
+            target.overScrollMode = View.OVER_SCROLL_NEVER
         }
+        binding.webView.settings.textZoom = 82
+        binding.gameWebView.settings.textZoom = 100
         applyRenderMode(settings.optString("renderMode", "fast"))
     }
 
@@ -1038,6 +1202,9 @@ class MainActivity : Activity() {
                     useWideViewPort = false
                     loadWithOverviewMode = false
                     cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        offscreenPreRaster = true
+                    }
                     layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
                 }
             }
@@ -1092,19 +1259,23 @@ class MainActivity : Activity() {
 
     private fun dispatchFolderPicked(uri: Uri) {
         val escaped = escapeJs(uri.toString())
-        binding.webView.evaluateJavascript(
-            "window.onAndroidGameFolderPicked && window.onAndroidGameFolderPicked('$escaped')",
-            null
-        )
-        scanSelectedGame()
+        runOnUiThread {
+            binding.webView.evaluateJavascript(
+                "window.onAndroidGameFolderPicked && window.onAndroidGameFolderPicked('$escaped')",
+                null
+            )
+            scanSelectedGame()
+        }
     }
 
     private fun dispatchExePicked(uri: Uri) {
         val escaped = escapeJs(uri.toString())
-        binding.webView.evaluateJavascript(
-            "window.onAndroidGameExePicked && window.onAndroidGameExePicked('$escaped')",
-            null
-        )
+        runOnUiThread {
+            binding.webView.evaluateJavascript(
+                "window.onAndroidGameExePicked && window.onAndroidGameExePicked('$escaped')",
+                null
+            )
+        }
         dispatchProjectScanned(scanSingleExe(uri))
     }
 
@@ -1131,6 +1302,25 @@ class MainActivity : Activity() {
                 null
             )
         }
+    }
+
+    private fun pushToolModeContext() {
+        val mode = if (toolPageGameMode) "game" else "workspace"
+        val context = JSONObject()
+            .put("mode", mode)
+            .put("game_mode", if (toolPageGameMode) "in_game" else "workspace")
+            .put("has_game", lastGameUrl.isNotBlank())
+            .put("engine", when {
+                lastGameUrl.contains("rpgrtl.local", ignoreCase = true) -> "RPG Maker MV/MZ"
+                lastGameUrl.contains("renpy", ignoreCase = true) -> "Ren'Py"
+                else -> ""
+            })
+            .put("game_title", externalGameTitle.ifBlank { externalContainerName.ifBlank { "Loaded game" } })
+        val escaped = escapeJs(context.toString())
+        binding.webView.evaluateJavascript(
+            "window.onAndroidToolMode&&window.onAndroidToolMode(JSON.parse('$escaped'));window.onAndroidExternalLaunchContext&&window.onAndroidExternalLaunchContext(JSON.parse('$escaped'))",
+            null
+        )
     }
 
     private fun pushExternalLaunchContext() {
@@ -1254,12 +1444,13 @@ class MainActivity : Activity() {
         enterImmersiveMode()
         val target = if (gameViewActive) binding.gameWebView else binding.webView
         target.postDelayed({
+            val setZoom = ""
             target.evaluateJavascript(
                 """
                 (function(){
                   if(document.body && document.body.style){
                     document.body.style.display = '';
-                    document.body.style.zoom = '1';
+                    $setZoom
                   }
                   window.dispatchEvent(new Event('resize'));
                   document.dispatchEvent(new Event('resize'));
@@ -1499,21 +1690,198 @@ class MainActivity : Activity() {
         }
     }
 
-    fun openGameAsset(relativePath: String): WebResourceResponse? {
+    fun openGameAsset(relativePath: String, requestHeaders: Map<String, String> = emptyMap()): WebResourceResponse? {
         val root = gameTreeRoot ?: return null
         val normalized = normalizeGamePath(relativePath)
-        val file = findGameDocument(root, normalized) ?: return null
+        val resolved = resolveGameAssetWithAudioFallback(root, normalized) ?: return null
+        val file = resolved.first
+        val resolvedPath = resolved.second
         if (!file.isFile) return null
-        translatedGameAsset(normalized)?.let { return it }
+        translatedGameAsset(resolvedPath)?.let { return it }
         val stream = contentResolver.openInputStream(file.uri) ?: return null
+        if (isHtmlPath(normalized)) {
+            val html = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            return WebResourceResponse(
+                mimeTypeForPath(resolvedPath),
+                "UTF-8",
+                200,
+                "OK",
+                cacheHeadersForPath(resolvedPath),
+                ByteArrayInputStream(sanitizeGameHtml(html).toByteArray(Charsets.UTF_8))
+            )
+        }
+        if (isRangeFriendlyAsset(resolvedPath)) {
+            return rangedGameAssetResponse(file, resolvedPath, requestHeaders) ?: WebResourceResponse(
+                mimeTypeForPath(resolvedPath),
+                null,
+                200,
+                "OK",
+                cacheHeadersForPath(resolvedPath) + mapOf(
+                    "Accept-Ranges" to "bytes",
+                    "Content-Length" to file.length().coerceAtLeast(0L).toString()
+                ),
+                stream
+            )
+        }
         return WebResourceResponse(
-            mimeTypeForPath(normalized),
+            mimeTypeForPath(resolvedPath),
             "UTF-8",
             200,
             "OK",
-            cacheHeadersForPath(normalized),
+            cacheHeadersForPath(resolvedPath),
             stream
         )
+    }
+
+    private fun resolveGameAssetWithAudioFallback(root: DocumentFile, path: String): Pair<DocumentFile, String>? {
+        findGameDocument(root, path)?.let { return it to path }
+        val ext = path.substringAfterLast('.', "").lowercase()
+        val base = path.substringBeforeLast('.', path)
+        val alternatives = when (ext) {
+            "ogg" -> listOf("$base.m4a", "$base.mp3", "$base.wav")
+            "m4a" -> listOf("$base.ogg", "$base.mp3", "$base.wav")
+            "mp3" -> listOf("$base.ogg", "$base.m4a", "$base.wav")
+            else -> emptyList()
+        }
+        for (candidate in alternatives) {
+            findGameDocument(root, candidate)?.let { return it to candidate }
+        }
+        return null
+    }
+
+    private fun isRangeFriendlyAsset(path: String): Boolean {
+        return when (path.substringAfterLast('.', "").lowercase()) {
+            "m4a", "mp3", "ogg", "wav", "webm", "mp4", "m4v" -> true
+            else -> false
+        }
+    }
+
+    private fun rangedGameAssetResponse(file: DocumentFile, path: String, requestHeaders: Map<String, String>): WebResourceResponse? {
+        val total = file.length().coerceAtLeast(0L)
+        val rangeHeader = requestHeaders.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value ?: return null
+        val match = Regex("bytes=(\\d*)-(\\d*)").find(rangeHeader.trim()) ?: return null
+        val startText = match.groupValues[1]
+        val endText = match.groupValues[2]
+        if (total <= 0L || startText.isBlank()) return null
+        val start = startText.toLongOrNull()?.coerceIn(0L, total - 1) ?: return null
+        val requestedEnd = endText.toLongOrNull() ?: (total - 1)
+        val end = requestedEnd.coerceIn(start, total - 1)
+        val length = end - start + 1
+        val input = contentResolver.openInputStream(file.uri) ?: return null
+        skipFully(input, start)
+        val limited = object : java.io.FilterInputStream(input) {
+            private var remaining = length
+            override fun read(): Int {
+                if (remaining <= 0) return -1
+                val value = super.read()
+                if (value >= 0) remaining -= 1
+                return value
+            }
+            override fun read(buffer: ByteArray, offset: Int, count: Int): Int {
+                if (remaining <= 0) return -1
+                val max = minOf(count.toLong(), remaining).toInt()
+                val read = super.read(buffer, offset, max)
+                if (read > 0) remaining -= read.toLong()
+                return read
+            }
+        }
+        return WebResourceResponse(
+            mimeTypeForPath(path),
+            null,
+            206,
+            "Partial Content",
+            cacheHeadersForPath(path) + mapOf(
+                "Accept-Ranges" to "bytes",
+                "Content-Range" to "bytes $start-$end/$total",
+                "Content-Length" to length.toString()
+            ),
+            limited
+        )
+    }
+
+    private fun skipFully(input: InputStream, bytes: Long) {
+        var remaining = bytes
+        while (remaining > 0) {
+            val skipped = input.skip(remaining)
+            if (skipped > 0) {
+                remaining -= skipped
+            } else if (input.read() >= 0) {
+                remaining -= 1
+            } else {
+                break
+            }
+        }
+    }
+
+    private fun isHtmlPath(path: String): Boolean {
+        return path.endsWith(".html", ignoreCase = true) || path.endsWith(".htm", ignoreCase = true)
+    }
+
+    private fun sanitizeGameHtml(html: String): String {
+        val cleaned = html
+            .replace("MTool", "RPGRenPyLocalizer", ignoreCase = true)
+            .replace("\u5982\u679c\u4e00\u76f4\u663e\u793a\u8fd9\u4e2a\u9875\u9762, \u8bf7\u52a0\u5165 Discord \u56de\u62a5\u95ee\u9898.", "If loading stays here, return to the tool panel and relaunch.")
+            .replace("If this page keeps displaying, please join our Discord to report the problem.", "If this page keeps displaying, return to the tool page and relaunch the game.")
+            .replace("Click To Exit", "Return to tool panel")
+        val patch = "<script>${rpgMakerAudioCompatibilityPatch()}</script>"
+        return when {
+            cleaned.contains("</head>", ignoreCase = true) -> cleaned.replaceFirst(Regex("</head>", RegexOption.IGNORE_CASE), "$patch</head>")
+            cleaned.contains("<body", ignoreCase = true) -> cleaned.replaceFirst(Regex("<body", RegexOption.IGNORE_CASE), "$patch<body")
+            else -> patch + cleaned
+        }
+    }
+
+    private fun rpgMakerAudioCompatibilityPatch(): String {
+        return """
+            (function(){
+              if (window.__rpgrtlAudioPatch) return;
+              window.__rpgrtlAudioPatch = true;
+              var rawAlert = window.alert;
+              window.alert = function(message) {
+                var text = String(message || '');
+                if (/fail(ed)? to load audio|now loading the default audio|\u65e0\u6cd5\u52a0\u8f7d\u97f3\u9891|\u9ed8\u8ba4\u97f3\u9891/i.test(text)) {
+                  console.warn('[RPGRenPyLocalizer] suppressed RPGMaker audio alert: ' + text);
+                  return;
+                }
+                return rawAlert.apply(this, arguments);
+              };
+              function patchAudioManager(){
+                try {
+                  if (window.Utils) {
+                    if (typeof Utils.canPlayOgg === 'function') Utils.canPlayOgg = function(){ return true; };
+                    if (typeof Utils.canPlayM4A === 'function') Utils.canPlayM4A = function(){ return false; };
+                  }
+                  if (window.AudioManager && !AudioManager.__rpgrtlPatched) {
+                    AudioManager.__rpgrtlPatched = true;
+                    AudioManager.audioFileExt = function(){ return '.ogg'; };
+                    AudioManager.checkErrors = function(){};
+                    if (AudioManager.checkWebAudioError) AudioManager.checkWebAudioError = function(){};
+                  }
+                  if (window.WebAudio && WebAudio.prototype && !WebAudio.prototype.__rpgrtlPatched) {
+                    WebAudio.prototype.__rpgrtlPatched = true;
+                    WebAudio.prototype._onError = function(){
+                      this._hasError = false;
+                      this._autoPlay = false;
+                      this._isLoading = false;
+                      console.warn('[RPGRenPyLocalizer] suppressed failed audio fallback: ' + (this._url || ''));
+                    };
+                  }
+                  if (window.Graphics && !Graphics.__rpgrtlAudioPatch) {
+                    Graphics.__rpgrtlAudioPatch = true;
+                    var rawPrintError = Graphics.printError;
+                    Graphics.printError = function(name, message) {
+                      var text = String(name || '') + ' ' + String(message || '');
+                      if (/fail(ed)? to load audio|now loading the default audio|\u65e0\u6cd5\u52a0\u8f7d\u97f3\u9891|\u9ed8\u8ba4\u97f3\u9891/i.test(text)) return;
+                      return rawPrintError && rawPrintError.apply(this, arguments);
+                    };
+                  }
+                } catch (e) { console.warn('[RPGRenPyLocalizer] audio patch error', e); }
+              }
+              patchAudioManager();
+              var tries = 0;
+              var timer = setInterval(function(){ patchAudioManager(); if (++tries > 120) clearInterval(timer); }, 250);
+            })();
+        """.trimIndent().replace("</script", "<" + "/script")
     }
 
     private fun translatedGameAsset(path: String): WebResourceResponse? {
@@ -1896,9 +2264,13 @@ class MainActivity : Activity() {
                         addHighlight("RPG Maker folder", path)
                         val data = child.findFile("data")
                         inspectDataDir(data, "$path/data")
-                        child.findFile("index.html")?.let {
-                            rpgEntry = if (rpgEntry.isBlank()) "$path/index.html" else rpgEntry
-                            addHighlight("MV/MZ Web entry", "$path/index.html")
+                        child.findFile("index.html")?.let { index ->
+                            if (rpgEntry.isBlank() && isValidRpgMakerEntry(child, index)) {
+                                rpgEntry = "$path/index.html"
+                                addHighlight("MV/MZ Web entry", "$path/index.html")
+                            } else if (isThirdPartyToolLoader(index)) {
+                                addHighlight("Ignored tool loader", "$path/index.html")
+                            }
                         }
                     }
                     if (name.equals("data", ignoreCase = true) && child.findFile("System.json") != null) {
@@ -1917,8 +2289,13 @@ class MainActivity : Activity() {
                         addHighlight("Executable", path)
                     }
                     if (rpgEntry.isBlank() && lower == "index.html" && (relative.equals("www", true) || path.equals("index.html", true))) {
-                        rpgEntry = path
-                        addHighlight("MV/MZ Web entry", path)
+                        val base = if (relative.equals("www", true)) node else root
+                        if (isValidRpgMakerEntry(base, child)) {
+                            rpgEntry = path
+                            addHighlight("MV/MZ Web entry", path)
+                        } else if (isThirdPartyToolLoader(child)) {
+                            addHighlight("Ignored tool loader", path)
+                        }
                     }
                     if (renpyEntry.isBlank() && lower == "index.html" && !relative.equals("www", true)) {
                         renpyEntry = path
@@ -1966,20 +2343,6 @@ class MainActivity : Activity() {
         stats.put("highlights", highlights)
         stats.put("note", advice)
         stats.put("launchAdvice", advice)
-        if (rpgEntry.isNotBlank() && hasRpgData) {
-            gameTreeRoot = root
-            gameVirtualBase = rpgEntry.substringBeforeLast("/", "")
-            cachedEntryPath = rpgEntry
-            lastGameUrl = "https://rpgrtl.local/game/$rpgEntry"
-            gamePreloaded = false
-            updateToolButton()
-            getPreferences(Context.MODE_PRIVATE)
-                .edit()
-                .putString("last_rpg_entry_path", rpgEntry)
-                .apply()
-            restoreGamePathIndex(uri)
-            buildGameFileIndex(root, uri)
-        }
         return stats
     }
 
@@ -2051,15 +2414,62 @@ class MainActivity : Activity() {
         return null
     }
 
+    private fun readDocumentTextProbe(file: DocumentFile, maxBytes: Int = 96 * 1024): String {
+        return try {
+            contentResolver.openInputStream(file.uri)?.use { input ->
+                val bytes = ByteArray(maxBytes)
+                val count = input.read(bytes)
+                if (count <= 0) "" else String(bytes, 0, count, Charsets.UTF_8)
+            }.orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun isThirdPartyToolLoader(file: DocumentFile): Boolean {
+        val html = readDocumentTextProbe(file).lowercase()
+        if (html.isBlank()) return false
+        return html.contains("tool is corrupted") ||
+            html.contains("the tool is corrupted") ||
+            html.contains("you may need to re-download the tool") ||
+            (html.contains("mtool") && (html.contains("discord") || html.contains("click to exit") || html.contains("loading")))
+    }
+
+    private fun hasRpgMakerRuntimeShape(base: DocumentFile): Boolean {
+        val data = base.findFile("data")
+        val hasSystem = data?.isDirectory == true && data.findFile("System.json")?.isFile == true
+        if (!hasSystem) return false
+        val js = base.findFile("js")
+        val hasRuntimeJs = js?.isDirectory == true && (
+            js.findFile("rpg_core.js")?.isFile == true ||
+            js.findFile("rpg_managers.js")?.isFile == true ||
+            js.findFile("main.js")?.isFile == true
+        )
+        return hasRuntimeJs || base.findFile("package.json")?.isFile == true
+    }
+
+    private fun isValidRpgMakerEntry(base: DocumentFile, index: DocumentFile): Boolean {
+        if (!index.isFile || !index.name.equals("index.html", ignoreCase = true)) return false
+        if (isThirdPartyToolLoader(index)) return false
+        return hasRpgMakerRuntimeShape(base)
+    }
+
+    private fun isValidRpgMakerEntryPath(root: DocumentFile, entryPath: String): Boolean {
+        val index = findDocumentByPathNoCache(root, entryPath) ?: return false
+        val basePath = entryPath.substringBeforeLast("/", "")
+        val base = if (basePath.isBlank()) root else findDocumentByPathNoCache(root, basePath) ?: return false
+        return isValidRpgMakerEntry(base, index)
+    }
+
     private fun findRpgMakerEntryPath(root: DocumentFile): String? {
         val files = root.listFiles()
         files.firstOrNull { it.isDirectory && it.name.equals("www", ignoreCase = true) }?.let { www ->
-            www.listFiles().firstOrNull { it.isFile && it.name.equals("index.html", ignoreCase = true) }?.let {
-                return "${www.name ?: "www"}/${it.name ?: "index.html"}"
+            www.listFiles().firstOrNull { it.isFile && it.name.equals("index.html", ignoreCase = true) }?.let { index ->
+                if (isValidRpgMakerEntry(www, index)) return "${www.name ?: "www"}/${index.name ?: "index.html"}"
             }
         }
-        files.firstOrNull { it.isFile && it.name.equals("index.html", ignoreCase = true) }?.let {
-            return it.name ?: "index.html"
+        files.firstOrNull { it.isFile && it.name.equals("index.html", ignoreCase = true) }?.let { index ->
+            if (isValidRpgMakerEntry(root, index)) return index.name ?: "index.html"
         }
         return null
     }

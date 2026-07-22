@@ -27,6 +27,7 @@ import com.rpgrtl.engine.core.EnvVars
 import com.rpgrtl.engine.core.GPUHelper
 import com.rpgrtl.engine.core.WineUtils
 import com.rpgrtl.engine.widget.InputControlsView
+import com.rpgrtl.engine.inputcontrols.InputControlsManager
 import com.rpgrtl.engine.widget.TouchpadView
 import com.rpgrtl.engine.widget.XServerView
 import com.rpgrtl.engine.winhandler.WinHandler
@@ -92,7 +93,8 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         inputControlsView = InputControlsView(this).apply {
             setXServer(xServer)
             setTouchpadView(touchpadView)
-            setShowTouchscreenControls(false)
+            loadDefaultControlsProfile(this)
+            setShowTouchscreenControls(true)
         }
 
         environment = XEnvironment(this, rootFS)
@@ -132,6 +134,18 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         manager.activateContainer(container)
         WineUtils.createDosdevicesSymlinks(container, false)
         return true
+    }
+
+    private fun loadDefaultControlsProfile(view: InputControlsView) {
+        val manager = InputControlsManager(this)
+        val profile = manager.getProfiles(true).firstOrNull()
+        if (profile != null) {
+            profile.loadElements(view)
+            view.setProfile(profile)
+            Log.i(TAG, "Loaded touchscreen controls profile: ${profile.name} (${profile.elements.size} elements)")
+        } else {
+            Log.w(TAG, "No touchscreen controls profile found; virtual controls will be empty.")
+        }
     }
 
     private fun addRuntimeComponents() {

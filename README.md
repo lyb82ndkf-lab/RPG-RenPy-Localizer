@@ -1,8 +1,8 @@
 # RPGRenPyLocalizer
 
-面向 Windows 单机游戏的 RPG Maker MV/MZ 与 Ren'Py 本地化、实时翻译和数据辅助工具。
+面向 Windows 单机游戏的 RPG Maker MV/MZ 与 Ren'Py 本地化、实时翻译和数据辅助工具，支持 PC 桌面端与 Android 移动端双端运行。
 
-当前重置版：**2.2.2**
+当前版本：**2.3.0 (PC) / 4.0 (Android)**
 
 - 下载版本：[GitHub Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)
 - 查看更新：[GitHub Tags](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/tags)
@@ -10,9 +10,10 @@
 
 > 本工具面向本地单机游戏的翻译、调试与个人存档管理。修改游戏文件或存档前请保留备份，并遵守游戏许可和当地法律。
 
-## 2.2.2 重置版更新
+## 2.3.0 / 4.0 版本更新
 
-2.2.2 将桌面端重构为 Electron + Vue + Element Plus 界面，并继续使用本地 Python 后端处理游戏分析、翻译和实时桥接。
+**PC端 (2.3.0)** 优化了构建输出，现同时支持 `Setup` 安装版与 `Portable` 免安装版双版本发布。
+**Android端 (4.0)** 彻底重构了移动端前端 UI：废弃了老旧的 UniApp，采用全新的 **Vite + Vue 3** 架构，实现与 PC 端对齐的高级功能（包括翻译工作台、存档管理、地图管理、数据作弊等），并引入了暗黑电竞主题、毛玻璃特效（Glassmorphism）及微动画，大幅提升手机端的交互与视觉体验。
 
 ### 游戏库
 
@@ -43,7 +44,9 @@
 - 地图支持拖拽、横向/纵向滚动、格子悬停高亮和事件格点击。
 - 事件详情可查看事件页、触发方式、出现条件和事件指令。
 - 数据修改支持物品、装备、武器、开关、变量和角色。
-- 存档修改支持金钱、物品、角色等级、开关、变量和完整数据查看。
+- 存档修改支持金钱、物品、角色等级和完整数据查看；开关、变量统一放在“数据修改”页实时操作。
+- RPG Maker 实时桥接组件会在添加或载入项目时自动准备，不需要用户手动安装。
+- RPG Maker 实时翻译只处理 database 与 dialogue，避免修改 event、script 和 system 文本。
 - 实时修改支持玩家 HP/MP/TP、金币、移动速度、经验倍率、穿墙、无敌、自动战斗、自动存档和地图传送等能力。
 - 战斗控制能力取决于具体游戏版本与桥接兼容性，连接后才会显示可用操作。
 
@@ -87,14 +90,19 @@ RPG Maker XP、VX 和 VX Ace 只能识别部分资源，不保证实时组件、
 
 ## 安装
 
-### 使用 Windows 安装包
+### PC端 (Windows)
 
 1. 打开 [Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)。
-2. 下载最新的 `RPGRenPyLocalizer Setup x.x.x.exe`。
-3. 运行安装程序并选择安装目录。
+2. 下载最新的 `RPGRenPyLocalizer Setup 2.3.0.exe` (安装版) 或 `RPGRenPyLocalizer 2.3.0.exe` (免安装便携版)。
+3. 安装版按提示安装；便携版解压即用。
 4. 从桌面或开始菜单启动 RPGRenPyLocalizer。
 
 发布版已经包含 Python 后端，目标电脑不需要单独安装 Python 或 Node.js。
+
+### Android 端
+
+1. 下载最新发布的 `RPGRenPyLocalizer-4.0-android-debug.apk`。
+2. 在手机端安装。App 内嵌基于 Winlator 引擎与新版 WebUI 的游戏环境。
 
 ### 添加游戏
 
@@ -112,17 +120,17 @@ RPG Maker XP、VX 和 VX Ace 只能识别部分资源，不保证实时组件、
 1. 在游戏库中添加并选择 Ren'Py 游戏的 `.exe`。
 2. 进入“AI 设置”，选择 OpenAI、Anthropic 或 Ollama。
 3. 填写接口信息、获取并选择模型，然后执行“测试翻译”。
-4. 进入“实时翻译”，点击启动实时翻译。
-5. 工具会安装 Hook、启动本地桥接服务并启动游戏。
-6. 游戏中出现的新文本会被捕获，翻译完成后自动写入运行时翻译表。
+4. 先启动 Ren'Py 游戏并进入游戏内容。
+5. 回到工具进入“实时翻译”，点击启动实时翻译。
+6. 工具会自动准备 Hook、启动本地桥接服务；游戏中出现的新文本会被捕获，翻译完成后自动写入运行时翻译表。
 
 ### 从旧版本升级
 
 2.2.2 修改了字体标签清理和缓存格式。升级后请执行一次：
 
 1. 选择原来的 Ren'Py 游戏。
-2. 进入“实时翻译”并点击启动，工具会自动重新安装 Ren'Py Hook。
-3. 完全退出并重新启动游戏。
+2. 进入“实时翻译”并点击启动，工具会自动更新 Ren'Py Hook。
+3. 完全退出并重新启动游戏，再按“先启动游戏、后启动实时翻译”的顺序操作。
 
 安装过程会更新 `game/zz_rpgrtl_live_bridge.rpy`，并清理旧缓存中可能导致 `'/font' closes a text tag that isn't open` 的数据。
 
@@ -182,17 +190,19 @@ ollama list
 ### 数据与存档
 
 - “数据修改”用于编辑项目数据库和连接后的实时数据。
-- “存档”页先选择存档槽，再修改金钱、物品、角色、开关或变量。
+- “存档”页先选择存档槽，再修改金钱、物品和角色等级；开关与变量请在游戏运行后进入“数据修改”页操作。
 - 写回前建议保留原存档；不同插件生成的自定义存档字段可能无法自动解析。
 
 ### 实时组件
 
 1. 选择 RPG Maker MV/MZ 游戏。
-2. 进入“实时修改”并安装实时组件。
+2. 工具会自动把桥接插件写入项目并启用，不需要打开 VS Code 或手动安装。
 3. 完全退出并重新启动游戏，让插件被引擎加载。
-4. 进入地图后连接运行中的游戏。
+4. 进入地图后，工具会显示 Hook 心跳；在“实时翻译”中启动服务即可连接运行中的游戏。
 
-“安装实时组件”只写入游戏项目所需文件，不会打开 VS Code。
+发布版目录说明：普通项目的桥接文件位于 `<游戏目录>\\js\\plugins\\RPGRenPyBridge.js`；如果游戏使用 `www` 子目录，则位于 `<游戏目录>\\www\\js\\plugins\\RPGRenPyBridge.js`。修改桥接后必须完全退出并重新启动游戏，不能只返回标题画面。
+
+桥接插件通过 RPG Maker 的安全消息接口捕获对白、选项和滚动文本。工具启动实时翻译时会先把已提取的 database/dialogue 放入优先级队列，AI 翻译完成后推送到游戏；游戏运行中新出现的对白会继续捕获并刷新当前消息窗口。
 
 ## 配置与缓存
 
@@ -214,17 +224,18 @@ API Key 只保存在当前 Windows 用户的本机配置中，不应提交到 Gi
 
 ### Ren'Py 报错 `/font` closes a text tag that isn't open
 
-安装 2.2.2 后重新安装 Hook并重启游戏。新版会同时清理服务器缓存、项目缓存和运行时文本中的畸形字体标签。
+升级到 2.2.2 后重新载入项目并重启游戏。工具会自动更新 Hook，同时清理服务器缓存、项目缓存和运行时文本中的畸形字体标签。
 
-### 开启实时翻译后没有译文
+### RPG Maker 实时翻译没有替换
 
 依次确认：
 
 1. AI 设置中的测试翻译成功。
 2. 已选择模型，OpenAI/Anthropic 已填写 API Key。
 3. Ollama 服务正在运行并能执行 `ollama list`。
-4. 实时翻译状态有心跳且捕获数量持续增加。
-5. 游戏已在安装新版 Hook 后完整重启。
+4. RPG Maker 游戏已在工具自动准备桥接后完整重启。
+5. 实时翻译状态显示 Hook 已连接，捕获数量和队列数量有变化。
+6. 已提前点击“开始翻译”；未提前出现的对白会在捕获后异步翻译并刷新。
 
 ### 测试翻译没有反应
 
@@ -232,53 +243,45 @@ API Key 只保存在当前 Windows 用户的本机配置中，不应提交到 Gi
 
 ### 地图、存档或实时修改不可用
 
-这些页面主要用于 RPG Maker MV/MZ。Ren'Py 项目会隐藏不适用入口。实时数据还要求安装组件、重启游戏并进入地图。
+这些页面主要用于 RPG Maker MV/MZ。Ren'Py 项目会隐藏不适用入口。实时数据需要重启已自动准备桥接的游戏并进入地图。
 
 ### 修改前如何恢复
 
 优先使用 `.rpgrtl_backup` 中的备份。对重要游戏和存档，建议额外复制整个游戏目录或存档目录。
 
-## 从源码运行
+## 从源码运行与构建
 
-要求：Windows、Python 3.11+、Node.js 20+、npm。
+要求：Windows、Python 3.11+、Node.js 20+、npm、Java 17+ (仅Android)、Gradle 9.5+ (仅Android)。
 
+### PC 桌面端开发与构建
 ```powershell
+# 初始化
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install pyinstaller
 npm install
+
+# 运行开发环境
 npm run build:renderer
 npm start
+
+# 构建 Windows 安装包 (同时产出 Setup 与 Portable)
+npm run dist
 ```
 
-开发模式下 Electron 会启动本地 Python API 后端；前端通过 preload 暴露的安全接口访问后端和系统功能。
+输出目录：`release-electron/`
 
-## 测试与构建
-
-运行后端回归测试：
-
+### Android 端开发与构建
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
+# 依赖安装
+cd android_app\mobile_ui_src
+npm install
+
+# 使用一键脚本构建 Android APK
+cd ..\..
+powershell -ExecutionPolicy Bypass -File .\build_all.ps1 -Debug
 ```
 
-检查 Python 文件：
-
-```powershell
-python -m py_compile toolkit/api/server.py toolkit/renpy.py
-```
-
-构建 Windows 安装包：
-
-```powershell
-.\build_electron_release.ps1 -SkipNpmInstall
-```
-
-输出目录：
-
-```text
-release-electron/
-├── RPGRenPyLocalizer Setup x.x.x.exe
-└── win-unpacked/
-```
+输出目录：`dist\android\latest\`
 
 ## 项目结构
 

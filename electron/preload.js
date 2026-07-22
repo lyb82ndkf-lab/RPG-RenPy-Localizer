@@ -3,6 +3,7 @@
 contextBridge.exposeInMainWorld('rpgrtl', {
   backendPort: () => ipcRenderer.invoke('backend:getPort'),
   selectProject: () => ipcRenderer.invoke('dialog:selectProject'),
+  selectGameFolder: () => ipcRenderer.invoke('dialog:selectGameFolder'),
   openPack: () => ipcRenderer.invoke('dialog:openPack'),
   savePack: () => ipcRenderer.invoke('dialog:savePack'),
   openPath: (targetPath) => ipcRenderer.invoke('shell:openPath', targetPath),

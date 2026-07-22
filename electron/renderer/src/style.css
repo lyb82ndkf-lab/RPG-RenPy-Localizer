@@ -78,6 +78,23 @@ body::after {
 .nav-item .el-icon { font-size: 16px; }
 .nav-item:hover { background: rgba(255,255,255,.04); }
 .nav-item.active { background: rgba(77, 214, 200, .10); border-color: rgba(77, 214, 200, .28); }
+.tutorial-link {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0 4px;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tutorial-link:hover { color: #9df3e9; }
+.tutorial-link:focus-visible {
+  outline: 2px solid rgba(77, 214, 200, .45);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
 .add-button { width: 100%; margin: 0 !important; }
 .running-tag { justify-self: start; }
 .update-indicator {
@@ -101,6 +118,8 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .top-actions { display: flex; align-items: center; gap: 8px; }
 .view-shell { flex: 1 1 auto; min-height: 0; height: auto; overflow: hidden; }
+.view-loading-wrap { flex: 1 1 auto; min-height: 0; height: auto; display: flex; flex-direction: column; position: relative; }
+.view-loading-wrap > .view-shell { flex: 1 1 auto; }
 .view-shell:not(.feature-shell) { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, .8fr); gap: 12px; }
 .game-strip {
   flex: 0 0 auto;
@@ -293,6 +312,7 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .runtime-group:last-child { grid-column: 1 / -1; }
 .runtime-group h3 { margin: 0 0 2px; font-size: 13px; }
 .form-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.runtime-group .form-row > .el-input { width: 104px; max-width: 104px; flex: 0 0 104px; }
 .form-row > span { color: var(--muted); font-size: 11px; }
 .teleport-row { grid-template-columns: 120px minmax(70px, 1fr) minmax(70px, 1fr) auto; }
 .actor-gauges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -321,4 +341,137 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
   .save-tools-grid { grid-template-columns: 1fr; }
   .save-tool-group:last-child { grid-column: auto; }
   .search-inline { width: 180px; }
+}
+.translation-toolbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 140px auto auto auto auto;
+  gap: 8px;
+  justify-content: end;
+  align-items: center;
+}
+.translation-toolbar .search-inline,
+.translation-toolbar .mini-select { width: 100%; }
+
+@media (max-width: 1180px) {
+  .translation-toolbar { grid-template-columns: minmax(140px, 1fr) 120px auto auto auto auto; }
+}
+/* Element Plus Tour themed to match the RPGRenPyLocalizer workbench. */
+.el-tour__content {
+  border: 1px solid rgba(77, 214, 200, .34) !important;
+  border-radius: 14px !important;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(77, 214, 200, .14), transparent 34%),
+    linear-gradient(90deg, rgba(255,255,255,.026) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,.026) 1px, transparent 1px),
+    linear-gradient(145deg, rgba(14, 27, 44, .98), rgba(8, 15, 25, .98)) !important;
+  background-size: auto, 34px 34px, 34px 34px, auto !important;
+  color: var(--text) !important;
+  box-shadow: 0 20px 54px rgba(0, 0, 0, .46), 0 0 0 1px rgba(255,255,255,.025) inset !important;
+  overflow: hidden;
+}
+
+.el-tour__header,
+.el-tour__body,
+.el-tour__footer { position: relative; z-index: 1; }
+.el-tour__title {
+  color: #edf4ff !important;
+  font-size: 15px !important;
+  font-weight: 800 !important;
+  letter-spacing: .01em;
+}
+.el-tour__body {
+  color: #b8c7dc !important;
+  font-size: 12px !important;
+  line-height: 1.75 !important;
+}
+.el-tour__footer {
+  border-top: 1px solid rgba(148, 163, 184, .12);
+  padding-top: 10px;
+}
+.el-tour__footer .el-button { margin-left: 6px !important; }
+.el-tour__indicators { color: var(--accent); font-size: 11px; font-weight: 700; }
+.el-tour__closebtn { color: var(--muted) !important; }
+.el-tour__closebtn:hover { color: var(--accent) !important; }
+.el-tour__arrow::before {
+  background: #0e1b2c !important;
+  border-color: rgba(77, 214, 200, .34) !important;
+}
+.translation-progress-card {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(135deg, rgba(77, 214, 200, .075), rgba(255,255,255,.025));
+}
+.translation-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.translation-progress-head strong { font-size: 12px; }
+.translation-progress-head span,
+.translation-progress-message { color: var(--muted); font-size: 11px; }
+.translation-progress-message { overflow-wrap: anywhere; }
+.translation-progress-card .el-progress-bar__outer { background: rgba(7, 13, 22, .88) !important; }
+.translation-progress-card .el-progress__text { color: var(--accent) !important; font-size: 11px !important; }
+.ai-profile-manager {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255,255,255,.028);
+}
+.profile-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .8fr); gap: 8px; }
+.profile-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.profile-actions .el-button { margin: 0 !important; }
+.el-select-dropdown__item small { float: right; color: var(--muted); margin-left: 14px; }
+
+.ai-field-grid {
+  display: grid;
+  gap: 9px;
+  align-items: start;
+}
+.ai-connection-grid {
+  grid-template-columns: minmax(130px, .72fr) minmax(0, 1.28fr);
+}
+.ai-field-wide { grid-column: 1 / -1; }
+.ai-field {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+.ai-field > span,
+.ai-section-caption {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.ai-section-caption {
+  margin: 2px 0 -2px;
+  color: var(--accent);
+}
+.ai-field .el-input,
+.ai-field .el-select { width: 100%; }
+.ai-run-grid {
+  grid-template-columns: repeat(3, minmax(112px, 1fr)) !important;
+}
+.ai-run-grid .ai-field { max-width: 190px; }
+.ai-run-grid .ai-field:last-child { max-width: none; }
+.ai-profile-manager .el-input,
+.ai-profile-manager .el-select { width: 100%; }
+@media (max-width: 1320px) {
+  .ai-run-grid { grid-template-columns: repeat(2, minmax(112px, 1fr)) !important; }
+  .ai-run-grid .ai-field { max-width: none; }
+}
+@media (max-width: 980px) {
+  .ai-connection-grid { grid-template-columns: 1fr; }
+  .ai-run-grid { grid-template-columns: 1fr !important; }
 }

@@ -146,6 +146,11 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun androidAiSettings(): String {
+        return activity.androidAiSettings()
+    }
+
+    @JavascriptInterface
     fun saveAiSettings(json: String): String {
         return activity.saveAiSettings(json)
     }
@@ -153,6 +158,11 @@ class ShellBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun androidAiTranslate(requestJson: String): String {
         return activity.androidAiTranslate(requestJson)
+    }
+
+    @JavascriptInterface
+    fun androidAiModels(settingsJson: String): String {
+        return activity.androidAiModels(settingsJson)
     }
 
     @JavascriptInterface

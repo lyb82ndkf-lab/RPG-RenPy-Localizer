@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -19,11 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from toolkit.detectors import detect_project
+from toolkit.detectors import detect_project, find_launcher
 from toolkit.models import DataRecord, ProjectInfo, TranslationEntry
 from toolkit.renpy import RenPyService
 from toolkit.rpgmaker import RPGMakerService, load_json
-from toolkit.storage import export_translation_pack, import_translation_pack, translation_pack_signature
+from toolkit.storage import export_translation_pack, import_translation_pack, save_json, translation_pack_signature
 from toolkit.workspace import LibraryEntry, Workspace
 
 JsonDict = dict[str, Any]
@@ -41,6 +42,21 @@ def _plain(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _plain(v) for k, v in value.items()}
     return value
+
+
+def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(number, maximum))
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
 
 
 def _entry_from_raw(raw: JsonDict, fallback: TranslationEntry | None = None) -> TranslationEntry:
@@ -67,9 +83,9 @@ class ApiError(Exception):
 
 
 class ToolkitApi:
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, config_dir: Path | None = None) -> None:
         self.project_root = project_root
-        self.workspace = Workspace(project_root)
+        self.workspace = Workspace(project_root, config_dir=config_dir)
         self.project: ProjectInfo | None = None
         self.translation_entries: list[TranslationEntry] = []
         self.data_records: list[DataRecord] = []
@@ -118,6 +134,8 @@ class ToolkitApi:
 
         profiles = {name: profile(name) for name in ("openai", "anthropic", "ollama")}
         current = profiles[provider]
+        named_configs = settings.get("ai_named_configs") if isinstance(settings.get("ai_named_configs"), dict) else {}
+        settings["ai_named_configs"] = named_configs
         settings["ai_profiles"] = profiles
         settings["ai"] = {
             "provider": provider,
@@ -126,7 +144,11 @@ class ToolkitApi:
             "model": str((raw_ai.get("model") if legacy_provider == provider else "") or current["model"]),
             "availableModels": current["models"],
             "targetLang": str(raw_ai.get("targetLang") or settings.get("ai_target_lang") or "简体中文"),
-            "batchSize": int(raw_ai.get("batchSize") or settings.get("ai_batch_size") or 20),
+            "batchSize": _clamp_int(raw_ai.get("batchSize") or settings.get("ai_batch_size"), 20, 1, 200),
+            "concurrency": _clamp_int(raw_ai.get("concurrency") or raw_ai.get("threads") or settings.get("ai_concurrency"), 1, 1, 8),
+            "requestIntervalMs": _clamp_int(_first_present(raw_ai.get("requestIntervalMs"), raw_ai.get("rateLimitMs"), settings.get("ai_request_interval_ms")), 1200, 0, 60000),
+            "rateLimitRetries": _clamp_int(_first_present(raw_ai.get("rateLimitRetries"), raw_ai.get("retry429"), settings.get("ai_rate_limit_retries")), 3, 0, 10),
+            "requestTimeoutSec": _clamp_int(_first_present(raw_ai.get("requestTimeoutSec"), raw_ai.get("timeout"), settings.get("ai_request_timeout_sec")), 240, 30, 900),
         }
         return settings
 
@@ -147,6 +169,11 @@ class ToolkitApi:
             keys[provider] = str(ai.get("apiKey") or "")
             urls[provider] = str(ai.get("baseUrl") or "")
             models[provider] = str(ai.get("model") or "")
+            ai["batchSize"] = _clamp_int(ai.get("batchSize"), 20, 1, 200)
+            ai["concurrency"] = _clamp_int(ai.get("concurrency") or ai.get("threads"), 1, 1, 8)
+            ai["requestIntervalMs"] = _clamp_int(_first_present(ai.get("requestIntervalMs"), ai.get("rateLimitMs")), 1200, 0, 60000)
+            ai["rateLimitRetries"] = _clamp_int(_first_present(ai.get("rateLimitRetries"), ai.get("retry429")), 3, 0, 10)
+            ai["requestTimeoutSec"] = _clamp_int(_first_present(ai.get("requestTimeoutSec"), ai.get("timeout")), 240, 30, 900)
             settings.update({
                 "ai_provider": provider,
                 "ai_api_keys": keys,
@@ -154,13 +181,75 @@ class ToolkitApi:
                 "ai_models": models,
                 "ai_model": models[provider],
                 "ai_target_lang": str(ai.get("targetLang") or "简体中文"),
-                "ai_batch_size": int(ai.get("batchSize") or 20),
+                "ai_batch_size": ai["batchSize"],
+                "ai_concurrency": ai["concurrency"],
+                "ai_request_interval_ms": ai["requestIntervalMs"],
+                "ai_rate_limit_retries": ai["rateLimitRetries"],
+                "ai_request_timeout_sec": ai["requestTimeoutSec"],
             })
         self.workspace.save_settings(settings)
         return {"ok": True, "settings": settings}
 
     def library_get(self) -> JsonDict:
         return {"ok": True, "entries": _plain(self.workspace.load_library())}
+
+    def _project_display_name(self, project: ProjectInfo) -> str:
+        launcher = project.launcher_path
+        generic_names = {"game", "nw", "nwjs", "notification_helper"}
+        for value in self._exe_metadata_names(launcher) if launcher else []:
+            if value and value.strip().lower() not in generic_names:
+                return value
+        if launcher and launcher.stem.strip().lower() not in generic_names:
+            return launcher.stem
+        return project.root.name
+
+    @staticmethod
+    def _exe_metadata_names(path: Path | None) -> list[str]:
+        if not path or not path.exists() or os.name != "nt":
+            return []
+        try:
+            version = ctypes.windll.version
+            size = version.GetFileVersionInfoSizeW(str(path), None)
+            if not size:
+                return []
+            buffer = ctypes.create_string_buffer(size)
+            if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+                return []
+            translate_ptr = ctypes.c_void_p()
+            translate_len = ctypes.c_uint()
+            if not version.VerQueryValueW(buffer, "\\VarFileInfo\\Translation", ctypes.byref(translate_ptr), ctypes.byref(translate_len)):
+                return []
+            if translate_len.value < 4:
+                return []
+            lang, codepage = ctypes.cast(translate_ptr, ctypes.POINTER(ctypes.c_ushort * 2)).contents
+            names: list[str] = []
+            for key in ("ProductName", "FileDescription", "OriginalFilename"):
+                query = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\{key}"
+                value_ptr = ctypes.c_wchar_p()
+                value_len = ctypes.c_uint()
+                if version.VerQueryValueW(buffer, query, ctypes.byref(value_ptr), ctypes.byref(value_len)):
+                    value = str(value_ptr.value or "").strip()
+                    if value and value.lower().endswith(".exe"):
+                        value = Path(value).stem
+                    if value and value not in names:
+                        names.append(value)
+            return names
+        except Exception:
+            return []
+
+    def _library_upsert_project(self, entries: list[LibraryEntry], project: ProjectInfo, now: str) -> tuple[bool, LibraryEntry]:
+        launcher = str(project.launcher_path) if project.launcher_path else ""
+        name = self._project_display_name(project)
+        existing = next((entry for entry in entries if os.path.normcase(entry.path) == os.path.normcase(str(project.root))), None)
+        if existing:
+            existing.name = name
+            existing.engine = project.engine
+            existing.launcher_path = launcher
+            existing.last_opened_at = now
+            return False, existing
+        entry = LibraryEntry(name=name, path=str(project.root), engine=project.engine, added_at=now, last_opened_at=now, launcher_path=launcher, note="", tags=[])
+        entries.insert(0, entry)
+        return True, entry
 
     def library_add(self, body: JsonDict) -> JsonDict:
         if self._active_game_path():
@@ -171,17 +260,100 @@ class ToolkitApi:
         project = detect_project(Path(raw_path).expanduser())
         entries = self.workspace.load_library()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        launcher = str(project.launcher_path) if project.launcher_path else ""
-        existing = next((entry for entry in entries if entry.path == str(project.root)), None)
-        if existing:
-            existing.name = project.root.name
-            existing.engine = project.engine
-            existing.launcher_path = launcher
-            existing.last_opened_at = now
-        else:
-            entries.insert(0, LibraryEntry(name=project.root.name, path=str(project.root), engine=project.engine, added_at=now, last_opened_at=now, launcher_path=launcher, note="", tags=[]))
+        self._library_upsert_project(entries, project, now)
         self.workspace.save_library(entries)
+        # Prepare the bundled bridge when the game enters the library so a later
+        # launch does not depend on visiting a separate setup page first.
+        try:
+            if project.engine == "Ren'Py":
+                RenPyService(project).install_live_translation_bridge(False)
+            elif project.engine == "RPG Maker MV/MZ":
+                RPGMakerService(project).install_runtime_bridge()
+        except Exception:
+            # Keep library import usable for non-standard or read-only projects.
+            pass
         return {"ok": True, "entries": _plain(entries)}
+
+    def library_add_folder(self, body: JsonDict) -> JsonDict:
+        if self._active_game_path():
+            raise ApiError("游戏运行中，不能添加或更换游戏。", 409)
+        raw_path = str(body.get("path") or "").strip()
+        if not raw_path:
+            raise ApiError("缺少文件夹路径。")
+        root = Path(raw_path).expanduser()
+        if not root.is_dir():
+            raise ApiError("请选择一个文件夹。")
+        entries = self.workspace.load_library()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        projects, scanned = self._scan_importable_projects(root)
+        added = 0
+        updated = 0
+        for project in projects.values():
+            was_added, _entry = self._library_upsert_project(entries, project, now)
+            if was_added:
+                added += 1
+            else:
+                updated += 1
+            try:
+                if project.engine == "Ren'Py":
+                    RenPyService(project).install_live_translation_bridge(False)
+                elif project.engine == "RPG Maker MV/MZ":
+                    RPGMakerService(project).install_runtime_bridge()
+            except Exception:
+                pass
+        self.workspace.save_library(entries)
+        return {"ok": True, "entries": _plain(entries), "added": added, "updated": updated, "found": len(projects), "scanned": scanned}
+
+    def _scan_importable_projects(self, root: Path) -> tuple[dict[str, ProjectInfo], int]:
+        projects: dict[str, ProjectInfo] = {}
+        scanned = 0
+        ignored_dirs = {
+            ".git",
+            ".svn",
+            ".hg",
+            ".rpgrtl_backup",
+            ".rpgrtl_workspace",
+            "__pycache__",
+            "node_modules",
+        }
+
+        def remember(project: ProjectInfo) -> None:
+            if project.engine not in {"RPG Maker MV/MZ", "Ren'Py"}:
+                return
+            if not project.launcher_path:
+                return
+            key = os.path.normcase(str(project.root.resolve()))
+            existing = projects.get(key)
+            if existing is None or (not existing.launcher_path and project.launcher_path):
+                projects[key] = project
+
+        for current, dirnames, filenames in os.walk(root):
+            current_path = Path(current)
+            dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
+
+            scanned += 1
+            try:
+                project = detect_project(current_path)
+            except Exception:
+                project = None
+            if project:
+                remember(project)
+                dirnames[:] = []
+                continue
+
+            for filename in filenames:
+                if not filename.lower().endswith(".exe"):
+                    continue
+                scanned += 1
+                try:
+                    project = detect_project(current_path / filename)
+                except Exception:
+                    continue
+                remember(project)
+                dirnames[:] = []
+                break
+
+        return projects, scanned
 
     def library_remove(self, body: JsonDict) -> JsonDict:
         raw_path = str(body.get("path") or "").strip()
@@ -207,9 +379,11 @@ class ToolkitApi:
         entry = next((item for item in self.workspace.load_library() if item.path == raw_path), None)
         if entry is None:
             raise ApiError("游戏库中找不到该游戏。", 404)
-        launcher = Path(entry.launcher_path) if entry.launcher_path else Path(entry.path) / "Game.exe"
-        if not launcher.exists():
-            raise ApiError(f"找不到游戏启动文件：{launcher}", 404)
+        launcher = Path(entry.launcher_path) if entry.launcher_path else find_launcher(entry.path)
+        if launcher is not None and not launcher.exists():
+            launcher = find_launcher(entry.path, launcher.name)
+        if launcher is None or not launcher.exists():
+            raise ApiError(f"找不到游戏启动文件：{Path(entry.path)}", 404)
         proc = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
         self.processes.append(proc)
         self.game_processes[raw_path] = proc
@@ -246,6 +420,8 @@ class ToolkitApi:
             self._stop_live_worker()
             if self.project.engine == "Ren'Py":
                 RenPyService(self.project).stop_live_bridge_server()
+            elif self.project.engine == "RPG Maker MV/MZ":
+                RPGMakerService(self.project).stop_live_bridge_server()
         project = requested
         with self.lock:
             self.project = project
@@ -253,6 +429,16 @@ class ToolkitApi:
             self.data_records = []
             self.save_payload = None
             self.save_path = None
+        # Prepare the bundled runtime component as soon as a project is selected,
+        # so users do not have to understand or repeat a manual installation step.
+        try:
+            if project.engine == "Ren'Py":
+                RenPyService(project).install_live_translation_bridge(False)
+            elif project.engine == "RPG Maker MV/MZ":
+                RPGMakerService(project).install_runtime_bridge()
+        except Exception:
+            # Projects with a non-standard layout can still be opened for extraction.
+            pass
         return self.project_summary(refresh=False)
 
     def project_summary(self, refresh: bool = False) -> JsonDict:
@@ -296,8 +482,11 @@ class ToolkitApi:
 
     def launch_project(self, body: JsonDict) -> JsonDict:
         project = self._project()
-        launcher = Path(str(body.get("launcherPath") or project.launcher_path or ""))
-        if not launcher.exists():
+        raw_launcher = body.get("launcherPath") or project.launcher_path
+        launcher: Path | None = Path(str(raw_launcher)) if raw_launcher else find_launcher(project.root)
+        if launcher is not None and not launcher.exists():
+            launcher = find_launcher(project.root, launcher.name if str(raw_launcher or "") else None)
+        if launcher is None or not launcher.exists():
             raise ApiError("未找到游戏启动文件。")
         proc = subprocess.Popen([str(launcher)], cwd=str(launcher.parent))
         self.processes.append(proc)
@@ -345,7 +534,9 @@ class ToolkitApi:
         refresh = str(query.get("refresh", "0")).lower() in {"1", "true", "yes"}
         if refresh or not self.translation_entries:
             self.translation_entries = service.extract_translations()
-        entries = self.translation_entries
+            self._restore_translation_cache()
+        safe_entries = self._filter_safe_translation_entries(self.translation_entries)
+        entries = safe_entries
         text = str(query.get("q") or "").strip().lower()
         category = str(query.get("category") or "").strip()
         only_missing = str(query.get("missing", "0")).lower() in {"1", "true", "yes"}
@@ -357,8 +548,8 @@ class ToolkitApi:
             entries = [e for e in entries if not e.target]
         limit = max(1, min(int(query.get("limit") or 500), 5000))
         offset = max(0, int(query.get("offset") or 0))
-        categories = sorted({e.category or e.file for e in self.translation_entries if e.category or e.file})
-        return {"count": len(entries), "total": len(self.translation_entries), "categories": categories, "entries": _plain(entries[offset: offset + limit])}
+        categories = sorted({e.category or e.file for e in safe_entries if e.category or e.file})
+        return {"count": len(entries), "total": len(safe_entries), "categories": categories, "entries": _plain(entries[offset: offset + limit])}
 
     def translations_save_targets(self, body: JsonDict) -> JsonDict:
         updates = body.get("updates") or []
@@ -366,19 +557,75 @@ class ToolkitApi:
             raise ApiError("updates 必须是数组。")
         if not self.translation_entries:
             self.translation_entries = self._service().extract_translations()
-        index = {e.entry_id: e for e in self.translation_entries}
+        index = {e.entry_id: e for e in self._filter_safe_translation_entries(self.translation_entries)}
         changed = 0
         for raw in updates:
             if not isinstance(raw, dict):
                 continue
             entry_id = str(raw.get("entry_id") or raw.get("id") or "")
             if entry_id in index:
-                index[entry_id].target = str(raw.get("target") or "")
+                target = str(raw.get("target") or "")
+                source = index[entry_id].source
+                self._validate_translation_target(source, target)
+                index[entry_id].target = target
                 changed += 1
+        self._persist_translation_cache()
         return {"ok": True, "changed": changed}
+
+    def _translation_cache_path(self) -> Path:
+        return self._project().root / ".rpgrtl_workspace" / "translation_entries.json"
+
+    def _restore_translation_cache(self) -> None:
+        path = self._translation_cache_path()
+        if not path.exists():
+            return
+        try:
+            payload = load_json(path)
+            cached = payload.get("entries") if isinstance(payload, dict) else []
+            by_id = {str(item.get("entry_id")): str(item.get("target") or "") for item in cached if isinstance(item, dict)}
+            for entry in self.translation_entries:
+                if entry.entry_id in by_id:
+                    entry.target = by_id[entry.entry_id]
+        except (OSError, ValueError, TypeError):
+            return
+
+    def _persist_translation_cache(self) -> None:
+        path = self._translation_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = time.time()
+        entries = _plain(self._filter_safe_translation_entries(self.translation_entries))
+        save_json(path, {"version": 1, "updated_at": timestamp, "entries": entries})
+        save_json(path.parent / "original_texts.json", {
+            "version": 1,
+            "updated_at": timestamp,
+            "engine": self._project().engine,
+            "entries": [{"entry_id": item.get("entry_id", ""), "source": item.get("source", ""), "file": item.get("file", ""), "context": item.get("context", ""), "category": item.get("category", "")} for item in entries],
+        })
+        save_json(path.parent / "translated_texts.json", {
+            "version": 1,
+            "updated_at": timestamp,
+            "engine": self._project().engine,
+            "entries": [{"entry_id": item.get("entry_id", ""), "source": item.get("source", ""), "target": item.get("target", ""), "file": item.get("file", ""), "category": item.get("category", "")} for item in entries if item.get("target", "")],
+        })
+    def _safe_translation_categories(self) -> set[str]:
+        project = self._project()
+        if project.engine == "RPG Maker MV/MZ":
+            return {"database", "dialogue"}
+        if project.engine == "Ren'Py":
+            return {"dialogue", "choice"}
+        return set()
+
+    def _is_safe_translation_entry(self, entry: TranslationEntry) -> bool:
+        categories = self._safe_translation_categories()
+        return bool(entry.source and entry.category in categories)
+
+    def _filter_safe_translation_entries(self, entries: list[TranslationEntry]) -> list[TranslationEntry]:
+        return [entry for entry in entries if self._is_safe_translation_entry(entry)]
+
     def translations_apply(self, body: JsonDict) -> JsonDict:
         translations = self._merged_translation_map(body)
         changed = self._service().apply_translations(translations)
+        self._persist_translation_cache()
         return {"ok": True, "changed": changed}
 
     def translations_export(self, body: JsonDict) -> JsonDict:
@@ -400,22 +647,50 @@ class ToolkitApi:
         imported = import_translation_pack(path)
         if not self.translation_entries:
             self.translation_entries = self._service().extract_translations()
-        index = {e.entry_id: e for e in self.translation_entries}
+        index = {e.entry_id: e for e in self._filter_safe_translation_entries(self.translation_entries)}
         matched = 0
         for entry_id, imported_entry in imported.items():
             if entry_id in index:
+                self._validate_translation_target(index[entry_id].source, imported_entry.target)
                 index[entry_id].target = imported_entry.target
                 matched += 1
+        self._persist_translation_cache()
         return {"ok": True, "matched": matched, "imported": len(imported)}
 
     def translations_runtime(self, body: JsonDict) -> JsonDict:
         project = self._project()
         translations = self._merged_translation_map(body)
+        if str(body.get("mode") or "translated") == "original":
+            original_map = {entry.target: entry.source for entry in translations.values() if entry.target.strip()}
+            translations = {
+                key: TranslationEntry(entry.entry_id, entry.source, entry.source, entry.file, entry.context, entry.category)
+                for key, entry in translations.items()
+            }
+            translations.update({
+                f"reverse:{key}": TranslationEntry(f"reverse:{key}", key, value, "", "", "")
+                for key, value in original_map.items()
+            })
         if project.engine == "RPG Maker MV/MZ":
-            path, launcher, changed = RPGMakerService(project).build_runtime_copy(translations)
-            return {"ok": True, "path": str(path), "launcher": str(launcher) if launcher else "", "changed": changed}
+            service = RPGMakerService(project)
+            # The workbench replacement buttons must also work while the game
+            # is already running, even when the user did not open Live first.
+            # Starting without clear_events preserves the current queue and
+            # lets the game's polling bridge connect on its next heartbeat.
+            service.install_runtime_bridge()
+            service.start_live_bridge_server(clear_events=False)
+            if hasattr(service, "set_live_translations"):
+                live_count = service.set_live_translations({entry.source: entry.target for entry in translations.values() if entry.source.strip() and entry.target.strip()})
+            else:
+                live_count = 0
+            path, launcher, changed = service.build_runtime_copy(translations)
+            return {"ok": True, "path": str(path), "launcher": str(launcher) if launcher else "", "changed": changed, "liveApplied": live_count}
         if project.engine == "Ren'Py":
-            path, changed = RenPyService(project).build_runtime_translation_patch(translations)
+            service = RenPyService(project)
+            service.install_live_translation_bridge(False)
+            for entry in translations.values():
+                if entry.source.strip() and entry.target.strip():
+                    service.merge_live_translations({entry.source: entry.target}, kind="mode_switch")
+            path, changed = service.build_runtime_translation_patch(translations)
             return {"ok": True, "path": str(path), "changed": changed}
         raise ApiError("当前引擎不支持运行时翻译补丁。")
 
@@ -609,13 +884,21 @@ class ToolkitApi:
             with urllib.request.urlopen(request, timeout=4.5) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except Exception as exc:
-            raise ApiError("无法连接游戏实时组件，请先安装组件、重启游戏并进入地图。", 503) from exc
+            raise ApiError("无法连接游戏实时桥接，请启动游戏并进入地图；组件会在项目载入时自动准备。", 503) from exc
         if not isinstance(result, dict) or not result.get("ok", True):
             raise ApiError(str(result.get("error") if isinstance(result, dict) else "实时组件返回异常"), 502)
         return result
 
     def live_start(self, body: JsonDict) -> JsonDict:
         service = self._service()
+        if not self.translation_entries:
+            try:
+                self.translation_entries = service.extract_translations()
+                self._restore_translation_cache()
+            except Exception:
+                self.translation_entries = []
+        if self.translation_entries and self.project:
+            self._persist_translation_cache()
         if isinstance(service, RenPyService):
             service.install_live_translation_bridge(bool(body.get("clearEvents", False)))
             if self.translation_entries:
@@ -625,7 +908,14 @@ class ToolkitApi:
             if body.get("autoTranslate", True):
                 self._start_live_worker(service)
         elif hasattr(service, "start_live_bridge_server"):
-            service.start_live_bridge_server(bool(body.get("clearEvents", False)))
+            RPGMakerService(service.project).install_runtime_bridge()
+            # A new RPGMaker session must not inherit another game's capture queue.
+            service.start_live_bridge_server(bool(body.get("clearEvents", True)))
+            if self.translation_entries and hasattr(service, "set_live_translations"):
+                service.set_live_translations({entry.source: entry.target for entry in self.translation_entries if entry.source.strip() and entry.target.strip()})
+                service.seed_live_translation_queue(self.translation_entries)
+            if body.get("autoTranslate", True):
+                self._start_live_worker(service)
         return self.live_status()
 
     def live_stop(self) -> JsonDict:
@@ -643,6 +933,8 @@ class ToolkitApi:
                 status["worker"] = dict(self.live_worker_stats)
             if hasattr(service, "read_live_debug_entries"):
                 status["recentEvents"] = _plain(service.read_live_debug_entries(20))
+            elif hasattr(service, "read_live_debug_events"):
+                status["recentEvents"] = _plain(service.read_live_debug_events(20))
             return status
         return {"running": False}
 
@@ -674,6 +966,15 @@ class ToolkitApi:
             return False
         return any("a" <= char.lower() <= "z" or "\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff" for char in clean)
 
+    @staticmethod
+    def _is_safe_rpgmaker_capture(event: str) -> bool:
+        return str(event or "") in {
+            "game_message_setText", "game_message_setChoice", "choice_drawItem",
+            "cmd_401_dialogue", "cmd_102_choice", "cmd_405_scroll",
+            "map_event_dialogue", "map_event_choice", "map_event_scroll",
+            "common_event_dialogue", "showText", "scrollText", "dialogue_block",
+        }
+
     def _live_ai_config(self) -> JsonDict:
         settings = self.settings_get()
         ai = settings.get("ai") if isinstance(settings.get("ai"), dict) else {}
@@ -686,7 +987,7 @@ class ToolkitApi:
             "batchSize": max(1, min(int(ai.get("batchSize") or 20), 50)),
         }
 
-    def _start_live_worker(self, service: RenPyService) -> None:
+    def _start_live_worker(self, service: Any) -> None:
         project_root = str(service.project.root.resolve())
         if self.live_worker_thread and self.live_worker_thread.is_alive() and self.live_worker_project == project_root:
             return
@@ -709,7 +1010,7 @@ class ToolkitApi:
             self.live_worker_stats["running"] = False
             self.live_worker_stats["state"] = "stopped"
 
-    def _live_worker_loop(self, service: RenPyService, stop_event: threading.Event, project_root: str) -> None:
+    def _live_worker_loop(self, service: Any, stop_event: threading.Event, project_root: str) -> None:
         failure_streak = 0
         source_attempts: dict[str, int] = {}
         retry_after: dict[str, float] = {}
@@ -740,16 +1041,25 @@ class ToolkitApi:
                 translated = {
                     source: str(target or "").strip()
                     for source, target in zip(candidates, targets)
-                    if str(target or "").strip() and str(target or "").strip() != source and RenPyService.control_tokens_preserved(source, str(target or "").strip())
+                    if str(target or "").strip()
+                    and str(target or "").strip() != source
+                    and (
+                        (not isinstance(service, RenPyService) or RenPyService.control_tokens_preserved(source, str(target or "").strip()))
+                        and (not isinstance(service, RPGMakerService) or RPGMakerService.control_tokens_preserved(source, str(target or "").strip()))
+                    )
                 }
                 missing = [source for source in candidates if source not in translated]
                 if translated:
                     service.merge_live_translations(translated, kind="automatic")
+                    if hasattr(service, "write_live_translation_table"):
+                        service.write_live_translation_table(translated)
                     with self.lock:
                         for entry in self.translation_entries:
                             if entry.source in translated:
                                 entry.target = translated[entry.source]
                         self.live_worker_stats["translated"] = int(self.live_worker_stats.get("translated", 0)) + len(translated)
+                    if self.project:
+                        self._persist_translation_cache()
                     for source in translated:
                         source_attempts.pop(source, None)
                         retry_after.pop(source, None)
@@ -778,6 +1088,17 @@ class ToolkitApi:
             self.live_worker_stats["state"] = "stopped"
 
     def ai_translate(self, body: JsonDict) -> JsonDict:
+        entries = self._normalize_ai_entries(body.get("entries") or [])
+        if entries:
+            provider = str(body.get("provider") or "OpenAI")
+            if provider == "\u767e\u5ea6\u7ffb\u8bd1":
+                translations = self._translate_baidu([entry["source"] for entry in entries], body)
+                return {"ok": True, "translations": [{"entry_id": entry["entry_id"], "target": translations[index] if index < len(translations) else ""} for index, entry in enumerate(entries)]}
+            if provider in {"Google \u514d\u8d39", "MyMemory", "LibreTranslate"}:
+                translations = self._translate_public_mt([entry["source"] for entry in entries], body)
+                return {"ok": True, "translations": [{"entry_id": entry["entry_id"], "target": translations[index] if index < len(translations) else ""} for index, entry in enumerate(entries)]}
+            return {"ok": True, "translations": self._translate_entries_openai_compatible(entries, body)}
+
         texts = body.get("texts") or []
         if isinstance(texts, str):
             texts = [texts]
@@ -785,9 +1106,9 @@ class ToolkitApi:
         if not texts:
             return {"translations": []}
         provider = str(body.get("provider") or "OpenAI")
-        if provider == "百度翻译":
+        if provider == "\u767e\u5ea6\u7ffb\u8bd1":
             translations = self._translate_baidu(texts, body)
-        elif provider in {"Google 免费", "MyMemory", "LibreTranslate"}:
+        elif provider in {"Google \u514d\u8d39", "MyMemory", "LibreTranslate"}:
             translations = self._translate_public_mt(texts, body)
         else:
             translations = self._translate_openai_compatible(texts, body)
@@ -802,7 +1123,18 @@ class ToolkitApi:
                 entry_id = str(raw.get("entry_id") or raw.get("id") or "")
                 if entry_id in index:
                     index[entry_id] = _entry_from_raw(raw, index[entry_id])
-        return list(index.values())
+        entries = self._filter_safe_translation_entries(list(index.values()))
+        for entry in entries:
+            self._validate_translation_target(entry.source, entry.target)
+        return entries
+
+    def _validate_translation_target(self, source: str, target: str) -> None:
+        if not target or not self.project:
+            return
+        if self.project.engine == "RPG Maker MV/MZ" and not RPGMakerService.control_tokens_preserved(source, target):
+            raise ApiError(f"译文控制符不完整：{source[:80]}")
+        if self.project.engine == "Ren'Py" and not RenPyService.control_tokens_preserved(source, target):
+            raise ApiError(f"Ren'Py 控制符不完整：{source[:80]}")
 
     def _merged_translation_map(self, body: JsonDict) -> dict[str, TranslationEntry]:
         return {entry.entry_id: entry for entry in self._merged_translation_list(body)}
@@ -823,17 +1155,109 @@ class ToolkitApi:
     def _save_preview(self, payload: JsonDict) -> JsonDict:
         party = payload.get("party", {}) if isinstance(payload, dict) else {}
         actors = payload.get("actors", {}).get("_data", []) if isinstance(payload.get("actors"), dict) else []
-        switches = payload.get("switches", {}).get("_data", []) if isinstance(payload.get("switches"), dict) else []
-        variables = payload.get("variables", {}).get("_data", []) if isinstance(payload.get("variables"), dict) else []
         return {
             "party": {k: party.get(k) for k in ["_gold", "_steps"] if isinstance(party, dict)},
             "items": party.get("_items", {}) if isinstance(party, dict) else {},
             "weapons": party.get("_weapons", {}) if isinstance(party, dict) else {},
             "armors": party.get("_armors", {}) if isinstance(party, dict) else {},
             "actors": actors[:50] if isinstance(actors, list) else [],
-            "switches": switches[:200] if isinstance(switches, list) else [],
-            "variables": variables[:200] if isinstance(variables, list) else [],
         }
+
+    @staticmethod
+    def _normalize_ai_entries(raw_entries: Any) -> list[JsonDict]:
+        if not isinstance(raw_entries, list):
+            return []
+        entries: list[JsonDict] = []
+        for index, raw in enumerate(raw_entries):
+            if not isinstance(raw, dict):
+                continue
+            source = str(raw.get("source") or "")
+            if not source.strip():
+                continue
+            entry_id = str(raw.get("entry_id") or raw.get("id") or f"entry_{index}")
+            entries.append({
+                "entry_id": entry_id,
+                "source": source,
+                "file": str(raw.get("file") or ""),
+                "context": str(raw.get("context") or ""),
+                "category": str(raw.get("category") or ""),
+            })
+        return entries
+
+    def _translate_entries_openai_compatible(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        provider = self._normalize_ai_provider(str(body.get("provider") or "openai"))
+        api_key = str(body.get("apiKey") or "")
+        model = str(body.get("model") or self._default_model(provider))
+        base_url = str(body.get("baseUrl") or self._default_base_url(provider)).rstrip("/")
+        if not base_url:
+            raise ApiError("缺少 Base URL。")
+        if not api_key and provider != "ollama":
+            raise ApiError("缺少 API Key。")
+        target_lang = str(body.get("targetLang") or "简体中文")
+        source_lang = str(body.get("sourceLang") or "自动")
+        compact_entries = [
+            {
+                "entry_id": entry["entry_id"],
+                "source": entry["source"],
+                "category": entry.get("category", ""),
+                "file": entry.get("file", ""),
+                "context": entry.get("context", ""),
+            }
+            for entry in entries
+        ]
+        prompt = (
+            "你是专业游戏本地化译者。请把输入 JSON 中每个 source 从"
+            f"{source_lang}翻译成{target_lang}，尤其必须输出简体中文译文。"
+            "保持 RPG Maker/Ren'Py 控制符、变量、占位符、颜色/名称标签、转义符和换行不变。"
+            "不要改 entry_id，不要合并或删除条目。除非 source 已经是目标语言、纯数字、纯符号或不可翻译控制符，否则不要原样照抄 source。"
+            "只返回严格 JSON 对象，格式为 {\"translations\": {\"entry_id\": \"译文\"}}，不要 Markdown，不要解释。"
+        )
+        user_payload = json.dumps({"entries": compact_entries}, ensure_ascii=False)
+        if provider == "anthropic":
+            url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
+            payload = {
+                "model": model,
+                "max_tokens": int(body.get("maxTokens") or 4096),
+                "temperature": float(body.get("temperature", 0.2)),
+                "system": prompt,
+                "messages": [{"role": "user", "content": user_payload}],
+            }
+            raw = self._http_json(url, payload, {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"}, timeout=self._ai_timeout(body))
+            blocks = raw.get("content") or []
+            content = "".join(str(item.get("text") or "") for item in blocks if isinstance(item, dict))
+        else:
+            url = base_url
+            if not url.endswith("/chat/completions"):
+                url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
+            payload = {
+                "model": model,
+                "max_tokens": int(body.get("maxTokens") or 8192),
+                "temperature": float(body.get("temperature", 0.2)),
+                "stream": False,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+            }
+            headers = {"Content-Type": "application/json"}
+            if api_key and provider != "ollama":
+                headers["Authorization"] = f"Bearer {api_key}"
+            try:
+                raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
+            except ApiError as exc:
+                # Some OpenAI-compatible gateways reject response_format or max_tokens.
+                # Retry once with the portable request shape instead of losing a whole batch.
+                if exc.status not in {400, 404, 422}:
+                    raise
+                payload.pop("response_format", None)
+                payload.pop("max_tokens", None)
+                raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
+            content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if isinstance(content, list):
+                content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+        mapping = self._parse_translation_map(content, [entry["entry_id"] for entry in entries])
+        return [{"entry_id": entry["entry_id"], "target": mapping.get(entry["entry_id"], "")} for entry in entries]
 
     def _translate_openai_compatible(self, texts: list[str], body: JsonDict) -> list[str]:
         provider = self._normalize_ai_provider(str(body.get("provider") or "openai"))
@@ -846,7 +1270,12 @@ class ToolkitApi:
             raise ApiError("缺少 API Key。")
         target_lang = str(body.get("targetLang") or "简体中文")
         source_lang = str(body.get("sourceLang") or "自动")
-        prompt = f"你是专业游戏本地化译者。请把以下 {source_lang} 游戏文本翻译成 {target_lang}。保持 RPG Maker/Ren'Py 控制符、变量、换行和占位符不变。只返回 JSON 数组，顺序与输入一致，不要解释。"
+        prompt = (
+            f"你是专业游戏本地化译者。请把以下 {source_lang} 游戏文本翻译成 {target_lang}，必须输出简体中文译文。"
+            "保持 RPG Maker/Ren'Py 控制符、变量、换行和占位符不变。"
+            "除非原文已经是目标语言、纯数字、纯符号或不可翻译控制符，否则不要原样返回原文。"
+            "只返回 JSON 数组，顺序与输入一致，不要解释。"
+        )
         if provider == "anthropic":
             url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
             payload = {
@@ -856,7 +1285,7 @@ class ToolkitApi:
                 "system": prompt,
                 "messages": [{"role": "user", "content": json.dumps(texts, ensure_ascii=False)}],
             }
-            raw = self._http_json(url, payload, {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"}, timeout=int(body.get("timeout") or 120))
+            raw = self._http_json(url, payload, {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"}, timeout=self._ai_timeout(body))
             blocks = raw.get("content") or []
             content = "".join(str(item.get("text") or "") for item in blocks if isinstance(item, dict))
             return self._parse_translation_array(content, len(texts))
@@ -865,7 +1294,10 @@ class ToolkitApi:
             url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
         payload = {
             "model": model,
+            "max_tokens": int(body.get("maxTokens") or 8192),
             "temperature": float(body.get("temperature", 0.2)),
+            "stream": False,
+            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(texts, ensure_ascii=False)},
@@ -874,8 +1306,17 @@ class ToolkitApi:
         headers = {"Content-Type": "application/json"}
         if api_key and provider != "ollama":
             headers["Authorization"] = f"Bearer {api_key}"
-        raw = self._http_json(url, payload, headers, timeout=int(body.get("timeout") or 120))
+        try:
+            raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
+        except ApiError as exc:
+            if exc.status not in {400, 404, 422}:
+                raise
+            payload.pop("response_format", None)
+            payload.pop("max_tokens", None)
+            raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
         content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if isinstance(content, list):
+            content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
         return self._parse_translation_array(content, len(texts))
 
     def _translate_baidu(self, texts: list[str], body: JsonDict) -> list[str]:
@@ -915,6 +1356,11 @@ class ToolkitApi:
                 raw = json.loads(resp.read().decode("utf-8"))
             result.append(str(raw.get("responseData", {}).get("translatedText") or ""))
         return result
+    @staticmethod
+    def _ai_timeout(body: JsonDict) -> int:
+        raw = _first_present(body.get("requestTimeoutSec"), body.get("timeout"), body.get("readTimeoutSec"))
+        return _clamp_int(raw, 240, 30, 900)
+
     def _http_json(self, url: str, payload: JsonDict, headers: JsonDict, timeout: int = 120) -> JsonDict:
         req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers)
         try:
@@ -923,6 +1369,13 @@ class ToolkitApi:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
             raise ApiError(f"HTTP {exc.code}: {detail}", exc.code)
+        except (TimeoutError, socket.timeout) as exc:
+            raise ApiError(f"AI request timed out: {exc}. Reduce batch size or increase request timeout seconds in AI settings.", 504)
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+                raise ApiError(f"AI request timed out: {reason}. Reduce batch size or increase request timeout seconds in AI settings.", 504)
+            raise
 
     @staticmethod
     def _http_get_json(url: str, headers: JsonDict, timeout: int = 30) -> JsonDict:
@@ -936,19 +1389,63 @@ class ToolkitApi:
         except Exception as exc:
             raise ApiError(f"获取模型失败：{exc}", 502) from exc
 
-    def _parse_translation_array(self, content: str, expected: int) -> list[str]:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
+    @staticmethod
+    def _json_from_model_content(content: str) -> Any:
+        text = str(content or "").strip()
+        fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        candidates = [text]
+        for open_char, close_char in (("{", "}"), ("[", "]")):
+            start = text.find(open_char)
+            end = text.rfind(close_char)
+            if 0 <= start < end:
+                candidates.append(text[start:end + 1])
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except Exception as exc:
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise ValueError("empty content")
+
+    def _parse_translation_map(self, content: str, entry_ids: list[str]) -> dict[str, str]:
         try:
-            parsed = json.loads(text)
+            parsed = self._json_from_model_content(content)
+        except Exception:
+            return {}
+        values: dict[str, str] = {}
+        raw_translations = parsed.get("translations") if isinstance(parsed, dict) else parsed
+        if isinstance(raw_translations, dict):
+            for entry_id in entry_ids:
+                if entry_id in raw_translations:
+                    values[entry_id] = str(raw_translations.get(entry_id) or "")
+        elif isinstance(raw_translations, list):
+            expected = set(entry_ids)
+            for index, item in enumerate(raw_translations[:len(entry_ids)]):
+                entry_id = entry_ids[index]
+                if isinstance(item, dict):
+                    raw_id = str(item.get("entry_id") or item.get("id") or "")
+                    if raw_id in expected:
+                        entry_id = raw_id
+                    values[entry_id] = str(item.get("target") or item.get("translation") or item.get("text") or "")
+                else:
+                    values[entry_id] = str(item or "")
+        return values
+
+    def _parse_translation_array(self, content: str, expected: int) -> list[str]:
+        try:
+            parsed = self._json_from_model_content(content)
             if isinstance(parsed, list):
                 values = [str(v) for v in parsed]
                 return (values + [""] * expected)[:expected]
             if isinstance(parsed, dict) and isinstance(parsed.get("translations"), list):
                 values = [str(v) for v in parsed["translations"]]
+                return (values + [""] * expected)[:expected]
+            if isinstance(parsed, dict) and isinstance(parsed.get("translations"), dict):
+                values = [str(value) for value in parsed["translations"].values()]
                 return (values + [""] * expected)[:expected]
         except Exception:
             pass
@@ -1047,6 +1544,7 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/settings": return api.settings_save(body)
     if method == "GET" and path == "/library": return api.library_get()
     if method == "POST" and path == "/library/add": return api.library_add(body)
+    if method == "POST" and path == "/library/add-folder": return api.library_add_folder(body)
     if method == "POST" and path == "/library/remove": return api.library_remove(body)
     if method == "POST" and path == "/library/launch": return api.library_launch(body)
     if method == "GET" and path == "/game/status": return api.game_status()

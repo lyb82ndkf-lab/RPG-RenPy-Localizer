@@ -20,16 +20,16 @@
     <Button
         android:id="@+id/toolButton"
         android:layout_width="wrap_content"
-        android:layout_height="28dp"
+        android:layout_height="30dp"
         android:layout_gravity="top|end"
-        android:layout_margin="6dp"
-        android:background="#BBE7A83B"
-        android:minWidth="48dp"
-        android:paddingLeft="8dp"
-        android:paddingRight="8dp"
+        android:layout_margin="8dp"
+        android:background="@drawable/rpgrtl_tool_button"
+        android:minWidth="56dp"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
         android:text="工具"
-        android:textSize="11sp"
-        android:textColor="#201604"
+        android:textSize="10sp"
+        android:textColor="#EAF4FF"
         android:visibility="gone" />
 
 </FrameLayout>

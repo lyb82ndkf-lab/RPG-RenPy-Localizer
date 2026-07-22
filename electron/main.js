@@ -141,6 +141,14 @@ ipcMain.handle('dialog:selectProject', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle('dialog:selectGameFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: '选择包含游戏的文件夹',
+    properties: ['openDirectory']
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 ipcMain.handle('dialog:openPack', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: '导入翻译包',

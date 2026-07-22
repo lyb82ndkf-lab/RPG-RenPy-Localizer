@@ -26,7 +26,7 @@ def detect_project(path: str | Path) -> ProjectInfo:
             )
 
     game_exe = root / "Game.exe"
-    launcher = selected_launcher or (game_exe if game_exe.exists() else _find_launcher(root))
+    launcher = selected_launcher or (game_exe if game_exe.exists() else find_launcher(root))
     rpg_data = root / "data"
     rpg_www_data = root / "www" / "data"
     renpy_game = root / "game"
@@ -88,8 +88,35 @@ def detect_project(path: str | Path) -> ProjectInfo:
     )
 
 
+def find_launcher(root: str | Path, preferred_name: str | None = None) -> Path | None:
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    blocked = {
+        "rpgrenpylocalizer.exe",
+        "rpgrtl-api.exe",
+        "python.exe",
+        "pythonw.exe",
+        "unins000.exe",
+        "uninstall.exe",
+        "uninstaller.exe",
+        "crashreporter.exe",
+        "notification_helper.exe",
+    }
+    candidates = [candidate for candidate in sorted(root.glob("*.exe")) if candidate.name.lower() not in blocked]
+    if not candidates:
+        return None
+    if preferred_name:
+        preferred = next((candidate for candidate in candidates if candidate.name.lower() == preferred_name.lower()), None)
+        if preferred:
+            return preferred
+    game = next((candidate for candidate in candidates if candidate.name.lower() == "game.exe"), None)
+    if game:
+        return game
+    nw = [candidate for candidate in candidates if candidate.name.lower() == "nw.exe"]
+    non_nw = [candidate for candidate in candidates if candidate not in nw]
+    return non_nw[0] if non_nw else candidates[0]
+
+
 def _find_launcher(root: Path) -> Path | None:
-    for candidate in sorted(root.glob("*.exe")):
-        if candidate.name.lower() not in {"rpgrenpylocalizer.exe", "python.exe", "pythonw.exe"}:
-            return candidate
-    return None
+    return find_launcher(root)

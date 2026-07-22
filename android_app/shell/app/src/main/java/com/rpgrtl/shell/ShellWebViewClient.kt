@@ -18,7 +18,7 @@ class ShellWebViewClient(private val activity: MainActivity) : WebViewClient() {
     ): WebResourceResponse? {
         val uri = request?.url ?: return null
         if (uri.scheme == "https" && uri.host == "rpgrtl.local" && uri.path?.startsWith("/game/") == true) {
-            return activity.openGameAsset(uri.path!!.removePrefix("/game/"))
+            return activity.openGameAsset(uri.path!!.removePrefix("/game/"), request.requestHeaders ?: emptyMap())
         }
         return null
     }
@@ -30,7 +30,8 @@ class ShellWebViewClient(private val activity: MainActivity) : WebViewClient() {
         if (url != null && url.contains("mobile_ui/index.html")) {
             return
         }
-        if (url == null || (!url.contains("rpgrtl_game_runtime") && !url.contains("rpgrtl.local/game"))) return
+        if (url == null || (!url.contains("rpgrtl_game_runtime") && !url.contains("rpgrtl.local/game") && !url.startsWith("file:"))) return
+        activity.hideGameLoadingOverlay(700)
         activity.injectGameCompatibilityPatch(view)
         activity.injectGameErrorCollector(view)
         val patch = """

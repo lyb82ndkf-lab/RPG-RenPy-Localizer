@@ -45,6 +45,18 @@ class RenPyLiveBridgeTests(unittest.TestCase):
         self.assertFalse(RenPyService.control_tokens_preserved("Hello [player]", "你好"))
         self.assertFalse(RenPyService.control_tokens_preserved("{b}A{/b}", "{/b}甲{b}"))
 
+    def test_runtime_extraction_excludes_system_strings(self) -> None:
+        self.service.runtime_export_path().parent.mkdir(parents=True, exist_ok=True)
+        self.service.runtime_export_path().write_text(
+            json.dumps({"ok": True, "entries": [
+                {"source": "A line", "category": "dialogue", "file": "script.rpy"},
+                {"source": "A system label", "category": "system", "file": "gui.rpy"},
+            ]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        entries = self.service.extract_translations()
+        self.assertEqual([entry.source for entry in entries], ["A line"])
+
     def test_malformed_font_tags_are_removed_before_cache_write(self) -> None:
         target = "｛font = C:/Windows/Fonts/msyh.ttc｝行了行了 ……好吧。 {/font}"
         sanitized = RenPyService._sanitize_renpy_text("Yeah, yeah... Okay.", target)
@@ -120,7 +132,7 @@ class RenPyLiveBridgeTests(unittest.TestCase):
                 stop_event.set()
                 return 1
 
-        api = ToolkitApi(self.root)
+        api = ToolkitApi(self.root, config_dir=self.root / "config")
         api.live_worker_project = "project"
         api.live_worker_stats.update({"running": True, "translated": 0, "failures": 0})
         api._live_ai_config = lambda: {"provider": "openai-compatible", "apiKey": "key", "baseUrl": "https://example.test/v1", "model": "model", "targetLang": "简体中文", "batchSize": 20}

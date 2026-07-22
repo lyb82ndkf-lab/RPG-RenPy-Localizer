@@ -29,9 +29,9 @@ class RecentTask:
 
 
 class Workspace:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, config_dir: Path | None = None) -> None:
         self.root = root
-        self.config_dir = self._user_config_dir()
+        self.config_dir = config_dir or self._user_config_dir()
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.library_path = self.config_dir / "library.json"
         self.settings_path = self.config_dir / "settings.json"
@@ -119,7 +119,7 @@ class Workspace:
     def _read_json(path: Path, default: Any) -> Any:
         if not path.exists():
             return default
-        with path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8-sig") as handle:
             return json.load(handle)
 
     @staticmethod

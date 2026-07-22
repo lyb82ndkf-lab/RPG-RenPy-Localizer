@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "2.5",
+    [string]$Version = "4.0",
     [switch]$Debug,
     [switch]$NoH5,
     [switch]$OnlyUniversal
@@ -42,47 +42,36 @@ $uniProject = Join-Path $Root "AndroidAPP\AndroidAPP"
 $webDist = $null
 
 if (-not $NoH5) {
-    Step "[1/4] Build UniApp H5"
-    Push-Location $uniProject
+    Step "[1/4] Build Vite Vue Web UI"
+    $viteProject = Join-Path $Root "android_app\mobile_ui_src"
+    Push-Location $viteProject
     try {
-        & npm run build:h5
+        & npm run build
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "npm run build:h5 exited with code $LASTEXITCODE"
+            Write-Warning "npm run build exited with code $LASTEXITCODE"
         }
     } finally {
         Pop-Location
     }
 }
 
-Step "[2/4] Validate And Sync H5 Assets"
-$webDist = Resolve-H5Output $uniProject
+Step "[2/4] Validate And Sync Web UI Assets"
+$webDist = Join-Path $Root "android_app\mobile_ui"
 
-if (-not $webDist) {
+if (-not (Test-Path $webDist)) {
     throw @"
-No valid H5 output found.
-
-Expected one of these directories to contain:
-- index.html
-- assets\*.js
+No valid Vite output found.
 
 Checked under:
-$uniProject
+$webDist
 
-Please build H5 in HBuilderX GUI first, then rerun:
-powershell -ExecutionPolicy Bypass -File .\build_all.ps1 -Version $Version -NoH5
+Please run npm run build in android_app/mobile_ui_src first.
 "@
 }
 
-Write-Host "Using H5 output: $webDist" -ForegroundColor Green
+Write-Host "Using Web UI output: $webDist" -ForegroundColor Green
 
-$mobileUi = Join-Path $Root "android_app\mobile_ui"
 $shellMobileUi = Join-Path $Root "android_app\shell\app\src\main\assets\mobile_ui"
-
-if (Test-Path $mobileUi) {
-    Remove-Item -LiteralPath $mobileUi -Recurse -Force
-}
-New-Item -ItemType Directory -Path $mobileUi -Force | Out-Null
-Copy-Item -Path (Join-Path $webDist "*") -Destination $mobileUi -Recurse -Force
 
 if (Test-Path $shellMobileUi) {
     Remove-Item -LiteralPath $shellMobileUi -Recurse -Force
@@ -90,7 +79,7 @@ if (Test-Path $shellMobileUi) {
 New-Item -ItemType Directory -Path $shellMobileUi -Force | Out-Null
 Copy-Item -Path (Join-Path $webDist "*") -Destination $shellMobileUi -Recurse -Force
 
-foreach ($indexPath in @((Join-Path $mobileUi "index.html"), (Join-Path $shellMobileUi "index.html"))) {
+foreach ($indexPath in @((Join-Path $webDist "index.html"), (Join-Path $shellMobileUi "index.html"))) {
     if (Test-Path $indexPath) {
         $html = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
         $html = $html.Replace(", interactive-widget=overlays-content", "")

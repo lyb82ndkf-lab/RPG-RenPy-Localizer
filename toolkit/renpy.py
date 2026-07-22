@@ -433,27 +433,6 @@ init 999 python:
                                     "%s::choice::%s" % (getattr(translate_node, "identifier", ""), item_index),
                                 )
 
-            try:
-                strings = renpy.translation.scanstrings.scan(0, 2147483647, False)
-                for item in strings:
-                    _add(
-                        "system",
-                        getattr(item, "text", ""),
-                        getattr(item, "filename", ""),
-                        "string",
-                        getattr(item, "line", 0),
-                        getattr(item, "text", ""),
-                    )
-            except Exception as exc:
-                entries.append({
-                    "category": "system",
-                    "source": "",
-                    "file": "scanstrings",
-                    "context": "error: %s" % exc,
-                    "line": 0,
-                    "identifier": "",
-                })
-
             with open(output, "w", encoding="utf-8") as f:
                 json.dump({"ok": True, "entries": entries}, f, ensure_ascii=False, indent=2)
             print("RPGRenPyLocalizer exported %d Ren'Py text entries to %s" % (len(entries), output))
@@ -2369,8 +2348,10 @@ class RenPyService:
             identifier = str(item.get("identifier", ""))
             line = item.get("line", 0)
             category = str(item.get("category", "dialogue") or "dialogue")
+            if category not in {"dialogue", "choice"}:
+                continue
             entry_id = f"runtime::{file_name}::{identifier}::{line}::{index}"
-            normalized_category = category if category in {"dialogue", "choice"} else "system"
+            normalized_category = category
             entries.append(
                 TranslationEntry(
                     entry_id=entry_id,
@@ -2501,6 +2482,8 @@ class RenPyService:
     def _safe_translation_entries(entries) -> list[TranslationEntry]:
         safe_entries: list[TranslationEntry] = []
         for entry in entries:
+            if str(entry.category or "") not in {"dialogue", "choice"}:
+                continue
             if not entry.source.strip():
                 continue
             target = RenPyService._clean_translation_target(entry.target)

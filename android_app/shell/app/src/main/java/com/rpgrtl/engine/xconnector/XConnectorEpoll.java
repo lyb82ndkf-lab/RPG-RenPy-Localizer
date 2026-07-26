@@ -18,6 +18,7 @@ public class XConnectorEpoll {
     private int initialInputBufferCapacity = 64;
     private int initialOutputBufferCapacity = 64;
     private long nativePtr;
+    private final com.winlator.xconnector.XConnectorEpoll nativePeer;
 
     static {
         System.loadLibrary("winlator");
@@ -27,7 +28,8 @@ public class XConnectorEpoll {
         this.connectionHandler = connectionHandler;
         this.requestHandler = requestHandler;
 
-        nativePtr = nativeAllocate(socketConfig.path);
+        nativePeer = new com.winlator.xconnector.XConnectorEpoll(this);
+        nativePtr = nativePeer.nativeAllocate(socketConfig.path);
         if (nativePtr == 0) throw new RuntimeException("Failed to allocate XConnectorEpoll.");
     }
 
@@ -44,7 +46,7 @@ public class XConnectorEpoll {
     }
 
     @Keep
-    private void handleConnectionShutdown(Object tag) {
+    public void handleConnectionShutdownFromNative(Object tag) {
         ConnectedClient client = (ConnectedClient)tag;
         connectionHandler.handleConnectionShutdown(client);
         client.destroy();
@@ -55,7 +57,7 @@ public class XConnectorEpoll {
     }
 
     @Keep
-    private Object handleNewConnection(long clientPtr, int fd) {
+    public Object handleNewConnectionFromNative(long clientPtr, int fd) {
         ConnectedClient client = connectionHandler.newConnectedClient(clientPtr, fd);
         client.createInputStream(initialInputBufferCapacity);
         client.createOutputStream(initialOutputBufferCapacity);
@@ -68,7 +70,7 @@ public class XConnectorEpoll {
     }
 
     @Keep
-    private void handleExistingConnection(Object tag) {
+    public void handleExistingConnectionFromNative(Object tag) {
         ConnectedClient client = (ConnectedClient)tag;
         XInputStream inputStream = client.getInputStream();
 
@@ -89,7 +91,7 @@ public class XConnectorEpoll {
     }
 
     @Keep
-    private void killAllConnections() {
+    public void killAllConnectionsFromNative() {
         while (!connectedClients.isEmpty()) killConnection(connectedClients.remove(0));
     }
 
@@ -143,16 +145,28 @@ public class XConnectorEpoll {
     }
 
     @CriticalNative
-    public static native void closeFd(int fd);
+    public static void closeFd(int fd) {
+        com.winlator.xconnector.XConnectorEpoll.closeFd(fd);
+    }
 
-    private native long nativeAllocate(String sockPath);
+    private long nativeAllocate(String sockPath) {
+        return nativePeer.nativeAllocate(sockPath);
+    }
 
-    private static native void destroy(long nativePtr);
+    private static void destroy(long nativePtr) {
+        com.winlator.xconnector.XConnectorEpoll.destroy(nativePtr);
+    }
 
-    private static native void startEpollThread(long nativePtr, boolean multithreadedClients);
+    private static void startEpollThread(long nativePtr, boolean multithreadedClients) {
+        com.winlator.xconnector.XConnectorEpoll.startEpollThread(nativePtr, multithreadedClients);
+    }
 
-    private static native void stopEpollThread(long nativePtr);
+    private static void stopEpollThread(long nativePtr) {
+        com.winlator.xconnector.XConnectorEpoll.stopEpollThread(nativePtr);
+    }
 
-    private static native void killConnection(long connectorPtr, long clientPtr);
+    private static void killConnection(long connectorPtr, long clientPtr) {
+        com.winlator.xconnector.XConnectorEpoll.killConnection(connectorPtr, clientPtr);
+    }
 }
 

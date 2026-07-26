@@ -7,6 +7,11 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.net.Uri
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.zip.DeflaterOutputStream
+import java.util.zip.InflaterInputStream
 
 class AndroidRpgMakerService(
     private val context: Context,
@@ -205,7 +210,7 @@ class AndroidRpgMakerService(
                 slots.put(
                     JSONObject()
                         .put("slot_id", match.groupValues[1].toIntOrNull() ?: extractSlotNumber(name))
-                        .put("label", "瀛樻。 ${match.groupValues[1]}")
+                        .put("label", "存档 ${match.groupValues[1]}")
                         .put("name", name)
                         .put("path", file.uri.toString())
                         .put("source", saveDir.name ?: "save")
@@ -224,6 +229,37 @@ class AndroidRpgMakerService(
             .put("exists", saveDir != null)
             .put("savePath", saveDir?.uri?.toString().orEmpty())
     }
+
+    fun loadSave(path: String): JSONObject {
+        val file = saveFile(path)
+        val payload = decodeSavePayload(readBytes(file))
+        return JSONObject()
+            .put("ok", true)
+            .put("path", path)
+            .put("summary", saveSummary(payload))
+            .put("payload", savePreview(payload))
+            .put("raw", payload)
+    }
+
+    fun mutateSave(payload: JSONObject, request: JSONObject): JSONObject {
+        when (request.optString("op")) {
+            "gold" -> setSaveGold(payload, request.optInt("value", 0))
+            "item" -> setSaveItem(payload, request.optString("kind", "items"), request.optInt("itemId", 0), request.optInt("value", 0))
+            "actorLevel" -> setActorLevel(payload, request.optInt("actorId", 0), request.optInt("value", 1))
+            "switch" -> setSaveSwitch(payload, request.optInt("switchId", 0), request.optBoolean("value"))
+            "variable" -> setSaveVariable(payload, request.optInt("variableId", 0), request.opt("value"))
+            else -> throw IllegalArgumentException("未知存档修改操作。")
+        }
+        return JSONObject().put("ok", true).put("summary", saveSummary(payload)).put("payload", savePreview(payload)).put("raw", payload)
+    }
+
+    fun writeSave(path: String, payload: JSONObject): JSONObject {
+        val file = saveFile(path)
+        backupFile(file, "save")
+        writeBytes(file, encodeSavePayload(payload))
+        return JSONObject().put("ok", true).put("path", path).put("summary", saveSummary(payload))
+    }
+
 
     fun createSaveBackup(): JSONObject {
         val saveDir = findSaveDirs().firstOrNull() ?: throw IllegalStateException("没有找到 save 目录。")
@@ -565,6 +601,138 @@ class AndroidRpgMakerService(
             is JSONArray -> value.toString(2)
             else -> value.toString()
         }
+    }
+
+    private fun saveFile(path: String): DocumentFile {
+        val uri = Uri.parse(path)
+        return DocumentFile.fromSingleUri(context, uri)
+            ?: throw IllegalArgumentException("存档文件不存在。")
+    }
+
+    private fun readBytes(file: DocumentFile): ByteArray {
+        return context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("无法读取存档：${file.name}")
+    }
+
+    private fun writeBytes(file: DocumentFile, bytes: ByteArray) {
+        context.contentResolver.openOutputStream(file.uri, "wt")?.use { it.write(bytes) }
+            ?: throw IllegalStateException("无法写入存档：${file.name}")
+    }
+
+    private fun inflateBytes(bytes: ByteArray): String {
+        return InflaterInputStream(ByteArrayInputStream(bytes)).bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
+    private fun decodeSavePayload(bytes: ByteArray): JSONObject {
+        val direct = runCatching { inflateBytes(bytes) }
+        val text = direct.getOrElse {
+            val latinBytes = bytes.toString(Charsets.UTF_8).toByteArray(Charsets.ISO_8859_1)
+            inflateBytes(latinBytes)
+        }
+        return JSONObject(text)
+    }
+
+    private fun encodeSavePayload(payload: JSONObject): ByteArray {
+        val compressed = ByteArrayOutputStream().use { buffer ->
+            DeflaterOutputStream(buffer).use { output -> output.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            buffer.toByteArray()
+        }
+        return compressed.toString(Charsets.ISO_8859_1).toByteArray(Charsets.UTF_8)
+    }
+
+    private fun saveSummary(payload: JSONObject): JSONObject {
+        val party = payload.optJSONObject("party") ?: JSONObject()
+        val actors = payload.optJSONObject("actors")?.optJSONArray("_data") ?: JSONArray()
+        val switches = payload.optJSONObject("switches")?.optJSONArray("_data") ?: JSONArray()
+        val variables = payload.optJSONObject("variables")?.optJSONArray("_data") ?: JSONArray()
+        return JSONObject()
+            .put("gold", party.optInt("_gold", 0))
+            .put("steps", party.optInt("_steps", 0))
+            .put("actor_count", actors.length())
+            .put("switch_count", switches.length())
+            .put("variable_count", variables.length())
+    }
+
+    private fun savePreview(payload: JSONObject): JSONObject {
+        val party = payload.optJSONObject("party") ?: JSONObject()
+        val actors = payload.optJSONObject("actors")?.optJSONArray("_data") ?: JSONArray()
+        return JSONObject()
+            .put("party", JSONObject().put("_gold", party.opt("_gold") ?: 0).put("_steps", party.opt("_steps") ?: 0))
+            .put("items", party.optJSONObject("_items") ?: JSONObject())
+            .put("weapons", party.optJSONObject("_weapons") ?: JSONObject())
+            .put("armors", party.optJSONObject("_armors") ?: JSONObject())
+            .put("actors", firstItems(actors, 50))
+    }
+
+    private fun firstItems(array: JSONArray, limit: Int): JSONArray {
+        val out = JSONArray()
+        for (index in 0 until minOf(array.length(), limit)) out.put(array.opt(index))
+        return out
+    }
+
+    private fun ensureObject(parent: JSONObject, key: String): JSONObject {
+        val existing = parent.optJSONObject(key)
+        if (existing != null) return existing
+        val created = JSONObject()
+        parent.put(key, created)
+        return created
+    }
+
+    private fun ensureArray(parent: JSONObject, key: String): JSONArray {
+        val existing = parent.optJSONArray(key)
+        if (existing != null) return existing
+        val created = JSONArray()
+        parent.put(key, created)
+        return created
+    }
+
+    private fun ensureArraySize(array: JSONArray, index: Int) {
+        while (array.length() <= index) array.put(JSONObject.NULL)
+    }
+
+    private fun setSaveGold(payload: JSONObject, value: Int) {
+        ensureObject(payload, "party").put("_gold", value.coerceIn(0, 99999999))
+    }
+
+    private fun setSaveItem(payload: JSONObject, kind: String, itemId: Int, value: Int) {
+        val key = when (kind) {
+            "weapons" -> "_weapons"
+            "armors" -> "_armors"
+            else -> "_items"
+        }
+        val container = ensureObject(ensureObject(payload, "party"), key)
+        val amount = value.coerceAtLeast(0)
+        if (amount == 0) container.remove(itemId.toString()) else container.put(itemId.toString(), amount)
+    }
+
+    private fun setActorLevel(payload: JSONObject, actorId: Int, value: Int) {
+        val actors = ensureArray(ensureObject(payload, "actors"), "_data")
+        if (actorId <= 0 || actorId >= actors.length()) return
+        val actor = actors.optJSONObject(actorId) ?: return
+        actor.put("_level", value.coerceAtLeast(1))
+    }
+
+    private fun setSaveSwitch(payload: JSONObject, switchId: Int, value: Boolean) {
+        val data = ensureArray(ensureObject(payload, "switches"), "_data")
+        ensureArraySize(data, switchId)
+        data.put(switchId, value)
+    }
+
+    private fun setSaveVariable(payload: JSONObject, variableId: Int, value: Any?) {
+        val data = ensureArray(ensureObject(payload, "variables"), "_data")
+        ensureArraySize(data, variableId)
+        data.put(variableId, parseVariableValue(value))
+    }
+
+    private fun parseVariableValue(value: Any?): Any? {
+        if (value !is String) return value
+        val text = value.trim()
+        if (text.equals("true", true)) return true
+        if (text.equals("false", true)) return false
+        if (text.equals("null", true)) return JSONObject.NULL
+        text.toIntOrNull()?.let { return it }
+        text.toDoubleOrNull()?.let { return it }
+        return runCatching { JSONObject(text) }.getOrElse { runCatching { JSONArray(text) }.getOrElse { value } }
     }
 
     private fun writeText(file: DocumentFile, text: String) {

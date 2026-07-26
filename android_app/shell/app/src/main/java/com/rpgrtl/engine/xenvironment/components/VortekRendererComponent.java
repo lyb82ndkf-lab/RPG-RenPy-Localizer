@@ -30,6 +30,7 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
     public static final int VK_MAX_VERSION = GPUHelper.vkMakeVersion(1, 3, 128);
     private final XServer xServer;
     private final UnixSocketConfig socketConfig;
+    private final com.winlator.xenvironment.components.VortekRendererComponent nativePeer;
     private XConnectorEpoll connector;
     private final Options options;
 
@@ -74,6 +75,7 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
         this.xServer = xServer;
         this.socketConfig = socketConfig;
         this.options = options;
+        this.nativePeer = new com.winlator.xenvironment.components.VortekRendererComponent(this);
 
         String nativeLibraryDir = xServer.activity.getApplicationInfo().nativeLibraryDir;
         initVulkanWrapper(nativeLibraryDir, options.libvulkanPath);
@@ -97,19 +99,19 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
     }
 
     @Keep
-    private int getWindowWidth(int windowId) {
+    public int getWindowWidthFromNative(int windowId) {
         Window window = xServer.windowManager.getWindow(windowId);
         return window != null ? window.getWidth() : 0;
     }
 
     @Keep
-    private int getWindowHeight(int windowId) {
+    public int getWindowHeightFromNative(int windowId) {
         Window window = xServer.windowManager.getWindow(windowId);
         return window != null ? window.getHeight() : 0;
     }
 
     @Keep
-    private long getWindowHardwareBuffer(int windowId, boolean useHALPixelFormatBGRA8888) {
+    public long getWindowHardwareBufferFromNative(int windowId, boolean useHALPixelFormatBGRA8888) {
         Window window = xServer.windowManager.getWindow(windowId);
         if (window != null) {
             Drawable drawable = window.getContent();
@@ -127,7 +129,7 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
     }
 
     @Keep
-    private void updateWindowContent(int windowId) {
+    public void updateWindowContentFromNative(int windowId) {
         Window window = xServer.windowManager.getWindow(windowId);
         if (window != null) {
             Drawable drawable = window.getContent();
@@ -172,12 +174,20 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
         return true;
     }
 
-    private native long createVkContext(int clientFd, Options options);
+    private long createVkContext(int clientFd, Options options) {
+        return nativePeer.createVkContext(clientFd, options);
+    }
 
-    private native void destroyVkContext(long contextPtr);
+    private void destroyVkContext(long contextPtr) {
+        nativePeer.destroyVkContext(contextPtr);
+    }
 
-    private native void initVulkanWrapper(String nativeLibraryDir, String libvulkanPath);
+    private void initVulkanWrapper(String nativeLibraryDir, String libvulkanPath) {
+        nativePeer.initVulkanWrapper(nativeLibraryDir, libvulkanPath);
+    }
 
-    private native boolean handleExtraDataRequest(long contextPtr, int requestCode, int requestLength);
+    private boolean handleExtraDataRequest(long contextPtr, int requestCode, int requestLength) {
+        return nativePeer.handleExtraDataRequest(contextPtr, requestCode, requestLength);
+    }
 }
 

@@ -65,27 +65,53 @@ public abstract class ProcessHelper {
     public static int exec(String command, EnvVars envVars, File workingDir, Callback<Integer> terminationCallback) {
         int pid = -1;
         try {
-            ProcessBuilder processBuilder = (new ProcessBuilder(splitCommand(command))).directory(workingDir);
-            if (debugCallbacks.isEmpty()) processBuilder.redirectOutput(new File("/dev/null")).redirectErrorStream(true);
+            String[] argv = splitCommand(command);
+            android.util.Log.i("RPGTL-Process", "exec argv=" + java.util.Arrays.toString(argv) + " cwd=" + workingDir);
+            notifyDebug("exec argv=" + java.util.Arrays.toString(argv) + " cwd=" + workingDir);
+            ProcessBuilder processBuilder = (new ProcessBuilder(argv)).directory(workingDir);
+            processBuilder.redirectErrorStream(true);
 
             Map<String, String> environment = processBuilder.environment();
-            for (String name : envVars) environment.put(name, envVars.get(name));
-
-            java.lang.Process process = processBuilder.start();
-            Field pidField = process.getClass().getDeclaredField("pid");
-            pidField.setAccessible(true);
-            pid = pidField.getInt(process);
-            pidField.setAccessible(false);
-
-            if (!debugCallbacks.isEmpty()) {
-                createDebugThread(process.getInputStream());
-                createDebugThread(process.getErrorStream());
+            if (envVars != null) {
+                for (String name : envVars) environment.put(name, envVars.get(name));
             }
 
+            java.lang.Process process = processBuilder.start();
+            try {
+                Field pidField = process.getClass().getDeclaredField("pid");
+                pidField.setAccessible(true);
+                pid = pidField.getInt(process);
+            } catch (Throwable t1) {
+                try {
+                    Field idField = process.getClass().getDeclaredField("id");
+                    idField.setAccessible(true);
+                    pid = idField.getInt(process);
+                } catch (Throwable t2) {
+                    pid = 1000;
+                }
+            }
+
+            createDebugThread(process.getInputStream());
+
             if (terminationCallback != null) createWaitForThread(process, terminationCallback);
+            android.util.Log.i("RPGTL-Process", "started pid=" + pid);
+            notifyDebug("started pid=" + pid);
         }
-        catch (Exception e) {}
+        catch (Exception e) {
+            android.util.Log.e("RPGTL-Process", "exec failed: " + command, e);
+            notifyDebug("exec failed: " + command + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
+            if (terminationCallback != null) {
+                try { terminationCallback.call(-1); } catch (Exception ignored) {}
+            }
+        }
         return pid;
+    }
+
+    private static void notifyDebug(String line) {
+        synchronized (debugCallbacks) {
+            for (Callback<String> callback : debugCallbacks) callback.call(line);
+        }
     }
 
     private static void createDebugThread(final InputStream inputStream) {
@@ -140,24 +166,25 @@ public abstract class ProcessHelper {
         char currChar, nextChar;
         for (int i = 0, count = command.length(); i < count; i++) {
             currChar = command.charAt(i);
+            nextChar = i < count-1 ? command.charAt(i+1) : '\0';
 
             if (startedQuotes) {
-                if (currChar == '"') {
+                if (currChar == '\\' && nextChar == '"') {
+                    value += '"';
+                    i++;
+                }
+                else if (currChar == '"') {
+                    // End of quoted arg — do NOT keep the quote characters in the token.
                     startedQuotes = false;
-                    if (!value.isEmpty()) {
-                        value += '"';
-                        result.add(value);
-                        value = "";
-                    }
+                    result.add(value);
+                    value = "";
                 }
                 else value += currChar;
             }
             else if (currChar == '"') {
                 startedQuotes = true;
-                value += '"';
             }
             else {
-                nextChar = i < count-1 ? command.charAt(i+1) : '\0';
                 if (currChar == ' ' || (currChar == '\\' && nextChar == ' ')) {
                     if (currChar == '\\') {
                         value += ' ';
@@ -177,6 +204,7 @@ public abstract class ProcessHelper {
                 }
             }
         }
+        if (!value.isEmpty()) result.add(value);
 
         return result.toArray(new String[0]);
     }

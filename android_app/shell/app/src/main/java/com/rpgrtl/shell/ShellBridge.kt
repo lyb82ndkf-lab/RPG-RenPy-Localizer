@@ -32,10 +32,13 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
-    fun saveLaunchSettings(json: String) {
-        activity.runOnUiThread {
-            activity.saveLaunchSettings(json)
-        }
+    fun saveLaunchSettings(json: String): String {
+        return activity.saveLaunchSettings(json)
+    }
+
+    @JavascriptInterface
+    fun androidLaunchSettings(): String {
+        return activity.androidLaunchSettings()
     }
 
     @JavascriptInterface
@@ -63,6 +66,31 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun checkGamePaths(requestJson: String): String {
+        return activity.checkGamePaths(requestJson)
+    }
+
+    @JavascriptInterface
+    fun androidGameLibrary(): String {
+        return activity.androidGameLibrary()
+    }
+
+    @JavascriptInterface
+    fun androidSaveGameLibrary(json: String): String {
+        return activity.androidSaveGameLibrary(json)
+    }
+
+    @JavascriptInterface
+    fun androidRemoveGame(key: String): String {
+        return activity.androidRemoveGame(key)
+    }
+
+    @JavascriptInterface
+    fun androidRefreshGameIcon(key: String): String {
+        return activity.androidRefreshGameIcon(key)
+    }
+
+    @JavascriptInterface
     fun launchSelectedGame() {
         activity.runOnUiThread {
             activity.launchSelectedGame()
@@ -86,6 +114,21 @@ class ShellBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun androidLaunchGame(backend: String): String {
         return activity.androidLaunchGame(backend)
+    }
+
+    @JavascriptInterface
+    fun androidRuntimeLog(): String {
+        return activity.androidRuntimeLog()
+    }
+
+    @JavascriptInterface
+    fun clearRuntimeLog(): String {
+        return activity.clearRuntimeLog()
+    }
+
+    @JavascriptInterface
+    fun copyRuntimeLog(): String {
+        return activity.copyRuntimeLog()
     }
 
     @JavascriptInterface
@@ -158,6 +201,11 @@ class ShellBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun androidAiTranslate(requestJson: String): String {
         return activity.androidAiTranslate(requestJson)
+    }
+
+    @JavascriptInterface
+    fun androidRenpyLiveStatus(): String {
+        return activity.androidRenpyLiveStatus()
     }
 
     @JavascriptInterface

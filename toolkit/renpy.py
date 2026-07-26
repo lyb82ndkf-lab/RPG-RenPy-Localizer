@@ -37,7 +37,34 @@ LIVE_BRIDGE_VERSION = "2026-07-20.2"
 
 _LIVE_SERVER_LOCK = threading.Lock()
 _LIVE_SERVER: ThreadingHTTPServer | None = None
-_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}, "notify_seq": 0, "force_text": "", "pre_translate_queue": [], "project_root": "", "server_id": "", "last_heartbeat": 0.0, "game_pid": 0}
+_LIVE_SERVER_STATE: dict[str, object] = {"translations": {}, "events": [], "seen": {}, "notify_seq": 0, "force_text": "", "force_source": "", "current_source": "", "pre_translate_queue": [], "project_root": "", "server_id": "", "last_heartbeat": 0.0, "game_pid": 0}
+
+
+def _is_live_dialogue_text(value: object) -> bool:
+    text = str(value or "").strip()
+    if len(text) < 2 or len(text) > 2000:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", text) or text.startswith(("/", "\\", "./", "../", "~/")):
+        return False
+    # A slash-separated ASCII-only value is a resource/path, not dialogue.
+    if re.search(r"[\\/]", text) and re.fullmatch(r"[A-Za-z0-9._ ()\-\\/]+", text):
+        return False
+    return True
+
+
+def _live_text_family(value: object) -> str:
+    text = re.sub(r"\{[^}]*\}", "", str(value or ""))
+    latin = sum(char.isascii() and char.isalpha() for char in text)
+    cjk = sum("\u4e00" <= char <= "\u9fff" for char in text)
+    japanese = sum("\u3040" <= char <= "\u30ff" for char in text)
+    korean = sum("\uac00" <= char <= "\ud7af" for char in text)
+    if japanese > max(latin, cjk, korean):
+        return "japanese"
+    if korean > max(latin, cjk, japanese):
+        return "korean"
+    if cjk > latin:
+        return "cjk"
+    return "latin" if latin else "other"
 
 
 def _live_log_path() -> Path:
@@ -141,13 +168,13 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/notify":
             with _LIVE_SERVER_LOCK:
                 seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
-                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
                 force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                force_ack_seq = int(_LIVE_SERVER_STATE.get("force_ack_seq", 0))
+                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "") if force_seq > force_ack_seq else ""
+                force_source = str(_LIVE_SERVER_STATE.get("force_source", "") or "") if force_text else ""
                 server_id = str(_LIVE_SERVER_STATE.get("server_id", "") or "")
                 translation_count = len(_LIVE_SERVER_STATE.get("translations", {}))
-                if force_text:
-                    _LIVE_SERVER_STATE["force_text"] = ""
-            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_source": force_source, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
             return
         if parsed.path != "/debug":
             self._send_json({"ok": False, "error": "not found"})
@@ -172,13 +199,25 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                     _LIVE_SERVER_STATE["game_pid"] = int(payload.get("pid") or 0)
                     _LIVE_SERVER_STATE["last_heartbeat"] = time.time()
                 seq = int(_LIVE_SERVER_STATE.get("notify_seq", 0))
-                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "")
                 force_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                force_ack_seq = int(_LIVE_SERVER_STATE.get("force_ack_seq", 0))
+                force_text = str(_LIVE_SERVER_STATE.get("force_text", "") or "") if force_seq > force_ack_seq else ""
+                force_source = str(_LIVE_SERVER_STATE.get("force_source", "") or "") if force_text else ""
                 server_id = str(_LIVE_SERVER_STATE.get("server_id", "") or "")
                 translation_count = len(_LIVE_SERVER_STATE.get("translations", {}))
-                if force_text:
+            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_source": force_source, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
+            return
+        if parsed.path == "/force_ack":
+            force_seq = int(payload.get("force_seq") or 0)
+            with _LIVE_SERVER_LOCK:
+                current_seq = int(_LIVE_SERVER_STATE.get("force_seq", 0))
+                if force_seq and force_seq >= current_seq:
+                    _LIVE_SERVER_STATE["force_ack_seq"] = force_seq
                     _LIVE_SERVER_STATE["force_text"] = ""
-            self._send_json({"ok": True, "seq": seq, "force_text": force_text, "force_seq": force_seq, "server_id": server_id, "translation_count": translation_count})
+                    _LIVE_SERVER_STATE["force_source"] = ""
+                _LIVE_SERVER_STATE["last_force_ack"] = {"time": time.time(), "seq": force_seq, "reason": str(payload.get("reason") or ""), "pid": int(payload.get("pid") or 0)}
+            _append_live_log("game", "force_ack", payload)
+            self._send_json({"ok": True, "force_seq": force_seq})
             return
         if parsed.path == "/log":
             _append_live_log("game", str(payload.get("event", "log") or "log"), payload)
@@ -284,8 +323,11 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
             with _LIVE_SERVER_LOCK:
                 translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
                 pre_queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+                if not isinstance(pre_queue, list):
+                    pre_queue = []
+                events_list = _LIVE_SERVER_STATE.setdefault("events", [])
                 for text in texts:
-                    if not isinstance(text, str) or not text.strip():
+                    if not isinstance(text, str) or not _is_live_dialogue_text(text):
                         continue
                     target = _lookup_live_translation_value(translations, text, text)
                     if target:
@@ -294,9 +336,25 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                         if text not in pre_queue:
                             pre_queue.append(text)
                         queued.append(text)
+                        if isinstance(events_list, list):
+                            events_list.append({"time": time.time(), "kind": "pre_translate", "source": text, "displayed": text, "target": "", "matched": False, "type": "lookahead", "interact": False})
                 if isinstance(pre_queue, list) and len(pre_queue) > 1000:
                     del pre_queue[: len(pre_queue) - 1000]
+                if isinstance(events_list, list) and len(events_list) > 2000:
+                    del events_list[: len(events_list) - 2000]
+                _LIVE_SERVER_STATE["pre_translate_queue"] = pre_queue
             _append_live_log("server", "pre_translate", {"total": len(texts), "found": len(found), "queued": len(queued)})
+            if queued:
+                with _LIVE_SERVER_LOCK:
+                    queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+                    if not isinstance(queue, list):
+                        queue = []
+                    existing = set(str(item) for item in queue)
+                    for text in queued:
+                        if text not in existing:
+                            queue.append(text)
+                            existing.add(text)
+                    _LIVE_SERVER_STATE["pre_translate_queue"] = queue
             self._send_json({"ok": True, "translations": found, "queued": queued})
             return
         if parsed.path == "/seen_batch":
@@ -320,6 +378,11 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                     target = _lookup_live_translation_value(trans, source, displayed)
                 matched = bool(item.get("matched") or (target and target != displayed))
                 event = {"time": time.time(), "kind": kind, "source": source, "displayed": displayed, "target": target, "matched": matched}
+                # These events are emitted while a character dialogue is being
+                # prepared/displayed.  Keep the latest source as the anchor for a
+                # manual "replace current line" request.
+                if kind in {"do_display", "prefix_suffix"} and source.strip():
+                    _LIVE_SERVER_STATE["current_source"] = source
                 if source.strip() or displayed.strip():
                     key = source or displayed
                     previous = seen_dict.get(key) if isinstance(seen_dict, dict) else None
@@ -342,7 +405,7 @@ class _RenPyLiveBridgeHandler(BaseHTTPRequestHandler):
                 trans = _LIVE_SERVER_STATE.get("translations", {})
                 queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
                 for text in texts:
-                    if not isinstance(text, str) or not text.strip():
+                    if not isinstance(text, str) or not _is_live_dialogue_text(text):
                         continue
                     t = _lookup_live_translation_value(trans, text, text)
                     if t:
@@ -490,11 +553,12 @@ init -7 python:
     _rpgrtl_restart_interval = 0.1
     _rpgrtl_last_notify_seq = 0
     _rpgrtl_server_id = ""
-    _rpgrtl_bg_loop_interval = 1.0
+    _rpgrtl_bg_loop_interval = 0.25
     _rpgrtl_tid_what = (None, None)
     _rpgrtl_active_widget = None
     _rpgrtl_active_source = ""
     _rpgrtl_force_text = ""
+    _rpgrtl_force_seq = 0
     _rpgrtl_force_applied = False
     _rpgrtl_debug_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "rpgrtl_bridge_debug.log")
     _rpgrtl_local_cache_file = os.path.join(os.path.dirname(config.gamedir), ".rpgrtl_workspace", "renpy_live_translation.json")
@@ -735,6 +799,15 @@ init -7 python:
         except Exception:
             pass
 
+    def _rpgrtl_ack_force_text(reason="applied"):
+        try:
+            seq = int(_rpgrtl_force_seq or 0)
+            if seq > 0:
+                _rpgrtl_send("/force_ack", {"pid": os.getpid(), "force_seq": seq, "reason": reason}, timeout=0.5)
+                _rpgrtl_debug("force_ack: seq=" + str(seq) + " reason=" + reason)
+        except Exception as exc:
+            _rpgrtl_debug("force_ack FAILED: " + repr(exc))
+
     _rpgrtl_seen_queued = set()  # deduplicate pending_seen
 
     def _rpgrtl_report_seen(source, displayed, target, kind):
@@ -762,13 +835,17 @@ init -7 python:
 
     def _rpgrtl_remember_active_widget(widget, source):
         global _rpgrtl_active_widget, _rpgrtl_active_source
-        if widget is not None and source and _rpgrtl_is_translatable(source):
-            _rpgrtl_active_widget = widget
+        if source and _rpgrtl_is_translatable(source):
             _rpgrtl_active_source = source
+            if widget is not None:
+                _rpgrtl_active_widget = widget
 
-    def _rpgrtl_patch_active_widget(reason="translation_ready", forced_text=None):
+    def _rpgrtl_patch_active_widget(reason="translation_ready", forced_text=None, expected_source=None):
         widget = _rpgrtl_active_widget
         source = _rpgrtl_active_source
+        if expected_source and (not source or (source != expected_source and source not in expected_source and expected_source not in source)):
+            _rpgrtl_debug("patch_active skipped: current dialogue changed")
+            return False
         translated = forced_text if forced_text else _rpgrtl_lookup(source)
         _rpgrtl_debug("patch_active: widget=" + repr(type(widget).__name__ if widget else None) + " source=" + repr((source or "")[:40]) + " translated=" + repr((translated or "")[:40]) + " reason=" + reason)
         if not widget and not translated:
@@ -788,26 +865,17 @@ init -7 python:
             except Exception as exc:
                 _rpgrtl_log("active_widget_patch_failed", {"source": (source or "")[:180], "error": str(exc), "reason": reason})
                 _rpgrtl_debug("patch_active FAILED: " + repr(exc))
-        try:
-            for w in renpy.display.screen.current_screen().children if hasattr(renpy.display.screen, "current_screen") and callable(renpy.display.screen.current_screen) else []:
-                if hasattr(w, "text"):
-                    if _rpgrtl_old_set_text:
-                        _rpgrtl_old_set_text(w, translated, None, False, True)
-                    else:
-                        w.text = [translated]
-                    patched = True
-        except Exception:
-            pass
         if patched:
-            try:
-                renpy.restart_interaction()
-            except Exception:
-                pass
+            if forced_text:
+                _rpgrtl_ack_force_text(reason)
+            # Text.set_text invalidates its own render cache. Restarting the
+            # interaction here can end the active say interaction, which is why a
+            # manual replacement used to appear on the next dialogue line.
         return patched
 
     # Direct widget update: find Text widget with id="what" via screen API
     # and call set_text() on it. Does NOT restart interaction.
-    def _rpgrtl_force_update_current_text(forced_text):
+    def _rpgrtl_force_update_current_text(forced_text, expected_source=None):
         _rpgrtl_debug("force_update_current_text: " + repr(forced_text[:60]))
         updated = False
         try:
@@ -851,6 +919,18 @@ init -7 python:
                     return None
                 widget = find_what_widget(say_screen)
                 if widget is not None:
+                    widget_source = ""
+                    try:
+                        widget_text = getattr(widget, "text", None)
+                        if isinstance(widget_text, list) and widget_text and isinstance(widget_text[0], string_types):
+                            widget_source = widget_text[0]
+                        elif isinstance(widget_text, string_types):
+                            widget_source = widget_text
+                    except Exception:
+                        pass
+                    if expected_source and (not widget_source or (widget_source != expected_source and widget_source not in expected_source and expected_source not in widget_source)):
+                        _rpgrtl_debug("force_update skipped: say widget is no longer current dialogue")
+                        return False
                     _rpgrtl_debug("force_update: found widget " + repr(type(widget).__name__))
                     if _rpgrtl_old_set_text:
                         _rpgrtl_old_set_text(widget, forced_text, None, False, True)
@@ -858,6 +938,7 @@ init -7 python:
                         widget.text = [forced_text]
                     _rpgrtl_debug("force_update: set_text done")
                     updated = True
+                    _rpgrtl_ack_force_text("force_update_current_text")
                     # set_text invalidates the render cache; the event loop will
                     # re-render the screen on the next draw cycle automatically.
                     # Do NOT call restart_interaction — it ends the current interaction
@@ -938,14 +1019,17 @@ init -7 python:
             old_text = text
         elif len(text) == 1 and isinstance(text[0], string_types):
             old_text = text[0]
-        if old_text and _rpgrtl_is_translatable(old_text):
+        active_for_set_text = _rpgrtl_active_source if isinstance(_rpgrtl_active_source, string_types) else ""
+        related_to_active = bool(active_for_set_text and (old_text == active_for_set_text or old_text in active_for_set_text or active_for_set_text in old_text))
+        if old_text and _rpgrtl_is_translatable(old_text) and related_to_active:
             _rpgrtl_remember_active_widget(self, old_text)
             _rpgrtl_debug("set_text TRACK: widget=" + repr(type(self).__name__) + " text=" + repr(old_text[:60]))
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and old_text and _rpgrtl_is_translatable(old_text) and not _rpgrtl_skip_mode:
+        if False and forced and old_text and _rpgrtl_is_translatable(old_text) and (not active_for_set_text or related_to_active) and not _rpgrtl_skip_mode:
             _rpgrtl_debug("set_text FORCE: old_text=" + repr(old_text[:60]) + " forced=" + repr(forced[:60]))
             try:
                 self.text = [forced]
+                _rpgrtl_ack_force_text("set_text_force")
                 _rpgrtl_force_text = ""
                 _rpgrtl_log("set_text_force_replace", {"source": old_text[:180], "target": forced[:180]})
                 _rpgrtl_patch_active_widget("set_text_force")
@@ -953,16 +1037,6 @@ init -7 python:
             except Exception as exc:
                 _rpgrtl_debug("set_text FORCE FAILED: " + repr(exc))
                 _rpgrtl_log("set_text_force_failed", {"source": old_text[:180], "error": str(exc), "target": forced[:180]})
-        if not old_text or not _rpgrtl_is_translatable(old_text):
-            return res
-        translated = _rpgrtl_lookup(old_text)
-        if translated and translated != old_text:
-            try:
-                self.text = [translated]
-                _rpgrtl_log("set_text_replace", {"source": old_text[:180], "target": translated[:180]})
-                return True
-            except Exception:
-                pass
         return res
 
     # Hook: ADVCharacter.__call__ (track raw what for translate_identifier)
@@ -993,10 +1067,12 @@ init -7 python:
             res = _rpgrtl_old_prefix_suffix(self, thing, prefix, body, suffix)
         else:
             res = (prefix or "") + (body or "") + (suffix or "")
-        if body is None or thing not in ("what", "who"):
+        if body is None or thing != "what":
             return res
+        if isinstance(body, string_types) and _rpgrtl_is_translatable(body):
+            _rpgrtl_remember_active_widget(None, body)
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and thing == "what" and not _rpgrtl_skip_mode:
+        if False and forced and thing == "what" and not _rpgrtl_skip_mode:
             _rpgrtl_debug("prefix_suffix FORCE: body=" + repr(body[:60]) + " forced=" + repr(forced[:60]))
             # Do NOT clear _rpgrtl_force_text here — let do_display handle it.
             # do_display will display the forced text and wait for player input.
@@ -1007,16 +1083,7 @@ init -7 python:
         if not _rpgrtl_is_translatable(res):
             return res
         translated = _rpgrtl_lookup(body)
-        if translated and translated != body:
-            translated = _rpgrtl_wrap_font(translated)
-            _rpgrtl_report_seen(body, res, translated, "prefix_suffix")
-            try:
-                result = _rpgrtl_old_prefix_suffix(self, thing, prefix, translated, suffix) if _rpgrtl_old_prefix_suffix else (prefix or "") + translated + (suffix or "")
-                _rpgrtl_log("prefix_suffix_replace", {"source": body[:180], "target": translated[:180]})
-                return result
-            except Exception:
-                return (prefix or "") + translated + (suffix or "")
-        _rpgrtl_report_seen(body, res, "", "prefix_suffix")
+        _rpgrtl_report_seen(body, res, translated or "", "prefix_suffix")
         if not _rpgrtl_skip_mode:
             _rpgrtl_pending_lookup.add(body.strip())
         return res
@@ -1039,9 +1106,10 @@ init -7 python:
         # Check force_text FIRST — this is the primary injection mechanism.
         # Skip during fast-forward mode to avoid race conditions.
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and not _rpgrtl_skip_mode:
+        if False and forced and not _rpgrtl_skip_mode:
             forced = _rpgrtl_wrap_font(forced)
             _rpgrtl_debug("do_display FORCE: forced=" + repr(forced[:60]) + " what=" + repr(what[:60]))
+            _rpgrtl_ack_force_text("do_display_force")
             _rpgrtl_force_text = ""
             _rpgrtl_force_applied = False
             _rpgrtl_report_seen(what, what, forced, "force_text")
@@ -1063,9 +1131,10 @@ init -7 python:
         tid, raw_what = _rpgrtl_tid_what
         source_what = raw_what if tid == context_tid and isinstance(raw_what, string_types) else what
         forced = _rpgrtl_force_text if isinstance(_rpgrtl_force_text, string_types) else ""
-        if forced and source_what and not _rpgrtl_skip_mode:
+        if False and forced and source_what and not _rpgrtl_skip_mode:
             _rpgrtl_debug("do_display FORCE: source=" + repr(source_what[:60]) + " forced=" + repr(forced[:60]))
             new_what = forced
+            _rpgrtl_ack_force_text("do_display_source_force")
             _rpgrtl_force_text = ""
             translated = forced
             _rpgrtl_report_seen(source_what, what, translated, "force_text")
@@ -1088,10 +1157,6 @@ init -7 python:
                 if not _rpgrtl_skip_mode:
                     _rpgrtl_pending_lookup.add(source_what.strip())
         new_who = who
-        if isinstance(who, string_types):
-            who_translated = _rpgrtl_lookup(who)
-            if who_translated:
-                new_who = who_translated
         old_dtt = display_args.get("dtt", None)
         new_dtt = None
         if translated and _rpgrtl_dialogue_text_tags and old_dtt is not None:
@@ -1117,25 +1182,17 @@ init -7 python:
         pass
 
     def _rpgrtl_hook_Menu_execute(self):
-        # Translate choice labels in-place before the menu is displayed
+        # Queue the original labels only. Mutating Menu.items corrupts the AST:
+        # the translated label is later used as a lookup key by the menu filter,
+        # which can turn short choices such as Yes/No into garbled text.
         try:
             items = getattr(self, 'items', None)
             if items and isinstance(items, list):
-                changed = False
-                for i, item in enumerate(items):
+                for item in items:
                     if isinstance(item, (list, tuple)) and len(item) >= 1:
                         label = item[0]
                         if isinstance(label, str) and label.strip():
-                            translated = _rpgrtl_lookup(label)
-                            if translated and translated != label:
-                                translated = _rpgrtl_wrap_font(translated)
-                                new_item = (translated,) + tuple(item[1:])
-                                items[i] = new_item
-                                changed = True
-                                _rpgrtl_report_seen(label, label, translated, "menu_choice")
-                                _rpgrtl_log("menu_choice_replace", {"source": label[:180], "target": translated[:180]})
-                            else:
-                                _rpgrtl_pending_lookup.add(label.strip())
+                            _rpgrtl_pending_lookup.add(label.strip())
         except Exception as exc:
             _rpgrtl_debug("menu_choice translate error: " + repr(exc))
         if _rpgrtl_old_Menu_execute:
@@ -1153,21 +1210,8 @@ init -7 python:
         pass
 
     def _rpgrtl_hook_display_menu(items, *args, **kwargs):
-        # Translate labels in the items list before passing to original display_menu
-        if isinstance(items, list):
-            new_items = []
-            for item in items:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    label = item[0]
-                    if isinstance(label, str) and label.strip():
-                        translated = _rpgrtl_lookup(label)
-                        if translated and translated != label:
-                            translated = _rpgrtl_wrap_font(translated)
-                            _rpgrtl_debug("display_menu translate: " + repr(label[:40]) + " -> " + repr(translated[:40]))
-                            new_items.append((translated,) + tuple(item[1:]))
-                            continue
-                new_items.append(item)
-            items = new_items
+        # Keep menu data untouched. config.say_menu_text_filter is the sole
+        # display-layer replacement path for choices.
         if _rpgrtl_old_display_menu:
             return _rpgrtl_old_display_menu(items, *args, **kwargs)
 
@@ -1227,6 +1271,10 @@ init -7 python:
             _rpgrtl_debug("menu_filter: " + repr(label[:60]))
             translated = _rpgrtl_lookup(label)
             if translated and translated != label:
+                # Menu labels are rendered through a different Ren'Py path than
+                # dialogue.  Apply the Chinese-capable font only at render time;
+                # never alter Menu.items, otherwise repeated choices are
+                # corrupted on later visits.
                 translated = _rpgrtl_wrap_font(translated)
                 _rpgrtl_debug("menu_filter REPLACE: " + repr(label[:40]) + " -> " + repr(translated[:40]))
                 _rpgrtl_log("menu_filter_replace", {"source": label[:180], "target": translated[:180]})
@@ -1260,15 +1308,30 @@ init -7 python:
             global _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_render_diag_count
             forced = _rpgrtl_force_text
             wid = id(self)
+            raw_for_force = ""
+            try:
+                current_text = getattr(self, "text", None)
+                if isinstance(current_text, list) and len(current_text) == 1 and isinstance(current_text[0], string_types):
+                    raw_for_force = current_text[0]
+                elif isinstance(current_text, string_types):
+                    raw_for_force = current_text
+            except Exception:
+                raw_for_force = ""
             # --- Force text injection (manual "hello" test) — skip during fast-forward ---
-            if forced and isinstance(forced, string_types) and not _rpgrtl_skip_mode:
+            if False and forced and isinstance(forced, string_types) and not _rpgrtl_skip_mode:
+                active = _rpgrtl_active_source if isinstance(_rpgrtl_active_source, string_types) else ""
+                if active and raw_for_force and raw_for_force != active and active not in raw_for_force and raw_for_force not in active:
+                    return _rpgrtl_orig_Text_render(self, width, height, st, at)
+                if raw_for_force and not _rpgrtl_is_translatable(raw_for_force):
+                    return _rpgrtl_orig_Text_render(self, width, height, st, at)
                 if wid not in _rpgrtl_text_modified:
                     _rpgrtl_force_apply_count += 1
-                    _rpgrtl_debug("Text.render FORCE apply: " + repr(forced[:60]) + " count=" + str(_rpgrtl_force_apply_count))
+                    _rpgrtl_debug("Text.render FORCE apply: raw=" + repr(raw_for_force[:60]) + " forced=" + repr(forced[:60]) + " count=" + str(_rpgrtl_force_apply_count))
                 _rpgrtl_text_modified[wid] = forced
                 self.text = [forced]
                 result = _rpgrtl_orig_Text_render(self, width, height, st, at + 0.001)
                 if _rpgrtl_force_apply_count >= 1:
+                    _rpgrtl_ack_force_text("text_render_force")
                     _rpgrtl_force_text = ""
                     _rpgrtl_force_apply_count = 0
                 return result
@@ -1296,12 +1359,14 @@ init -7 python:
                 if isinstance(current_text_list, list) and len(current_text_list) >= 1:
                     raw = current_text_list[0]
                     if isinstance(raw, string_types) and raw.strip() and _rpgrtl_is_translatable(raw):
+                        active = _rpgrtl_active_source if isinstance(_rpgrtl_active_source, string_types) else ""
+                        allow_render_replace = bool(_rpgrtl_menu_active[0] or (active and (raw == active or raw in active or active in raw)))
+                        if not allow_render_replace:
+                            return _rpgrtl_orig_Text_render(self, width, height, st, at)
                         # If already translated (self.text was set to translated), skip
                         prev_translated = _rpgrtl_text_modified.get(wid)
                         if prev_translated and isinstance(prev_translated, string_types) and raw == prev_translated:
                             # Already translated — just track and render
-                            _rpgrtl_active_widget = self
-                            _rpgrtl_active_source = raw
                             return _rpgrtl_orig_Text_render(self, width, height, st, at)
                         # New or changed text — clear stale tracking
                         if prev_translated is not None and prev_translated != raw:
@@ -1368,7 +1433,9 @@ init -7 python:
         # Start from the NEXT node (not current, which is already displayed)
         if current.next:
             queue.append(current.next)
-        while queue and len(results) < 200:
+        # Keep a bounded lookahead window. The desktop worker will refill this
+        # 300-line window in parallel batches, then pause until dialogue moves.
+        while queue and len(results) < 300:
             node = queue.pop(0)
             if node is None:
                 continue
@@ -1418,7 +1485,7 @@ init -7 python:
     def _rpgrtl_background_update():
         _rpgrtl_last_lookahead_time = [0.0]
         def _update_loop():
-            global _rpgrtl_last_notify_seq, _rpgrtl_server_id, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text, _rpgrtl_skip_mode
+            global _rpgrtl_last_notify_seq, _rpgrtl_server_id, _rpgrtl_active_widget, _rpgrtl_active_source, _rpgrtl_force_text, _rpgrtl_force_seq, _rpgrtl_skip_mode
             _rpgrtl_was_skip = False
             while True:
                 try:
@@ -1444,7 +1511,7 @@ init -7 python:
                                 # Filter out already-translated texts
                                 to_send = [t for t in upcoming if t not in _rpgrtl_translation_cache]
                                 if to_send:
-                                    payload = _rpgrtl_send("/pre_translate", {"texts": to_send[:50]}, timeout=1.0)
+                                    payload = _rpgrtl_send("/pre_translate", {"texts": to_send[:300]}, timeout=1.0)
                                     if hasattr(payload, "get") and hasattr(payload, "keys"):
                                         trans = payload.get("translations", {})
                                         if hasattr(trans, "items"):
@@ -1524,6 +1591,8 @@ init -7 python:
                             server_id = str(notify_payload.get("server_id", "") or "")
                             translation_count = int(notify_payload.get("translation_count", 0) or 0)
                             force_text = str(notify_payload.get("force_text", "") or "")
+                            force_source = str(notify_payload.get("force_source", "") or "")
+                            force_seq = int(notify_payload.get("force_seq", 0) or 0)
                             _rpgrtl_debug("notify parsed: seq=" + str(server_seq) + " force_text=" + repr(force_text[:60]) + " last_seq=" + str(_rpgrtl_last_notify_seq))
                             server_changed = bool(server_id and server_id != _rpgrtl_server_id)
                             cache_changed = translation_count != len(_rpgrtl_translation_cache)
@@ -1533,13 +1602,26 @@ init -7 python:
                                 _rpgrtl_pull_translations()
                             if force_text:
                                 _rpgrtl_force_text = force_text
-                                _rpgrtl_debug("notify FORCE_TEXT received: " + repr(force_text[:100]))
-                                _rpgrtl_log("force_text_received", {"target": force_text[:180]})
-                                # Directly update the Text widget via screen API.
-                                # Skip during fast-forward to avoid race conditions.
-                                if not _rpgrtl_skip_mode:
-                                    _rpgrtl_force_update_current_text(force_text)
-                                _rpgrtl_force_text = ""
+                                _rpgrtl_force_seq = force_seq
+                                _rpgrtl_debug("notify FORCE_TEXT received: " + repr(force_text[:100]) + " source=" + repr(force_source[:60]))
+                                _rpgrtl_log("force_text_received", {"source": force_source[:180], "target": force_text[:180]})
+                                updated = False
+                                active_before_force = _rpgrtl_active_source if isinstance(_rpgrtl_active_source, string_types) else ""
+                                same_dialogue = bool(force_source and active_before_force and (force_source == active_before_force or force_source in active_before_force or active_before_force in force_source))
+                                if not _rpgrtl_skip_mode and same_dialogue:
+                                    updated = _rpgrtl_patch_active_widget("notify_force_text", force_text, force_source)
+                                    if not updated:
+                                        updated = _rpgrtl_force_update_current_text(force_text, force_source)
+                                if updated:
+                                    _rpgrtl_force_text = ""
+                                    _rpgrtl_log("force_text_applied", {"source": force_source[:180], "target": force_text[:180]})
+                                else:
+                                    # A force request is deliberately bound to the dialogue that was
+                                    # visible when the user clicked it.  Never carry it into the next
+                                    # line if that dialogue has already changed.
+                                    _rpgrtl_ack_force_text("current_dialogue_changed_or_widget_missing")
+                                    _rpgrtl_force_text = ""
+                                    _rpgrtl_log("force_text_not_applied", {"source": force_source[:180], "active": active_before_force[:180], "target": force_text[:180]})
                             else:
                                 if not _rpgrtl_skip_mode:
                                     _rpgrtl_patch_active_widget("notify_refresh")
@@ -1664,6 +1746,10 @@ class RenPyService:
                 _LIVE_SERVER_STATE["seen"] = {}
                 _LIVE_SERVER_STATE["pre_translate_queue"] = []
                 _LIVE_SERVER_STATE["force_text"] = ""
+                _LIVE_SERVER_STATE["force_source"] = ""
+                _LIVE_SERVER_STATE["current_source"] = ""
+                _LIVE_SERVER_STATE["force_seq"] = 0
+                _LIVE_SERVER_STATE["force_ack_seq"] = 0
                 _LIVE_SERVER_STATE["notify_seq"] = 0
                 _LIVE_SERVER_STATE["last_heartbeat"] = 0.0
                 _LIVE_SERVER_STATE["game_pid"] = 0
@@ -1677,6 +1763,10 @@ class RenPyService:
                 _LIVE_SERVER_STATE["seen"] = {}
                 _LIVE_SERVER_STATE["pre_translate_queue"] = []
                 _LIVE_SERVER_STATE["force_text"] = ""
+                _LIVE_SERVER_STATE["force_source"] = ""
+                _LIVE_SERVER_STATE["current_source"] = ""
+                _LIVE_SERVER_STATE["force_seq"] = 0
+                _LIVE_SERVER_STATE["force_ack_seq"] = 0
             _LIVE_SERVER_STATE["project_root"] = project_root
         if persisted:
             self._write_live_translation_mapping(persisted)
@@ -1782,9 +1872,13 @@ class RenPyService:
         if not value:
             return 0
         with _LIVE_SERVER_LOCK:
+            current_source = str(_LIVE_SERVER_STATE.get("current_source", "") or "").strip()
+            if not current_source:
+                raise RuntimeError("还没有捕获到当前对话，无法安全注入。请等待当前文本出现后再试。")
             _LIVE_SERVER_STATE["force_text"] = value
+            _LIVE_SERVER_STATE["force_source"] = current_source
             _LIVE_SERVER_STATE["force_seq"] = int(_LIVE_SERVER_STATE.get("force_seq", 0)) + 1
-        _append_live_log("tool", "force_live_text", {"text": value[:180], "force_seq": int(_LIVE_SERVER_STATE.get("force_seq", 0))})
+        _append_live_log("tool", "force_live_text", {"source": current_source[:180], "text": value[:180], "force_seq": int(_LIVE_SERVER_STATE.get("force_seq", 0))})
         return self.notify_game_refresh()
 
     def append_live_debug_event(self, kind: str, source: str, displayed: str = "", target: str = "", matched: bool = False) -> None:
@@ -1832,7 +1926,7 @@ class RenPyService:
         return entries
 
     def take_live_translation_candidates(self, limit: int = 50) -> list[str]:
-        limit = max(1, min(int(limit), 200))
+        limit = max(1, min(int(limit), 300))
         candidates: list[str] = []
         seen: set[str] = set()
         with _LIVE_SERVER_LOCK:
@@ -1844,19 +1938,37 @@ class RenPyService:
                 queued = []
             events = list(_LIVE_SERVER_STATE.get("events", []))
             translations = dict(_LIVE_SERVER_STATE.get("translations", {}))
-        for value in queued:
+            current_source = str(_LIVE_SERVER_STATE.get("current_source", "") or "").strip()
+
+        # The actual on-screen line is always first.  For multi-language games,
+        # only pre-translate AST text in the same script family as this line;
+        # otherwise language alternatives can crowd out the language the player is
+        # currently reading.
+        preferred_family = _live_text_family(current_source) if _is_live_dialogue_text(current_source) else ""
+
+        def add(value: object, require_family: bool = False) -> None:
             source = str(value or "").strip()
-            if source and source not in seen and not _lookup_live_translation_value(translations, source, source):
-                seen.add(source)
-                candidates.append(source)
+            if not source or source in seen or not _is_live_dialogue_text(source):
+                return
+            if require_family and preferred_family and _live_text_family(source) != preferred_family:
+                return
+            if _lookup_live_translation_value(translations, source, source):
+                return
+            seen.add(source)
+            candidates.append(source)
+
+        add(current_source)
+        for value in queued:
+            add(value, require_family=True)
         for event in reversed(events):
             if len(candidates) >= limit or not isinstance(event, dict):
                 break
             source = str(event.get("source", "") or "").strip()
-            if not source or source in seen or event.get("matched") or _lookup_live_translation_value(translations, source, str(event.get("displayed", "") or source)):
+            if event.get("matched") or _lookup_live_translation_value(translations, source, str(event.get("displayed", "") or source)):
                 continue
-            seen.add(source)
-            candidates.append(source)
+            # Current live captures stay eligible even if a game changes language
+            # at runtime; AST lookahead entries are constrained above.
+            add(source, require_family=event.get("type") == "lookahead")
         return candidates[:limit]
 
     def requeue_live_translation_candidates(self, values: list[str]) -> None:
@@ -1867,11 +1979,71 @@ class RenPyService:
             existing = set(str(item) for item in queue)
             for value in values:
                 source = str(value or "").strip()
-                if source and source not in existing:
+                if _is_live_dialogue_text(source) and source not in existing:
                     queue.append(source)
                     existing.add(source)
             if len(queue) > 1000:
                 del queue[: len(queue) - 1000]
+
+    def seed_live_translation_queue(self, entries: list[TranslationEntry], anchor_source: str, limit: int = 300) -> int:
+        """Fill the lookahead queue from extracted script order near the live line.
+
+        Ren'Py's runtime AST can stop at a jump/menu after only a handful of
+        nodes.  The extractor already has the complete script order, so use the
+        currently visible source as an anchor and queue following entries from
+        the same file and language family.  This keeps multi-language scripts
+        isolated while giving the worker enough entries for configured batches.
+        """
+        anchor = str(anchor_source or "").strip()
+        if not anchor or not entries:
+            return 0
+        safe_limit = max(1, min(int(limit), 300))
+        anchor_family = _live_text_family(anchor)
+        anchor_variants = set(_live_translation_candidates(anchor))
+        anchor_index = -1
+        anchor_file = ""
+        for index, entry in enumerate(entries):
+            source = str(getattr(entry, "source", "") or "").strip()
+            source_variants = set(_live_translation_candidates(source))
+            if source and (source in anchor_variants or anchor in source_variants or bool(anchor_variants & source_variants)):
+                anchor_index = index
+                anchor_file = str(getattr(entry, "file", "") or "")
+                break
+        if anchor_index < 0:
+            return 0
+
+        added = 0
+        with _LIVE_SERVER_LOCK:
+            queue = _LIVE_SERVER_STATE.setdefault("pre_translate_queue", [])
+            translations = _LIVE_SERVER_STATE.setdefault("translations", {})
+            if not isinstance(queue, list) or not isinstance(translations, dict):
+                return 0
+            existing = {str(item or "").strip() for item in queue}
+            existing.add(anchor)
+            for entry in entries[anchor_index + 1 :]:
+                if added >= safe_limit:
+                    break
+                source = str(getattr(entry, "source", "") or "").strip()
+                file_name = str(getattr(entry, "file", "") or "")
+                category = str(getattr(entry, "category", "") or "")
+                if not source or source in existing or category not in {"dialogue", "choice"}:
+                    continue
+                if anchor_file and file_name and file_name != anchor_file:
+                    # Script extraction is ordered per file. Crossing into a
+                    # different file at this point is usually an unrelated route.
+                    break
+                if anchor_family and _live_text_family(source) != anchor_family:
+                    continue
+                if _lookup_live_translation_value(translations, source, source):
+                    continue
+                queue.append(source)
+                existing.add(source)
+                added += 1
+            if len(queue) > 1000:
+                del queue[: len(queue) - 1000]
+        if added:
+            _append_live_log("tool", "seed_live_translation_queue", {"anchor": anchor[:180], "count": added, "limit": safe_limit})
+        return added
 
     def live_bridge_status(self) -> dict[str, object]:
         with _LIVE_SERVER_LOCK:
@@ -1879,6 +2051,8 @@ class RenPyService:
             translations = _LIVE_SERVER_STATE.get("translations", {})
             seen = _LIVE_SERVER_STATE.get("seen", {})
             last_event = events[-1] if isinstance(events, list) and events else {}
+            current_source = str(_LIVE_SERVER_STATE.get("current_source", "") or "")
+            current_target = _lookup_live_translation_value(translations, current_source, current_source) if current_source else ""
             return {
                 "running": _LIVE_SERVER is not None,
                 "connected": time.time() - float(_LIVE_SERVER_STATE.get("last_heartbeat", 0.0) or 0.0) < 3.5,
@@ -1889,6 +2063,9 @@ class RenPyService:
                 "translation_count": len(translations) if isinstance(translations, dict) else 0,
                 "seen_count": len(seen) if isinstance(seen, dict) else 0,
                 "last_event": dict(last_event) if isinstance(last_event, dict) else {},
+                "current_source": current_source,
+                "current_target": current_target,
+                "pending_sources": list(_LIVE_SERVER_STATE.get("pre_translate_queue", []))[-80:],
             }
 
     def needs_runtime_extraction(self) -> bool:

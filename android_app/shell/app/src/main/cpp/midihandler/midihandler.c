@@ -1,4 +1,4 @@
-#include <stdbool.h>
+﻿#include <stdbool.h>
 #include <fluidsynth.h>
 #include <jni.h>
 #include <string.h>

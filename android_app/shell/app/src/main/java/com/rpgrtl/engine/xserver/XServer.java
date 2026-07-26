@@ -43,6 +43,8 @@ public class XServer {
     private WinHandler winHandler;
     private final EnumMap<Lockable, ReentrantLock> locks = new EnumMap<>(Lockable.class);
     private boolean relativeMouseMovement = false;
+    /** When true, guest warpPointer / cursor-pos feedback must not pin the Android cursor. */
+    private boolean ignoreGuestCursorWarp = false;
 
     public XServer(XServerDisplayActivity activity, ScreenInfo screenInfo) {
         this.activity = activity;
@@ -69,6 +71,15 @@ public class XServer {
     public void setRelativeMouseMovement(boolean relativeMouseMovement) {
         cursorLocker.setEnabled(!relativeMouseMovement);
         this.relativeMouseMovement = relativeMouseMovement;
+    }
+
+    public boolean isIgnoreGuestCursorWarp() {
+        return ignoreGuestCursorWarp;
+    }
+
+    public void setIgnoreGuestCursorWarp(boolean ignoreGuestCursorWarp) {
+        this.ignoreGuestCursorWarp = ignoreGuestCursorWarp;
+        if (ignoreGuestCursorWarp) cursorLocker.setEnabled(false);
     }
 
     public GLRenderer getRenderer() {
@@ -152,6 +163,17 @@ public class XServer {
         try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
             pointer.setPosition(pointer.getX() + dx, pointer.getY() + dy);
         }
+    }
+
+    /**
+     * Wine's relative-mouse channel owns game input.  Keep the Android-rendered cursor in
+     * sync without generating another X11 MotionNotify that could disturb pointer capture.
+     */
+    public void moveVisualPointerDelta(int dx, int dy) {
+        try (XLock lock = lock(Lockable.INPUT_DEVICE)) {
+            pointer.setPositionSilently(pointer.getX() + dx, pointer.getY() + dy);
+        }
+        if (renderer != null) renderer.xServerView.requestRender();
     }
 
     public void injectPointerButtonPress(Pointer.Button buttonCode) {

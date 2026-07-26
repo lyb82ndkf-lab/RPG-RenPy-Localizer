@@ -11,7 +11,8 @@ class WineEngineBridge(private val activity: Activity) {
         title: String = "",
         containerId: Int = 0,
         box64Preset: String = "PERFORMANCE",
-        graphicsDriver: String = "auto"
+        graphicsDriver: String = "auto",
+        gameTreeUri: Uri? = null
     ): JSONObject {
         if (gameUri == null) {
             return JSONObject()
@@ -19,6 +20,7 @@ class WineEngineBridge(private val activity: Activity) {
                 .put("error", "Please select a game folder first.")
         }
         val gamePath = gameUri.toString()
+        val treePath = gameTreeUri?.toString().orEmpty()
 
         val intent = Intent(activity, WineDisplayActivity::class.java).apply {
             putExtra(WineDisplayActivity.EXTRA_GAME_URI, gamePath)
@@ -26,6 +28,9 @@ class WineEngineBridge(private val activity: Activity) {
             putExtra(WineDisplayActivity.EXTRA_CONTAINER_ID, containerId)
             putExtra(WineDisplayActivity.EXTRA_BOX64_PRESET, box64Preset)
             putExtra(WineDisplayActivity.EXTRA_GRAPHICS_DRIVER, graphicsDriver)
+            if (treePath.isNotBlank()) {
+                putExtra(WineDisplayActivity.EXTRA_GAME_TREE_URI, treePath)
+            }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
@@ -37,5 +42,6 @@ class WineEngineBridge(private val activity: Activity) {
             .put("box64Preset", box64Preset)
             .put("graphicsDriver", graphicsDriver)
             .put("gamePath", gamePath)
+            .put("gameTreeUri", treePath)
     }
 }

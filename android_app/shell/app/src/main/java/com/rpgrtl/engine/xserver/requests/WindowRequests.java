@@ -311,7 +311,8 @@ public abstract class WindowRequests {
     }
 
     public static void warpPointer(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {
-        if (client.xServer.isRelativeMouseMovement()) {
+        // Relative capture mode OR absolute touch-screen play: never let the guest pin the cursor.
+        if (client.xServer.isRelativeMouseMovement() || client.xServer.isIgnoreGuestCursorWarp()) {
             client.skipRequest();
             return;
         }

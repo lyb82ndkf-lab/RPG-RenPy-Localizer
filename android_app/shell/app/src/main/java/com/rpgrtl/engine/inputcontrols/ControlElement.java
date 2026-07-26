@@ -19,6 +19,7 @@ import com.rpgrtl.engine.widget.InputControlsView;
 import com.rpgrtl.engine.widget.TouchpadView;
 import com.rpgrtl.engine.winhandler.MIDIHandler;
 import com.rpgrtl.engine.winhandler.WinHandler;
+import com.rpgrtl.engine.xserver.XServer;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -102,8 +103,9 @@ public class ControlElement {
     }
 
     private void reset() {
-        bindings = new Binding[4];
+        bindings = new Binding[type == Type.BUTTON || type == Type.MIDI_KEY ? 1 : 4];
         setBinding(Binding.NONE);
+        states = new boolean[bindings.length];
         scroller = null;
         text = "";
 
@@ -373,14 +375,7 @@ public class ControlElement {
         }
         else {
             if (type == Type.BUTTON) {
-                StringBuilder sb = new StringBuilder();
-                for (byte i = 0; i < bindings.length; i++) {
-                    if (bindings[i] != Binding.NONE) {
-                        if (sb.length() > 0) sb.append("+");
-                        sb.append(getBindingTextAt(i));
-                    }
-                }
-                if (sb.length() > 0) return sb.toString();
+                if (getBindingAt(0) != Binding.NONE) return getBindingTextAt(0);
             }
 
             return getBindingTextAt(0);
@@ -775,7 +770,8 @@ public class ControlElement {
             elementJSONObject.put("shape", shape.name());
 
             JSONArray bindingsJSONArray = new JSONArray();
-            for (Binding binding : bindings) bindingsJSONArray.put(binding.name());
+            int bindingLimit = (type == Type.BUTTON || type == Type.MIDI_KEY) ? 1 : bindings.length;
+            for (int i = 0; i < bindingLimit; i++) bindingsJSONArray.put(getBindingAt(i).name());
 
             elementJSONObject.put("bindings", bindingsJSONArray);
             elementJSONObject.put("scale", Float.valueOf(scale));
@@ -816,9 +812,12 @@ public class ControlElement {
         if (currentPointerId == -1 && containsPoint(x, y)) {
             currentPointerId = pointerId;
             if (type == Type.BUTTON) {
+                Binding[] buttonBindings = {getBindingAt(0)};
                 if (isKeepButtonPressedAfterMinTime()) touchTime = System.currentTimeMillis();
-                if (!propertyFlags.isSet(FLAG_TOGGLE_SWITCH) || !propertyFlags.isSet(FLAG_SELECTED)) inputControlsView.handleInputEvent(bindings, true);
-                if (propertyFlags.isSet(FLAG_MOUSE_MOVE_MODE)) inputControlsView.getTouchpadView().mouseMove(x, y, MotionEvent.ACTION_DOWN);
+                if (!propertyFlags.isSet(FLAG_TOGGLE_SWITCH) || !propertyFlags.isSet(FLAG_SELECTED)) inputControlsView.handleInputEvent(buttonBindings, true);
+                if (propertyFlags.isSet(FLAG_MOUSE_MOVE_MODE) && inputControlsView.getTouchpadView() != null) {
+                    inputControlsView.getTouchpadView().mouseMove(x, y, MotionEvent.ACTION_DOWN);
+                }
 
                 propertyFlags.set(FLAG_PRESSED);
                 inputControlsView.invalidate();
@@ -869,6 +868,7 @@ public class ControlElement {
             TouchpadView touchpadView =  inputControlsView.getTouchpadView();
 
             if (type == Type.TRACKPAD) {
+                if (touchpadView == null) return true;
                 if (currentPosition == null) currentPosition = new PointF();
                 float[] deltaPoint = touchpadView.computeDeltaPoint(currentPosition.x, currentPosition.y, x, y);
                 deltaX = deltaPoint[0];
@@ -946,7 +946,17 @@ public class ControlElement {
                     }
                 }
 
-                if (cursorDx != 0 || cursorDy != 0) inputControlsView.getXServer().injectPointerMoveDelta(cursorDx, cursorDy);
+                if ((cursorDx != 0 || cursorDy != 0) && inputControlsView.getXServer() != null) {
+                    // Match TouchpadView: use Wine relative channel when the guest captured the cursor.
+                    XServer xServer = inputControlsView.getXServer();
+                    if (xServer.isRelativeMouseMovement() && xServer.getWinHandler() != null) {
+                        xServer.getWinHandler().mouseEvent(
+                            com.rpgrtl.engine.winhandler.MouseEventFlags.MOVE, cursorDx, cursorDy, 0);
+                        xServer.moveVisualPointerDelta(cursorDx, cursorDy);
+                    } else {
+                        xServer.injectPointerMoveDelta(cursorDx, cursorDy);
+                    }
+                }
             }
             else {
                 final boolean[] states = {deltaY <= -DPAD_DEAD_ZONE, deltaX >= DPAD_DEAD_ZONE, deltaY >= DPAD_DEAD_ZONE, deltaX <= -DPAD_DEAD_ZONE};
@@ -971,7 +981,9 @@ public class ControlElement {
             return true;
         }
         else if (pointerId == currentPointerId && type == Type.BUTTON && propertyFlags.isSet(FLAG_MOUSE_MOVE_MODE)) {
-            inputControlsView.getTouchpadView().mouseMove(x, y, MotionEvent.ACTION_MOVE);
+            if (inputControlsView.getTouchpadView() != null) {
+                inputControlsView.getTouchpadView().mouseMove(x, y, MotionEvent.ACTION_MOVE);
+            }
             return true;
         }
         else return false;
@@ -980,19 +992,22 @@ public class ControlElement {
     public boolean handleTouchUp(int pointerId, float x, float y) {
         if (pointerId == currentPointerId) {
             if (type == Type.BUTTON) {
+                Binding[] buttonBindings = {getBindingAt(0)};
                 boolean selected = propertyFlags.isSet(FLAG_SELECTED);
                 if (isKeepButtonPressedAfterMinTime() && touchTime != null) {
                     selected = (System.currentTimeMillis() - (long)touchTime) > BUTTON_MIN_TIME_TO_KEEP_PRESSED;
-                    if (!selected) inputControlsView.handleInputEvent(bindings, false);
+                    if (!selected) inputControlsView.handleInputEvent(buttonBindings, false);
                     propertyFlags.set(FLAG_SELECTED, selected);
                     touchTime = null;
                 }
                 else if (!propertyFlags.isSet(FLAG_TOGGLE_SWITCH) || propertyFlags.isSet(FLAG_SELECTED)) {
-                    inputControlsView.handleInputEvent(bindings, false);
+                    inputControlsView.handleInputEvent(buttonBindings, false);
                 }
 
                 if (propertyFlags.isSet(FLAG_TOGGLE_SWITCH)) propertyFlags.set(FLAG_SELECTED, !selected);
-                if (propertyFlags.isSet(FLAG_MOUSE_MOVE_MODE)) inputControlsView.getTouchpadView().mouseMove(0, 0, MotionEvent.ACTION_UP);
+                if (propertyFlags.isSet(FLAG_MOUSE_MOVE_MODE) && inputControlsView.getTouchpadView() != null) {
+                    inputControlsView.getTouchpadView().mouseMove(0, 0, MotionEvent.ACTION_UP);
+                }
 
                 propertyFlags.unset(FLAG_PRESSED);
                 inputControlsView.invalidate();

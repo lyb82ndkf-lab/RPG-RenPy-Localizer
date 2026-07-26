@@ -158,11 +158,17 @@ public abstract class GPUHelper {
         return (version) & 0xFFF;
     }
 
-    public static native String[] vkGetDeviceExtensions();
+    public static String[] vkGetDeviceExtensions() {
+        return com.winlator.core.GPUHelper.vkGetDeviceExtensions();
+    }
 
     @CriticalNative
-    public static native int vkGetApiVersion();
+    public static int vkGetApiVersion() {
+        return com.winlator.core.GPUHelper.vkGetApiVersion();
+    }
 
-    public static native void setGlobalEGLContext();
+    public static void setGlobalEGLContext() {
+        com.winlator.core.GPUHelper.setGlobalEGLContext();
+    }
 }
 

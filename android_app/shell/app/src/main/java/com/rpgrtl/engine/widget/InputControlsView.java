@@ -24,6 +24,7 @@ import com.rpgrtl.engine.inputcontrols.ExternalController;
 import com.rpgrtl.engine.inputcontrols.ExternalControllerBinding;
 import com.rpgrtl.engine.inputcontrols.GamepadState;
 import com.rpgrtl.engine.math.Mathf;
+import com.rpgrtl.engine.winhandler.MouseEventFlags;
 import com.rpgrtl.engine.winhandler.WinHandler;
 import com.rpgrtl.engine.xserver.Pointer;
 import com.rpgrtl.engine.xserver.XServer;
@@ -70,6 +71,7 @@ public class InputControlsView extends View {
 
     public void setEditMode(boolean editMode) {
         this.editMode = editMode;
+        invalidate();
     }
 
     public boolean isEditMode() {
@@ -120,7 +122,7 @@ public class InputControlsView extends View {
         paint.setStyle(Paint.Style.FILL);
         paint.setStrokeWidth(snappingSize * 0.0625f);
         paint.setColor(0xff000000);
-        canvas.drawColor(Color.BLACK);
+        canvas.drawColor(0x66000000);
 
         paint.setAntiAlias(false);
         paint.setColor(0xff303030);
@@ -168,6 +170,18 @@ public class InputControlsView extends View {
             return true;
         }
         else return false;
+    }
+
+    public synchronized ControlElement addElementAt(int x, int y, ControlElement.Type type) {
+        if (!editMode || profile == null) return null;
+        ControlElement element = new ControlElement(this);
+        element.setType(type);
+        element.setX(x);
+        element.setY(y);
+        profile.addElement(element);
+        profile.save();
+        selectElement(element);
+        return element;
     }
 
     public synchronized boolean removeElement() {
@@ -270,13 +284,22 @@ public class InputControlsView extends View {
     }
 
     private void createMouseMoveTimer() {
-        if (profile != null && mouseMoveTimer == null) {
+        if (profile != null && mouseMoveTimer == null && xServer != null) {
             final float cursorSpeed = profile.getCursorSpeed();
             mouseMoveTimer = new Timer();
             mouseMoveTimer.schedule(new TimerTask() {
                 @Override
                 public void run() {
-                    xServer.injectPointerMoveDelta((int)(mouseMoveOffset.x * 10 * cursorSpeed), (int)(mouseMoveOffset.y * 10 * cursorSpeed));
+                    int dx = (int)(mouseMoveOffset.x * 10 * cursorSpeed);
+                    int dy = (int)(mouseMoveOffset.y * 10 * cursorSpeed);
+                    if (dx == 0 && dy == 0) return;
+                    if (xServer.isRelativeMouseMovement() && xServer.getWinHandler() != null) {
+                        xServer.getWinHandler().mouseEvent(
+                            com.rpgrtl.engine.winhandler.MouseEventFlags.MOVE, dx, dy, 0);
+                        xServer.moveVisualPointerDelta(dx, dy);
+                    } else {
+                        xServer.injectPointerMoveDelta(dx, dy);
+                    }
                 }
             }, 0, 1000 / 60);
         }
@@ -324,6 +347,24 @@ public class InputControlsView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        int actionMasked = event.getActionMasked();
+        if (actionMasked == MotionEvent.ACTION_DOWN) {
+            // Always log entry so runtime log proves this view received the event.
+            try {
+                boolean loaded = profile != null && profile.isElementsLoaded();
+                int count = loaded ? profile.getElements().size() : -1;
+                com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                    "InputControls touch DOWN editMode=" + editMode
+                        + " profile=" + (profile != null)
+                        + " elementsLoaded=" + loaded
+                        + " elements=" + count
+                        + " touchpadNull=" + (touchpadView == null)
+                        + " showControls=" + showTouchscreenControls
+                        + " xy=" + (int) event.getX() + "," + (int) event.getY()
+                        + " size=" + getWidth() + "x" + getHeight());
+            } catch (Throwable ignored) {}
+        }
+
         if (editMode && readyToDraw) {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN: {
@@ -364,55 +405,142 @@ public class InputControlsView extends View {
                     break;
                 }
             }
+            return true;
         }
 
-        if (!editMode && profile != null) {
-            int actionIndex = event.getActionIndex();
-            int pointerId = event.getPointerId(actionIndex);
-            int actionMasked = event.getActionMasked();
-            boolean handled = false;
+        // Physical mouse must never be swallowed by virtual-key hit tests.
+        int sources = event.getSource();
+        boolean mouseLike = (sources & android.view.InputDevice.SOURCE_MOUSE) == android.view.InputDevice.SOURCE_MOUSE
+            || (sources & android.view.InputDevice.SOURCE_MOUSE_RELATIVE) == android.view.InputDevice.SOURCE_MOUSE_RELATIVE
+            || event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE;
+        if (mouseLike) {
+            if (touchpadView != null) touchpadView.onExternalMouseEvent(event);
+            return true;
+        }
 
-            switch (actionMasked) {
-                case MotionEvent.ACTION_DOWN:
-                case MotionEvent.ACTION_POINTER_DOWN: {
-                    float x = event.getX(actionIndex);
-                    float y = event.getY(actionIndex);
+        int actionIndex = event.getActionIndex();
+        int pointerId = event.getPointerId(actionIndex);
+        boolean handled = false;
+        // Lazy-load profile elements if set but not yet drawn.
+        if (profile != null && !profile.isElementsLoaded() && getWidth() > 0 && getHeight() > 0) {
+            try {
+                profile.loadElements(this);
+            } catch (Throwable error) {
+                try {
+                    com.rpgrtl.shell.ShellLog.INSTANCE.error(getContext(), "loadElements failed", error);
+                } catch (Throwable ignored) {}
+            }
+        }
+        boolean elementsReady = profile != null && profile.isElementsLoaded()
+            && showTouchscreenControls && !profile.getElements().isEmpty();
 
-                    touchpadView.setPointerButtonLeftEnabled(true);
+        switch (actionMasked) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                float x = event.getX(actionIndex);
+                float y = event.getY(actionIndex);
+
+                if (touchpadView != null) touchpadView.setPointerButtonLeftEnabled(true);
+                if (elementsReady) {
                     for (ControlElement element : profile.getElements()) {
-                        if (element.handleTouchDown(pointerId, x, y)) handled = true;
-                        if (element.getBindingAt(0) == Binding.MOUSE_LEFT_BUTTON && element.getLastBindingIndex() == 0) {
-                            touchpadView.setPointerButtonLeftEnabled(false);
+                        if (!element.containsPoint(x, y)) continue;
+                        if (element.handleTouchDown(pointerId, x, y)) {
+                            handled = true;
+                            if (touchpadView != null
+                                    && element.getBindingAt(0) == Binding.MOUSE_LEFT_BUTTON
+                                    && element.getLastBindingIndex() == 0) {
+                                touchpadView.setPointerButtonLeftEnabled(false);
+                            }
+                            break;
                         }
                     }
-                    if (!handled) touchpadView.onTouchEvent(event);
-                    break;
                 }
-                case MotionEvent.ACTION_MOVE: {
-                    for (byte i = 0, count = (byte)event.getPointerCount(); i < count; i++) {
+                // Blank area / no virtual keys → full-screen mouse (ALWAYS).
+                if (!handled) {
+                    if (touchpadView != null) touchpadView.setPointerButtonLeftEnabled(true);
+                    forwardToTouchpad(event, "DOWN");
+                } else if (actionMasked == MotionEvent.ACTION_DOWN) {
+                    try {
+                        Binding b = Binding.NONE;
+                        if (elementsReady) {
+                            for (ControlElement element : profile.getElements()) {
+                                if (element.containsPoint(x, y)) {
+                                    b = element.getBindingAt(0);
+                                    break;
+                                }
+                            }
+                        }
+                        com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                            "InputControls virtual-key consumed touch at " + (int) x + "," + (int) y
+                                + " binding=" + b
+                                + " xServerNull=" + (xServer == null));
+                    } catch (Throwable ignored) {}
+                }
+                break;
+            }
+            case MotionEvent.ACTION_MOVE: {
+                boolean needsTouchpad = !elementsReady;
+                if (elementsReady) {
+                    for (int i = 0, count = event.getPointerCount(); i < count; i++) {
                         float x = event.getX(i);
                         float y = event.getY(i);
-
-                        handled = false;
+                        int pid = event.getPointerId(i);
+                        boolean fingerHandled = false;
                         for (ControlElement element : profile.getElements()) {
-                            if (element.handleTouchMove(i, x, y)) handled = true;
+                            if (element.handleTouchMove(pid, x, y)) {
+                                fingerHandled = true;
+                            }
                         }
-                        if (!handled) touchpadView.onTouchEvent(event);
+                        if (!fingerHandled) needsTouchpad = true;
                     }
-                    break;
                 }
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_POINTER_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    float x = event.getX(actionIndex);
-                    float y = event.getY(actionIndex);
-                    for (ControlElement element : profile.getElements()) if (element.handleTouchUp(pointerId, x, y)) handled = true;
-                    if (!handled) touchpadView.onTouchEvent(event);
-                    break;
+                // When no virtual keys, always forward MOVE (pointer-mode swipes).
+                if (needsTouchpad || !elementsReady) forwardToTouchpad(event, "MOVE");
+                break;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_CANCEL: {
+                float x = event.getX(actionIndex);
+                float y = event.getY(actionIndex);
+                if (elementsReady) {
+                    for (ControlElement element : profile.getElements()) {
+                        if (element.handleTouchUp(pointerId, x, y)) handled = true;
+                    }
                 }
+                if (!handled || actionMasked == MotionEvent.ACTION_CANCEL) {
+                    forwardToTouchpad(event, actionMasked == MotionEvent.ACTION_CANCEL ? "CANCEL" : "UP");
+                }
+                if (actionMasked != MotionEvent.ACTION_CANCEL && touchpadView != null) {
+                    touchpadView.setPointerButtonLeftEnabled(true);
+                }
+                break;
             }
         }
         return true;
+    }
+
+    private void forwardToTouchpad(MotionEvent event, String tag) {
+        if (touchpadView == null) {
+            try {
+                com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(), "forward→Touchpad SKIP null tag=" + tag);
+            } catch (Throwable ignored) {}
+            return;
+        }
+        try {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                    "forward→Touchpad " + tag
+                        + " xy=" + (int) event.getX() + "," + (int) event.getY()
+                        + " enabled=" + touchpadView.isEnabled());
+            }
+            touchpadView.setEnabled(true);
+            touchpadView.onTouchEvent(event);
+        } catch (Throwable error) {
+            try {
+                com.rpgrtl.shell.ShellLog.INSTANCE.error(getContext(), "forward→Touchpad FAILED " + tag, error);
+            } catch (Throwable ignored) {}
+        }
     }
 
     public boolean onKeyEvent(KeyEvent event) {
@@ -484,30 +612,68 @@ public class InputControlsView extends View {
                 if (isActionDown) createMouseMoveTimer();
             }
             else {
+                if (xServer == null) {
+                    try {
+                        com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                            "InputControls inject SKIP xServerNull binding=" + binding);
+                    } catch (Throwable ignored) {}
+                    return;
+                }
                 Pointer.Button pointerButton = binding.getPointerButton();
+                WinHandler wh = xServer.getWinHandler();
                 if (isActionDown) {
                     if (pointerButton != null) {
                         xServer.injectPointerButtonPress(pointerButton);
+                        if (wh != null && !xServer.isRelativeMouseMovement()) {
+                            int flags = MouseEventFlags.getFlagFor(pointerButton, true);
+                            if (pointerButton == Pointer.Button.BUTTON_SCROLL_UP) {
+                                wh.mouseEventAbsolute(flags, xServer.pointer.getX(), xServer.pointer.getY(), 120);
+                            } else if (pointerButton == Pointer.Button.BUTTON_SCROLL_DOWN) {
+                                wh.mouseEventAbsolute(flags, xServer.pointer.getX(), xServer.pointer.getY(), -120);
+                            } else {
+                                wh.mouseEventAbsolute(flags, xServer.pointer.getX(), xServer.pointer.getY(), 0);
+                            }
+                        }
+                        try {
+                            com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                                "InputControls inject POINTER press " + binding);
+                        } catch (Throwable ignored) {}
+                    } else {
+                        xServer.injectKeyPress(binding.keycode);
+                        try {
+                            com.rpgrtl.shell.ShellLog.INSTANCE.info(getContext(),
+                                "InputControls inject KEY press " + binding + " code=" + binding.keycode);
+                        } catch (Throwable ignored) {}
                     }
-                    else xServer.injectKeyPress(binding.keycode);
-                }
-                else {
+                } else {
                     if (pointerButton != null) {
                         xServer.injectPointerButtonRelease(pointerButton);
+                        if (wh != null && !xServer.isRelativeMouseMovement()) {
+                            int flags = MouseEventFlags.getFlagFor(pointerButton, false);
+                            wh.mouseEventAbsolute(flags, xServer.pointer.getX(), xServer.pointer.getY(), 0);
+                        }
+                    } else {
+                        xServer.injectKeyRelease(binding.keycode);
                     }
-                    else xServer.injectKeyRelease(binding.keycode);
                 }
             }
         }
     }
 
     public Bitmap getIcon(byte id) {
+        if (id < 0 || id >= icons.length) return null;
         if (icons[id] == null) {
             Context context = getContext();
-            try (InputStream is = context.getAssets().open("inputcontrols/icons/"+id+".png")) {
-                icons[id] = BitmapFactory.decodeStream(is);
+            String[] paths = {
+                "inputcontrols/icons/" + id + ".png",
+                "winlator/inputcontrols/icons/" + id + ".png"
+            };
+            for (String path : paths) {
+                try (InputStream is = context.getAssets().open(path)) {
+                    icons[id] = BitmapFactory.decodeStream(is);
+                    if (icons[id] != null) break;
+                } catch (IOException ignored) {}
             }
-            catch (IOException e) {}
         }
         return icons[id];
     }

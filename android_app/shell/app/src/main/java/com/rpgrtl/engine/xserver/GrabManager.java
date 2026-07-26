@@ -66,7 +66,11 @@ public class GrabManager implements WindowManager.OnWindowModificationListener {
     }
 
     public void activatePointerGrab(Window window) {
+        if (window == null) return;
         EventListener eventListener = window.getButtonPressListener();
+        // Guest may not have selected ButtonPress yet.  Never NPE — skip grab activation;
+        // InputDeviceManager still delivers via window.sendEvent(...).
+        if (eventListener == null) return;
         activatePointerGrab(window, eventListener, eventListener.isInterestedIn(Event.OWNER_GRAB_BUTTON), true);
     }
 }

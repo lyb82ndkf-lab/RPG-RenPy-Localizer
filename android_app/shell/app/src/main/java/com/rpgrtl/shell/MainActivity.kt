@@ -2,6 +2,8 @@ package com.rpgrtl.shell
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -83,12 +85,14 @@ class MainActivity : Activity() {
         createStartMs = System.nanoTime()
         setTheme(R.style.Theme_RPGRenPyLocalizer)
         super.onCreate(savedInstanceState)
+        ShellLog.installCrashLogger(this)
+        ShellLog.info(this, "MainActivity onCreate ${appVersionLabel()}")
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         consumeExternalLaunchIntent(intent)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        enterImmersiveMode()
+        applyToolPageSystemUi()
         setupWebView(binding.webView, exposeBridge = true)
         setupWebView(binding.gameWebView, exposeBridge = false)
         binding.gameWebView.addJavascriptInterface(GameErrorBridge(this), "RPGRenPyGameBridge")
@@ -112,12 +116,12 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
+        if (hasFocus) applySystemUiForCurrentMode()
     }
 
     override fun onResume() {
         super.onResume()
-        enterImmersiveMode()
+        applySystemUiForCurrentMode()
         binding.webView.onResume()
         binding.webView.resumeTimers()
         binding.gameWebView.onResume()
@@ -148,8 +152,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applySystemUiForCurrentMode() {
+        if (gameViewActive) enterImmersiveMode() else applyToolPageSystemUi()
+    }
+
+    /** Tool pages keep status bar visible so notch area is not a black void. */
+    private fun applyToolPageSystemUi() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+        window.statusBarColor = 0xFF0B0F16.toInt()
+        window.navigationBarColor = 0xFF0B0F16.toInt()
+    }
+
     private fun enterImmersiveMode() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
             window.insetsController?.let { controller ->
                 controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                 controller.systemBarsBehavior =
@@ -275,6 +297,7 @@ class MainActivity : Activity() {
             pushExternalLaunchContext()
         }
         reflowWebViewSoon()
+        applySystemUiForCurrentMode()
         if (!toolPageGameMode) binding.webView.postDelayed({ preloadGameIfReady() }, 3000)
     }
 
@@ -286,6 +309,7 @@ class MainActivity : Activity() {
         toolPageGameMode = false
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         gameViewActive = true
+        applySystemUiForCurrentMode()
         updateToolButton()
         showGameLoadingOverlay("Restoring game view...")
         binding.webView.visibility = View.GONE
@@ -605,8 +629,13 @@ class MainActivity : Activity() {
 
     fun selectGamePath(uriText: String): String {
         return try {
-            val uri = Uri.parse(uriText)
-            if (isLikelyExeUri(uriText)) {
+            val raw = uriText.trim()
+            val pathValue = when {
+                raw.startsWith("exe:", ignoreCase = true) -> raw.removePrefix("exe:").removePrefix("EXE:")
+                else -> raw
+            }
+            val uri = Uri.parse(pathValue)
+            if (isLikelyExeUri(pathValue) || raw.startsWith("exe:", ignoreCase = true)) {
                 lastExeUri = uri
                 lastTreeUri = null
             } else {
@@ -633,6 +662,260 @@ class MainActivity : Activity() {
                 .put("ok", false)
                 .put("error", error.message ?: error.javaClass.simpleName)
                 .toString()
+        }
+    }
+
+    /**
+     * Check whether imported library entries still exist on disk / SAF.
+     * Never throws hard missing on permission/IO errors — prefer "unknown/exists"
+     * so the library is not wiped by a flaky probe.
+     */
+    fun checkGamePaths(requestJson: String): String {
+        return try {
+            val root = JSONObject(requestJson.ifBlank { "{}" })
+            val items = root.optJSONArray("items") ?: org.json.JSONArray()
+            val results = org.json.JSONArray()
+            var missing = 0
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val key = item.optString("key").ifBlank {
+                    item.optString("uri").ifBlank {
+                        item.optString("exe_uri").ifBlank { item.optString("path") }
+                    }
+                }
+                val exeUri = item.optString("exe_uri").ifBlank { item.optString("exe") }
+                val treeUri = item.optString("uri").ifBlank {
+                    item.optString("path").ifBlank { item.optString("game_path") }
+                }
+                val check = when {
+                    exeUri.isNotBlank() && (isLikelyExeUri(exeUri) || exeUri.startsWith("content:", true) || exeUri.startsWith("file:", true)) ->
+                        probeGameUri(exeUri, preferFile = true)
+                    treeUri.isNotBlank() ->
+                        probeGameUri(treeUri, preferFile = isLikelyExeUri(treeUri))
+                    else -> Triple(true, "unknown", "路径为空(保留)")
+                }
+                // Only count definitive misses (probe returned exists=false with kind not unknown/error)
+                if (!check.first && check.second != "unknown" && check.second != "error") missing += 1
+                results.put(
+                    JSONObject()
+                        .put("key", key)
+                        .put("exists", check.first)
+                        .put("kind", check.second)
+                        .put("label", check.third)
+                )
+            }
+            JSONObject()
+                .put("ok", true)
+                .put("results", results)
+                .put("missingCount", missing)
+                .toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: error.javaClass.simpleName)
+                .toString()
+        }
+    }
+
+    private fun probeGameUri(raw: String, preferFile: Boolean): Triple<Boolean, String, String> {
+        val value = raw.trim().removePrefix("exe:").removePrefix("EXE:")
+        if (value.isBlank()) return Triple(true, "unknown", "路径为空")
+        return try {
+            when {
+                value.startsWith("content:", ignoreCase = true) || value.startsWith("file:", ignoreCase = true) -> {
+                    val uri = Uri.parse(value)
+                    // Try both tree and single; SAF tree URIs often fail on fromSingleUri.
+                    val tree = runCatching { DocumentFile.fromTreeUri(this, uri) }.getOrNull()
+                    if (tree != null) {
+                        val ok = runCatching { tree.exists() }.getOrDefault(true)
+                        if (ok) return Triple(true, "folder", tree.name.orEmpty())
+                    }
+                    val single = runCatching { DocumentFile.fromSingleUri(this, uri) }.getOrNull()
+                    if (single != null) {
+                        val ok = runCatching { single.exists() }.getOrDefault(true)
+                        if (ok) return Triple(true, "file", single.name.orEmpty())
+                        // Definitive miss only when we could open the document handle.
+                        return Triple(false, "file", "文件不存在")
+                    }
+                    // Permission lost or provider unavailable — keep the library entry.
+                    Triple(true, "unknown", "暂时无法访问")
+                }
+                value.startsWith("/") || value.matches(Regex("^[A-Za-z]:\\\\.*")) -> {
+                    val file = java.io.File(value)
+                    val ok = file.exists()
+                    if (ok) Triple(true, if (file.isDirectory) "folder" else "file", file.name)
+                    else Triple(false, "file", "路径不存在")
+                }
+                else -> {
+                    val uri = runCatching { Uri.parse(value) }.getOrNull()
+                        ?: return Triple(true, "unknown", "无法解析路径")
+                    val tree = runCatching { DocumentFile.fromTreeUri(this, uri) }.getOrNull()
+                    if (tree != null && runCatching { tree.exists() }.getOrDefault(false)) {
+                        return Triple(true, "folder", tree.name.orEmpty())
+                    }
+                    val single = runCatching { DocumentFile.fromSingleUri(this, uri) }.getOrNull()
+                    if (single != null && runCatching { single.exists() }.getOrDefault(false)) {
+                        return Triple(true, "file", single.name.orEmpty())
+                    }
+                    Triple(true, "unknown", "资源状态未知")
+                }
+            }
+        } catch (error: Throwable) {
+            Triple(true, "error", error.message ?: "检测失败")
+        }
+    }
+
+    // ── Native game library (SharedPreferences) ──────────────────────────
+
+    private val gameLibraryPrefs get() = getPreferences(Context.MODE_PRIVATE)
+    private val GAME_LIBRARY_KEY = "game_library_json"
+
+    fun androidGameLibrary(): String {
+        return try {
+            val raw = gameLibraryPrefs.getString(GAME_LIBRARY_KEY, "[]") ?: "[]"
+            val arr = org.json.JSONArray(raw)
+            JSONObject().put("ok", true).put("games", arr).put("count", arr.length()).toString()
+        } catch (error: Throwable) {
+            JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName)
+                .put("games", org.json.JSONArray()).toString()
+        }
+    }
+
+    fun androidSaveGameLibrary(json: String): String {
+        return try {
+            val arr = when {
+                json.isBlank() -> org.json.JSONArray()
+                json.trimStart().startsWith("[") -> org.json.JSONArray(json)
+                else -> {
+                    val obj = JSONObject(json)
+                    obj.optJSONArray("games") ?: org.json.JSONArray()
+                }
+            }
+            // Cap at 60 entries
+            val trimmed = org.json.JSONArray()
+            for (i in 0 until minOf(arr.length(), 60)) trimmed.put(arr.get(i))
+            gameLibraryPrefs.edit().putString(GAME_LIBRARY_KEY, trimmed.toString()).apply()
+            JSONObject().put("ok", true).put("count", trimmed.length()).toString()
+        } catch (error: Throwable) {
+            JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName).toString()
+        }
+    }
+
+    fun androidRemoveGame(key: String): String {
+        return try {
+            val raw = gameLibraryPrefs.getString(GAME_LIBRARY_KEY, "[]") ?: "[]"
+            val arr = org.json.JSONArray(raw)
+            val next = org.json.JSONArray()
+            val target = key.trim()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val k = libraryKeyOf(item)
+                if (k != target) next.put(item)
+            }
+            gameLibraryPrefs.edit().putString(GAME_LIBRARY_KEY, next.toString()).apply()
+            JSONObject().put("ok", true).put("count", next.length()).toString()
+        } catch (error: Throwable) {
+            JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName).toString()
+        }
+    }
+
+    /** Re-extract exe/png icon for an existing library entry and persist it. */
+    fun androidRefreshGameIcon(key: String): String {
+        return try {
+            val target = key.trim()
+            if (target.isBlank()) {
+                return JSONObject().put("ok", false).put("error", "empty key").toString()
+            }
+            val raw = gameLibraryPrefs.getString(GAME_LIBRARY_KEY, "[]") ?: "[]"
+            val arr = org.json.JSONArray(raw)
+            var updated: JSONObject? = null
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                if (libraryKeyOf(item) != target) continue
+                if (item.optString("iconDataUrl").isNotBlank()) {
+                    return JSONObject().put("ok", true).put("iconDataUrl", item.optString("iconDataUrl"))
+                        .put("cached", true).toString()
+                }
+                val exeUriText = item.optString("exe_uri").ifBlank { item.optString("exe") }
+                var icon = ""
+                if (exeUriText.startsWith("content:", true) || exeUriText.startsWith("file:", true)) {
+                    icon = ExeIconExtractor.extractDataUrl(this, Uri.parse(exeUriText))
+                }
+                // Folder tree: try find exe under tree uri
+                if (icon.isBlank()) {
+                    val treeText = item.optString("uri").ifBlank { item.optString("path") }
+                    if (treeText.startsWith("content:", true) || treeText.startsWith("file:", true)) {
+                        val tree = runCatching { DocumentFile.fromTreeUri(this, Uri.parse(treeText)) }.getOrNull()
+                        val exe = tree?.let { findFirstExe(it) }
+                        if (exe != null) {
+                            icon = ExeIconExtractor.extractDataUrl(this, exe.uri)
+                            if (icon.isNotBlank()) item.put("exe_uri", exe.uri.toString())
+                        }
+                    }
+                }
+                if (icon.isBlank()) {
+                    return JSONObject().put("ok", false).put("error", "no icon").toString()
+                }
+                item.put("iconDataUrl", icon)
+                arr.put(i, item)
+                updated = item
+                break
+            }
+            if (updated == null) {
+                return JSONObject().put("ok", false).put("error", "not found").toString()
+            }
+            gameLibraryPrefs.edit().putString(GAME_LIBRARY_KEY, arr.toString()).apply()
+            JSONObject().put("ok", true).put("iconDataUrl", updated.optString("iconDataUrl")).toString()
+        } catch (error: Throwable) {
+            JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName).toString()
+        }
+    }
+
+    fun upsertGameLibraryEntry(payload: JSONObject) {
+        try {
+            val key = libraryKeyOf(payload)
+            if (key.isBlank()) return
+            val raw = gameLibraryPrefs.getString(GAME_LIBRARY_KEY, "[]") ?: "[]"
+            val arr = org.json.JSONArray(raw)
+            val next = org.json.JSONArray()
+            val entry = JSONObject(payload.toString())
+            if (!entry.has("id")) entry.put("id", key)
+            if (!entry.has("title") || entry.optString("title").isBlank()) {
+                entry.put("title", payload.optString("name").ifBlank { "Game" })
+            }
+            // Preserve previous icon if new scan didn't produce one
+            for (i in 0 until arr.length()) {
+                val old = arr.optJSONObject(i) ?: continue
+                if (libraryKeyOf(old) != key) continue
+                if (entry.optString("iconDataUrl").isBlank() && old.optString("iconDataUrl").isNotBlank()) {
+                    entry.put("iconDataUrl", old.optString("iconDataUrl"))
+                }
+                break
+            }
+            next.put(entry)
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                if (libraryKeyOf(item) == key) continue
+                next.put(item)
+                if (next.length() >= 60) break
+            }
+            gameLibraryPrefs.edit().putString(GAME_LIBRARY_KEY, next.toString()).apply()
+        } catch (error: Throwable) {
+            Log.w("RPGTL", "upsertGameLibraryEntry failed", error)
+        }
+    }
+
+    private fun libraryKeyOf(item: JSONObject): String {
+        return item.optString("uri").ifBlank {
+            item.optString("exe_uri").ifBlank {
+                item.optString("exe").ifBlank {
+                    item.optString("path").ifBlank {
+                        item.optString("game_path").ifBlank {
+                            item.optString("root").ifBlank { item.optString("id") }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -783,7 +1066,10 @@ class MainActivity : Activity() {
                 val exe = findFirstExe(source)
                 if (exe != null) {
                     runOnUiThread {
-                        openExternalExe(exe.uri)
+                        if (sessionId != runSessionId) return@runOnUiThread
+                        val title = displayNameForUri(exe.uri).ifBlank { "Ren'Py Game" }
+                        notifyWeb("Starting Ren'Py with built-in Winlator...")
+                        WineEngineBridge(this).launch(gameUri = exe.uri, title = title, gameTreeUri = uri)
                     }
                     return@Thread
                 }
@@ -813,7 +1099,9 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException("No exe file found in selected folder.")
                 runOnUiThread {
                     if (sessionId != runSessionId) return@runOnUiThread
-                    openExternalExe(exe.uri)
+                    val title = displayNameForUri(exe.uri).ifBlank { "Windows Game" }
+                    notifyWeb("Starting exe with built-in Winlator...")
+                    WineEngineBridge(this).launch(gameUri = exe.uri, title = title, gameTreeUri = uri)
                 }
             } catch (error: Throwable) {
                 if (sessionId == runSessionId) notifyWeb("Open exe failed: ${error.message}")
@@ -914,6 +1202,9 @@ class MainActivity : Activity() {
             .put("apiKey", "")
             .put("model", "gpt-4o-mini")
             .put("batchSize", 20)
+            .put("concurrency", 1)
+            .put("requestIntervalMs", 1200)
+            .put("requestTimeoutSec", 240)
             .put("targetLang", "简体中文")
             .toString()
     }
@@ -1136,16 +1427,27 @@ class MainActivity : Activity() {
         notifyWeb("Touch control layout saved.")
     }
 
-    fun saveLaunchSettings(json: String) {
-        getPreferences(Context.MODE_PRIVATE)
-            .edit()
-            .putString("launch_settings_json", json)
-            .apply()
-        applyLaunchSettings()
-        if (gameViewActive && lastGameUrl.isNotBlank()) {
-            binding.gameWebView.reload()
+    fun saveLaunchSettings(json: String): String {
+        return try {
+            JSONObject(json)
+            getPreferences(Context.MODE_PRIVATE)
+                .edit()
+                .putString("launch_settings_json", json)
+                .apply()
+            runOnUiThread {
+                applyLaunchSettings()
+                if (gameViewActive && lastGameUrl.isNotBlank()) {
+                    binding.gameWebView.reload()
+                }
+                notifyWeb("Launch settings saved.")
+            }
+            JSONObject().put("ok", true).put("message", "Launch settings saved.").toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: error.javaClass.simpleName)
+                .toString()
         }
-        notifyWeb("Launch settings saved.")
     }
 
     private fun applyLaunchSettings() {
@@ -1285,6 +1587,8 @@ class MainActivity : Activity() {
     }
 
     private fun dispatchProjectScanned(payload: JSONObject) {
+        // Persist into native library so entries survive WebView cache wipes.
+        upsertGameLibraryEntry(payload)
         val escaped = escapeJs(payload.toString())
         runOnUiThread {
             binding.webView.evaluateJavascript(
@@ -1294,13 +1598,96 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun notifyWeb(message: String) {
+    fun notifyWeb(message: String) {
+        ShellLog.info(this, message)
         val escaped = escapeJs(message)
         runOnUiThread {
             binding.webView.evaluateJavascript(
                 "window.onAndroidShellMessage && window.onAndroidShellMessage('$escaped')",
                 null
             )
+        }
+    }
+
+    fun androidRenpyLiveStatus(): String {
+        return com.rpgrtl.shell.wine.RenPyLiveTranslationService.currentStatus()
+    }
+
+    private fun appVersionLabel(): String {
+        return try {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            "v=${info.versionName} code=$code"
+        } catch (_: Throwable) {
+            "v=unknown"
+        }
+    }
+
+    fun androidRuntimeLog(): String {
+        return try {
+            JSONObject()
+                .put("ok", true)
+                .put("log", ShellLog.read(this))
+                .toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: "read log failed")
+                .toString()
+        }
+    }
+
+    fun androidLaunchSettings(): String {
+        return getPreferences(Context.MODE_PRIVATE)
+            .getString("launch_settings_json", "")
+            ?.takeIf { it.isNotBlank() }
+            ?: JSONObject()
+                .put("game", JSONObject()
+                    .put("renpy", JSONObject()
+                        .put("hardwareVideoDecode", true)
+                        .put("liveTranslation", true)
+                        .put("lowMemory", false))
+                    .put("html", JSONObject().put("webgl", true))
+                    .put("rpg", JSONObject()
+                        .put("directoryCache", true)
+                        .put("prebuildPathCache", true)
+                        .put("translationInject", false)
+                        .put("resourceFallback", true)
+                        .put("smoothScaling", true)
+                        .put("resizeLargeTextures", true)
+                        .put("fastForwardSpeed", 1)
+                        .put("fontScale", 0.75)))
+                .toString()
+    }
+
+    fun clearRuntimeLog(): String {
+        return try {
+            ShellLog.clear(this)
+            JSONObject().put("ok", true).toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: "clear log failed")
+                .toString()
+        }
+    }
+
+    fun copyRuntimeLog(): String {
+        return try {
+            val logText = ShellLog.read(this).ifBlank { "No runtime log." }
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("RPGRenPyLocalizer runtime log", logText))
+            JSONObject().put("ok", true).put("chars", logText.length).toString()
+        } catch (error: Throwable) {
+            JSONObject()
+                .put("ok", false)
+                .put("error", error.message ?: "copy log failed")
+                .toString()
         }
     }
 
@@ -1441,7 +1828,7 @@ class MainActivity : Activity() {
     }
 
     private fun reflowWebViewSoon() {
-        enterImmersiveMode()
+        applySystemUiForCurrentMode()
         val target = if (gameViewActive) binding.gameWebView else binding.webView
         target.postDelayed({
             val setZoom = ""
@@ -2027,10 +2414,12 @@ class MainActivity : Activity() {
 
     fun androidLaunchGame(backend: String): String {
         val normalized = backend.lowercase()
-        if (normalized.contains("wine")) {
+        if (normalized.contains("wine") || normalized.contains("ren") || normalized.contains("exe") ||
+            normalized.contains("windows") || normalized.contains("compatible")
+        ) {
             val targetExe = lastExeUri ?: findSelectedExeUri()
             val title = externalGameTitle.ifBlank { targetExe?.let { displayNameForUri(it) }.orEmpty() }
-            return WineEngineBridge(this).launch(targetExe, title).toString()
+            return WineEngineBridge(this).launch(gameUri = targetExe, title = title, gameTreeUri = lastTreeUri).toString()
         }
         runOnUiThread {
             when {
@@ -2226,6 +2615,8 @@ class MainActivity : Activity() {
         var itemCount = 0
         var textHintCount = 0
         var firstExe = ""
+        var firstExeUri: Uri? = null
+        var iconPngUri: Uri? = null
         var rpgEntry = ""
         var renpyEntry = ""
         var hasRpgData = false
@@ -2251,11 +2642,21 @@ class MainActivity : Activity() {
             }
         }
 
+        fun maybeIconPng(name: String, file: DocumentFile) {
+            if (iconPngUri != null || !file.isFile) return
+            val lower = name.lowercase()
+            if (lower == "icon.png" || lower == "icon.ico" || lower == "game.png" ||
+                lower == "cover.png" || lower == "logo.png" || lower.endsWith("-icon.png")
+            ) {
+                iconPngUri = file.uri
+            }
+        }
+
         fun walk(node: DocumentFile, relative: String, depth: Int) {
-            if (depth > 3 || fileCount > 420) return
+            // Keep walking deep enough to find exe/icons even after engine is known.
+            if (depth > 4 || fileCount > 800) return
             val children = node.listFiles()
             children.forEach { child ->
-                if ((rpgEntry.isNotBlank() && hasRpgData) || (renpyEntry.isNotBlank() && hasRenpyGame)) return@forEach
                 val name = child.name ?: return@forEach
                 val path = if (relative.isBlank()) name else "$relative/$name"
                 if (child.isDirectory) {
@@ -2272,6 +2673,9 @@ class MainActivity : Activity() {
                                 addHighlight("Ignored tool loader", "$path/index.html")
                             }
                         }
+                        // Common RPG Maker icon paths
+                        child.findFile("icon")?.findFile("icon.png")?.let { maybeIconPng("icon.png", it) }
+                        child.findFile("icon.png")?.let { maybeIconPng("icon.png", it) }
                     }
                     if (name.equals("data", ignoreCase = true) && child.findFile("System.json") != null) {
                         inspectDataDir(child, path)
@@ -2280,12 +2684,17 @@ class MainActivity : Activity() {
                         hasRenpyGame = true
                         addHighlight("RenPy game folder", path)
                     }
+                    if (name.equals("icon", ignoreCase = true) || name.equals("icons", ignoreCase = true)) {
+                        child.findFile("icon.png")?.let { maybeIconPng("icon.png", it) }
+                    }
                     walk(child, path, depth + 1)
                 } else if (child.isFile) {
                     fileCount += 1
                     val lower = name.lowercase()
+                    maybeIconPng(name, child)
                     if (firstExe.isBlank() && lower.endsWith(".exe")) {
                         firstExe = path
+                        firstExeUri = child.uri
                         addHighlight("Executable", path)
                     }
                     if (rpgEntry.isBlank() && lower == "index.html" && (relative.equals("www", true) || path.equals("index.html", true))) {
@@ -2312,6 +2721,14 @@ class MainActivity : Activity() {
         }
         walk(root, "", 0)
 
+        // Prefer real exe from tree if path-only scan missed DocumentFile handle.
+        if (firstExeUri == null) {
+            findFirstExe(root)?.let {
+                firstExeUri = it.uri
+                if (firstExe.isBlank()) firstExe = it.name.orEmpty()
+            }
+        }
+
         val engine = when {
             rpgEntry.isNotBlank() && hasRpgData -> "RPG Maker MV/MZ"
             hasRenpyGame -> "Ren'Py"
@@ -2325,11 +2742,36 @@ class MainActivity : Activity() {
             else -> "No directly runnable entry was found."
         }
 
+        val backend = when {
+            engine == "Ren'Py" || engine.startsWith("Windows") -> "wine"
+            engine == "RPG Maker MV/MZ" -> "rpgmaker-webview"
+            else -> "webview"
+        }
+
+        // Extract library avatar: PE icon first, then common PNG fallbacks.
+        var iconDataUrl = ""
+        firstExeUri?.let { exeUri ->
+            iconDataUrl = ExeIconExtractor.extractDataUrl(this, exeUri)
+            if (iconDataUrl.isNotBlank()) {
+                stats.put("exe_uri", exeUri.toString())
+            }
+        }
+        if (iconDataUrl.isBlank() && iconPngUri != null) {
+            iconDataUrl = ExeIconExtractor.extractImageDataUrl(this, iconPngUri!!)
+        }
+        if (firstExeUri != null) {
+            stats.put("exe_uri", firstExeUri.toString())
+        }
+
         stats.put("uri", uri.toString())
+        stats.put("root", uri.toString())
+        stats.put("path", uri.toString())
         stats.put("name", root.name ?: "Selected folder")
+        stats.put("title", root.name ?: "Selected folder")
         stats.put("engine", engine)
         stats.put("exe", firstExe)
-        stats.put("backend", if (engine == "Windows exe / compatible runner") "wine" else "webview")
+        stats.put("backend", backend)
+        stats.put("iconDataUrl", iconDataUrl)
         stats.put("rpgEntry", rpgEntry)
         stats.put("renpyEntry", renpyEntry)
         stats.put("fileCount", fileCount)
@@ -2352,13 +2794,18 @@ class MainActivity : Activity() {
             .put(JSONObject().put("label", "Executable").put("value", name))
             .put(JSONObject().put("label", "Backend").put("value", "Wine + Box64"))
         val advice = "Windows EXE selected. It will launch through RPGTL Wine/Box64."
+        val iconDataUrl = ExeIconExtractor.extractDataUrl(this, uri)
         return JSONObject()
             .put("uri", uri.toString())
             .put("root", uri.toString())
             .put("name", name)
+            .put("title", name.removeSuffix(".exe").removeSuffix(".EXE"))
             .put("engine", "Windows exe / Wine backend")
             .put("exe", uri.toString())
+            .put("exe_uri", uri.toString())
+            .put("path", uri.toString())
             .put("backend", "wine")
+            .put("iconDataUrl", iconDataUrl)
             .put("fileCount", 1)
             .put("dirCount", 0)
             .put("mapCount", 0)

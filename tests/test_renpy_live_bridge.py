@@ -6,9 +6,9 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from toolkit.models import ProjectInfo
+from toolkit.models import ProjectInfo, TranslationEntry
 from toolkit.api.server import ToolkitApi
-from toolkit.renpy import RenPyService, _LIVE_SERVER_LOCK, _LIVE_SERVER_STATE
+from toolkit.renpy import RENPY_LIVE_BRIDGE_SOURCE, RenPyService, _LIVE_SERVER_LOCK, _LIVE_SERVER_STATE
 
 
 class RenPyLiveBridgeTests(unittest.TestCase):
@@ -135,7 +135,7 @@ class RenPyLiveBridgeTests(unittest.TestCase):
         api = ToolkitApi(self.root, config_dir=self.root / "config")
         api.live_worker_project = "project"
         api.live_worker_stats.update({"running": True, "translated": 0, "failures": 0})
-        api._live_ai_config = lambda: {"provider": "openai-compatible", "apiKey": "key", "baseUrl": "https://example.test/v1", "model": "model", "targetLang": "简体中文", "batchSize": 20}
+        api._live_ai_config = lambda: {"provider": "openai-compatible", "apiKey": "key", "baseUrl": "https://example.test/v1", "model": "model", "targetLang": "简体中文", "batchSize": 20, "concurrency": 1, "requestIntervalMs": 0, "windowSize": 300}
         api._translate_openai_compatible = lambda sources, _config: ["你好", "开始"]
         service = FakeService()
 
@@ -144,6 +144,82 @@ class RenPyLiveBridgeTests(unittest.TestCase):
         self.assertEqual(service.merged["values"], {"Hello": "你好", "Start": "开始"})
         self.assertEqual(service.merged["kind"], "automatic")
         self.assertEqual(api.live_worker_stats["translated"], 2)
+
+    def test_api_worker_repairs_missing_batch_in_parallel(self) -> None:
+        stop_event = __import__("threading").Event()
+
+        class FakeService:
+            def __init__(self) -> None:
+                self.returned = False
+                self.requested_sizes = []
+
+            def take_live_translation_candidates(self, _limit: int) -> list[str]:
+                if self.returned:
+                    return []
+                self.returned = True
+                return ["Line %d" % index for index in range(6)]
+
+            def requeue_live_translation_candidates(self, values: list[str]) -> None:
+                self.requeued = list(values)
+                stop_event.set()
+
+            def merge_live_translations(self, _values: dict[str, str], _kind: str) -> int:
+                self.fail("an empty provider response must not merge translations")
+
+        api = ToolkitApi(self.root, config_dir=self.root / "config")
+        api.live_worker_project = "project"
+        api.live_worker_stats.update({"running": True, "translated": 0, "failures": 0})
+        api._live_ai_config = lambda: {"provider": "openai-compatible", "apiKey": "key", "baseUrl": "https://example.test/v1", "model": "model", "targetLang": "简体中文", "batchSize": 2, "concurrency": 3, "requestIntervalMs": 0, "windowSize": 300}
+
+        def empty_response(sources: list[str], _config: dict) -> list[str]:
+            service.requested_sizes.append(len(sources))
+            return []
+
+        api._translate_openai_compatible = empty_response
+        service = FakeService()
+        api._live_worker_loop(service, stop_event, "project")
+
+        self.assertEqual(service.requested_sizes, [2, 2, 2, 2, 2, 2])
+        self.assertEqual(service.requeued, ["Line %d" % index for index in range(6)])
+
+    def test_live_bridge_does_not_mutate_menu_labels(self) -> None:
+        bridge = RENPY_LIVE_BRIDGE_SOURCE
+        menu_start = bridge.index("def _rpgrtl_hook_Menu_execute")
+        menu_end = bridge.index("# Hook: renpy.display_menu", menu_start)
+        menu_hook = bridge[menu_start:menu_end]
+        self.assertNotIn("items[i] =", menu_hook)
+        self.assertIn("_rpgrtl_pending_lookup.add(label.strip())", menu_hook)
+
+    def test_seed_queue_fills_following_same_language_script_entries(self) -> None:
+        entries = [
+            TranslationEntry("%d" % index, "Line %d" % index, file="script.rpy", category="dialogue")
+            for index in range(340)
+        ]
+        entries.insert(30, TranslationEntry("jp", "日本語", file="script.rpy", category="dialogue"))
+        self.service._activate_live_project(clear_events=True)
+
+        added = self.service.seed_live_translation_queue(entries, "Line 10", 300)
+
+        self.assertEqual(added, 300)
+        with _LIVE_SERVER_LOCK:
+            queued = list(_LIVE_SERVER_STATE["pre_translate_queue"])
+        self.assertEqual(queued[0], "Line 11")
+        self.assertEqual(len(queued), 300)
+        self.assertNotIn("日本語", queued)
+
+    def test_seed_queue_matches_visible_text_after_renpy_tags_are_removed(self) -> None:
+        entries = [
+            TranslationEntry("a", "{i}Current line{/i}", file="script.rpy", category="dialogue"),
+            TranslationEntry("b", "Following line", file="script.rpy", category="dialogue"),
+        ]
+        self.service._activate_live_project(clear_events=True)
+
+        added = self.service.seed_live_translation_queue(entries, "Current line", 10)
+
+        self.assertEqual(added, 1)
+        with _LIVE_SERVER_LOCK:
+            queued = list(_LIVE_SERVER_STATE["pre_translate_queue"])
+        self.assertEqual(queued, ["Following line"])
 
 
 if __name__ == "__main__":

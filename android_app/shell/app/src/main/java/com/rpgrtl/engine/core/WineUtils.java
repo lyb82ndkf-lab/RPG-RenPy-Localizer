@@ -140,7 +140,7 @@ public abstract class WineUtils {
         Iterator<String[]> oldWinComponentsIter = new KeyValueSet(container.getExtra("wincomponents", Container.FALLBACK_WINCOMPONENTS)).iterator();
 
         try (WineRegistryEditor registryEditor = new WineRegistryEditor(userRegFile)) {
-            JSONObject wincomponentsJSONObject = new JSONObject(FileUtils.readString(context, "wincomponents/wincomponents.json"));
+            JSONObject wincomponentsJSONObject = new JSONObject(FileUtils.readString(context, "winlator/wincomponents/wincomponents.json"));
 
             for (String[] wincomponent : new KeyValueSet(wincomponents)) {
                 if (wincomponent[1].equals(oldWinComponentsIter.next()[1])) continue;
@@ -274,6 +274,7 @@ public abstract class WineUtils {
             }
         }
 
+        if (driveLetter.isEmpty() && dosPath.isEmpty()) return "";
         if (!dosPath.startsWith("\\")) dosPath += "\\";
         dosPath = driveLetter+StringUtils.removeEndSlash(dosPath);
         if (dosPath.equals(driveLetter)) dosPath += "\\";

@@ -1,8 +1,4 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import LibraryView from '../views/LibraryView.vue'
-import TranslationsView from '../views/TranslationsView.vue'
-import CheatsView from '../views/CheatsView.vue'
-import SettingsView from '../views/SettingsView.vue'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -14,22 +10,42 @@ const router = createRouter({
     {
       path: '/library',
       name: 'library',
-      component: LibraryView
+      component: () => import('../views/LibraryView.vue')
     },
     {
       path: '/translations',
       name: 'translations',
-      component: TranslationsView
+      component: () => import('../views/TranslationsView.vue')
+    },
+    {
+      path: '/data',
+      name: 'data',
+      component: () => import('../views/CheatsView.vue')
+    },
+    {
+      path: '/saves',
+      name: 'saves',
+      component: () => import('../views/SavesView.vue')
+    },
+    {
+      path: '/maps',
+      name: 'maps',
+      component: () => import('../views/MapsView.vue')
     },
     {
       path: '/cheats',
       name: 'cheats',
-      component: CheatsView
+      component: () => import('../views/CheatsView.vue')
+    },
+    {
+      path: '/controls',
+      name: 'controls',
+      component: () => import('../views/ControlsView.vue')
     },
     {
       path: '/settings',
       name: 'settings',
-      component: SettingsView
+      component: () => import('../views/SettingsView.vue')
     }
   ]
 })

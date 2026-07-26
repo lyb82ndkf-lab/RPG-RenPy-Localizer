@@ -1,0 +1,800 @@
+package com.rpgrtl.shell.wine
+
+import android.app.AlertDialog
+import android.os.Bundle
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.net.Uri
+import android.util.Log
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.Toast
+import com.rpgrtl.engine.XServerDisplayActivity
+import com.rpgrtl.engine.box64.Box64Preset
+import com.rpgrtl.engine.container.Container
+import com.rpgrtl.engine.container.ContainerManager
+import com.rpgrtl.engine.container.GraphicsDrivers
+import com.rpgrtl.engine.alsaserver.ALSAClient
+import com.rpgrtl.engine.container.DXWrappers
+import com.rpgrtl.engine.core.AppUtils
+import com.rpgrtl.engine.core.DefaultVersion
+import com.rpgrtl.engine.core.EnvVars
+import com.rpgrtl.engine.core.FileUtils
+import com.rpgrtl.engine.core.GeneralComponents
+import com.rpgrtl.engine.core.TarCompressorUtils
+import com.rpgrtl.engine.core.GPUHelper
+import com.rpgrtl.engine.core.WineInfo
+import com.rpgrtl.engine.core.WineUtils
+import com.rpgrtl.engine.widget.InputControlsView
+import com.rpgrtl.engine.inputcontrols.InputControlsManager
+import com.rpgrtl.engine.widget.TouchpadView
+import com.rpgrtl.engine.widget.XServerView
+import com.rpgrtl.engine.winhandler.WinHandler
+import com.rpgrtl.engine.xconnector.UnixSocketConfig
+import com.rpgrtl.engine.xenvironment.RootFS
+import com.rpgrtl.engine.xenvironment.RootFSInstaller
+import com.rpgrtl.engine.xenvironment.XEnvironment
+import com.rpgrtl.engine.xenvironment.components.ALSAServerComponent
+import com.rpgrtl.engine.xenvironment.components.GuestProgramLauncherComponent
+import com.rpgrtl.engine.xenvironment.components.SysVSharedMemoryComponent
+import com.rpgrtl.engine.xenvironment.components.VirGLRendererComponent
+import com.rpgrtl.engine.xenvironment.components.XServerComponent
+import com.rpgrtl.engine.xserver.ScreenInfo
+import com.rpgrtl.engine.xserver.XServer
+import com.rpgrtl.shell.MainActivity
+import com.rpgrtl.shell.ShellLog
+import androidx.preference.PreferenceManager
+import java.io.File
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+
+class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
+    private var launcherComponent: GuestProgramLauncherComponent? = null
+    private lateinit var runtimeBridge: RuntimeBridge
+    private var toolbar: FloatingToolbar? = null
+    private var touchBlocker: View? = null
+    private var touchBlocked = false
+    private var gameExePath = ""
+    private var gameWorkDir = ""
+    private var selectedBox64Preset = Box64Preset.PERFORMANCE
+    private var selectedGraphicsDriver = ""
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        ShellLog.installCrashLogger(this)
+        ShellLog.info(this, "WineDisplayActivity onCreate")
+        AppUtils.hideSystemUI(this)
+        AppUtils.keepScreenOn(this)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+
+        val rawExePath = intent.getStringExtra(EXTRA_GAME_URI).orEmpty()
+        val gameTreeUri = intent.getStringExtra(EXTRA_GAME_TREE_URI).orEmpty()
+        val gameTitle = intent.getStringExtra(EXTRA_GAME_TITLE).orEmpty().ifBlank { "Windows Game" }
+        val containerId = intent.getIntExtra(EXTRA_CONTAINER_ID, 0)
+        runtimeBridge = RuntimeBridge(containerId.toString())
+        ShellLog.info(
+            this,
+            "Wine launch requested title=$gameTitle containerId=$containerId uri=$rawExePath tree=$gameTreeUri"
+        )
+
+        if (rawExePath.isBlank()) {
+            ShellLog.error(this, "Wine launch failed: blank exe path")
+            Toast.makeText(this, "未找到可启动的 exe 路径。", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+
+        rootFS = RootFS.find(this)
+        if (!rootFS.isValid && !installBundledWineRuntime()) {
+            ShellLog.error(this, "Wine launch failed: bundled runtime initialization failed")
+            Toast.makeText(this, "内置 Winlator 运行环境初始化失败，无法启动 Ren'Py / Windows 游戏。", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+
+        if (!prepareContainer(containerId, gameTitle)) return
+
+        // Show a black landscape surface immediately while files prepare (can take long on SAF copy).
+        val loading = FrameLayout(this).apply {
+            setBackgroundColor(0xFF000000.toInt())
+            systemUiVisibility = immersiveFlags()
+        }
+        setContentView(loading)
+        Toast.makeText(this, "正在准备游戏文件并启动 Wine：$gameTitle", Toast.LENGTH_LONG).show()
+
+        Thread {
+            try {
+                val prepared = prepareGameFiles(rawExePath, gameTreeUri, gameTitle)
+                gameExePath = prepared.exePath
+                gameWorkDir = prepared.workDir
+                ShellLog.info(this, "Wine executable prepared path=$gameExePath workDir=$gameWorkDir")
+                // Heavy extract + gladio path patch on worker thread (not UI).
+                prepareWineRuntime()
+                runOnUiThread {
+                    if (isFinishing) return@runOnUiThread
+                    startWineDisplay(gameTitle)
+                }
+            } catch (error: Throwable) {
+                ShellLog.error(this, "Wine launch failed while preparing game files", error)
+                runOnUiThread {
+                    Toast.makeText(this, "准备游戏文件失败: ${error.message}", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+            }
+        }.start()
+    }
+
+    private fun startWineDisplay(gameTitle: String) {
+        // Match physical display orientation so landscape phones get a landscape X desktop.
+        val dm = resources.displayMetrics
+        val screenW = maxOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(1280)
+        val screenH = minOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(720)
+        val dynamicScreen = "${screenW}x${screenH}"
+        container.setScreenSize(dynamicScreen)
+        screenInfo = ScreenInfo(dynamicScreen)
+        ShellLog.info(this, "Wine display init screen=$dynamicScreen device=${dm.widthPixels}x${dm.heightPixels}")
+        xServer = XServer(this, screenInfo)
+        winHandler = WinHandler(this)
+        xServer.setWinHandler(winHandler)
+
+        ShellLog.info(this, "Creating XServerView / renderer")
+        xServerView = XServerView(this, xServer)
+        xServer.setRenderer(xServerView.renderer)
+
+        touchpadView = TouchpadView(this, xServer, false)
+        val tp = touchpadView
+        val xs = xServer
+        inputControlsView = InputControlsView(this).apply {
+            setXServer(xs)
+            setTouchpadView(tp)
+            setShowTouchscreenControls(true)
+        }
+
+        environment = XEnvironment(this, rootFS)
+        addRuntimeComponents()
+        setContentView(createDisplayLayout(gameTitle))
+
+        // Defer profile loading until after layout so view has valid dimensions;
+        // loadElements() converts ratio-based positions to pixels using getWidth()/getHeight()
+        inputControlsView.post {
+            loadDefaultControlsProfile(inputControlsView)
+            inputControlsView.invalidate()
+        }
+
+        winHandler.start()
+        ShellLog.info(this, "Starting Wine environment components")
+        environment.startEnvironmentComponents()
+        activeRuntimeBridges[container.id] = runtimeBridge
+        // Verify X11 socket appeared under rootfs (host server).
+        val x11 = File(rootFS.rootDir, "tmp/.X11-unix/X0")
+        ShellLog.info(this, "X11 socket path=${x11.absolutePath} exists=${x11.exists()}")
+        // Short delay so XServer/ALSA bind before wine attaches to DISPLAY=:0.
+        Handler(Looper.getMainLooper()).postDelayed({
+            val box64 = File(rootFS.rootDir, "usr/local/bin/box64")
+            val wineBin = File(rootFS.rootDir, "opt/wine/bin/wine")
+            val ntdll = File(rootFS.rootDir, "opt/wine/lib/wine/x86_64-unix/ntdll.so")
+            val ntdllPatched = ntdll.isFile && !WinePathCompat.containsAscii(ntdll, "com.winlator")
+            val box64Patched = box64.isFile && !WinePathCompat.containsAscii(box64, "com.winlator")
+            ShellLog.info(
+                this,
+                "Starting Wine guest launcher path=$gameExePath workDir=$gameWorkDir " +
+                    "x11Exists=${x11.exists()} bridgeX11=${WinePathCompat.newX11Path(this)} " +
+                    "bridgeX11Exists=${File(WinePathCompat.newX11Path(this)).exists()} " +
+                    "box64Exists=${box64.isFile} box64Size=${box64.length()} box64Patched=$box64Patched " +
+                    "wineExists=${wineBin.isFile} ntdllPatched=$ntdllPatched " +
+                    "cmd=${launcherComponent?.guestExecutable}"
+            )
+            try {
+                // Final safety: re-patch box64 INTERP right before exec.
+                val box64Ready = WinePathCompat.patchBox64Interpreter(this)
+                if (!box64Ready) {
+                    ShellLog.error(this, "Abort launch: box64 INTERP not patched")
+                    Toast.makeText(this, "box64 解释器路径未修复，无法启动 Wine", Toast.LENGTH_LONG).show()
+                    return@postDelayed
+                }
+                launcherComponent?.start()
+                val pid = launcherComponent?.getPid() ?: -1
+                ShellLog.info(this, "launcherComponent.start() returned pid=$pid")
+                if (pid <= 0) {
+                    Toast.makeText(this, "Wine 进程启动失败 (pid=$pid)，请查看运行日志。", Toast.LENGTH_LONG).show()
+                }
+            } catch (error: Throwable) {
+                ShellLog.error(this, "launcherComponent.start() failed", error)
+            }
+        }, 900)
+
+        Toast.makeText(this, "容器已就绪，正在启动：$gameTitle", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun installBundledWineRuntime(): Boolean {
+        return try {
+            ShellLog.info(this, "Installing bundled Winlator runtime")
+            Toast.makeText(this, "正在初始化内置 Winlator 运行环境...", Toast.LENGTH_LONG).show()
+            val rootDir = rootFS.rootDir
+            FileUtils.delete(rootDir)
+            rootDir.mkdirs()
+            val ok = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "winlator/rootfs.tzst", rootDir)
+            if (ok) rootFS.createRFSVersionFile(RootFSInstaller.LATEST_VERSION.toInt())
+            ok && rootFS.isValid
+        } catch (error: Throwable) {
+            Log.e(TAG, "Bundled Wine runtime install failed", error)
+            ShellLog.error(this, "Bundled Wine runtime install failed", error)
+            false
+        }
+    }
+
+    private fun prepareContainer(containerId: Int, gameTitle: String): Boolean {
+        val manager = ContainerManager(this)
+        container = if (containerId > 0) {
+            manager.getContainerById(containerId)
+        } else {
+            manager.containers.firstOrNull() ?: manager.ensureDefaultContainer(gameTitle)
+        }
+
+        if (container == null) {
+            ShellLog.error(this, "Wine launch failed: container initialization failed")
+            Toast.makeText(this, "内置 Winlator 容器初始化失败。", Toast.LENGTH_LONG).show()
+            finish()
+            return false
+        }
+
+        if (container.name.isNullOrBlank() || container.name.startsWith("Container-")) {
+            container.setName(gameTitle)
+        }
+        selectedBox64Preset = resolveBox64Preset()
+        selectedGraphicsDriver = resolveGraphicsDriver()
+        container.setBox64Preset(selectedBox64Preset)
+        container.setGraphicsDriver(selectedGraphicsDriver)
+        // Ren'Py uses SDL2 OpenGL — WineD3D is safer than DXVK for pure GL titles.
+        container.setDXWrapper(DXWrappers.WINED3D)
+        container.setStartupSelection(Container.STARTUP_SELECTION_ESSENTIAL)
+        Log.i(TAG, "Wine launch profile: box64=$selectedBox64Preset graphics=$selectedGraphicsDriver")
+        ShellLog.info(this, "Wine launch profile: box64=$selectedBox64Preset graphics=$selectedGraphicsDriver")
+        manager.activateContainer(container)
+        return true
+    }
+
+    /**
+     * Full Winlator-style prep: extract guest GPU drivers once, patch gladio package paths,
+     * wineprefix tweaks. Second launch skips heavy extract (marker file).
+     */
+    private fun prepareWineRuntime() {
+        val rootDir = rootFS.rootDir
+        val marker = File(rootDir, ".winlator/rpgtl_runtime_prepared_v2")
+        val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
+        val vulkan = drivers[0]
+        val opengl = drivers[1]
+        val hasGladio = File(rootDir, "usr/lib/libGL.so.1.7.0").isFile ||
+            File(rootDir, "usr/lib/libGL.so.1").isFile ||
+            File(rootDir, "usr/lib/libGL.so").isFile
+        val alreadyPrepared = marker.isFile && hasGladio
+
+        ShellLog.info(
+            this,
+            "Preparing Wine runtime drivers vulkan=$vulkan opengl=$opengl prepared=$alreadyPrepared"
+        )
+
+        // Always ensure path bridge (cheap symlink) before any guest call.
+        WinePathCompat.ensureBridge(this)
+
+        if (!alreadyPrepared) {
+            runOnUiThread {
+                Toast.makeText(this, "首次初始化 Wine 环境（仅一次，请稍候）...", Toast.LENGTH_LONG).show()
+            }
+
+            runCatching {
+                TarCompressorUtils.extract(
+                    TarCompressorUtils.Type.ZSTD,
+                    this,
+                    "winlator/rootfs_patches.tzst",
+                    rootDir
+                )
+            }
+
+            try {
+                GeneralComponents.extractFile(
+                    GeneralComponents.Type.BOX64,
+                    this,
+                    DefaultVersion.BOX64,
+                    DefaultVersion.BOX64
+                )
+                val box64 = File(rootDir, "usr/local/bin/box64")
+                FileUtils.chmod(box64, 0b111_101_101) // 0755
+                // Mark version so GuestProgramLauncher won't re-extract and wipe INTERP patch.
+                PreferenceManager.getDefaultSharedPreferences(this)
+                    .edit()
+                    .putString("current_box64_version", DefaultVersion.BOX64)
+                    .putString("box64_version", DefaultVersion.BOX64)
+                    .apply()
+                ShellLog.info(this, "Box64 extract done exists=${box64.isFile} size=${box64.length()}")
+                WinePathCompat.patchBox64Interpreter(this)
+            } catch (error: Throwable) {
+                ShellLog.error(this, "Box64 extract failed", error)
+            }
+
+            extractDriverOnce(opengl, when (opengl) {
+                GraphicsDrivers.VIRGL -> DefaultVersion.VIRGL
+                GraphicsDrivers.ZINK -> DefaultVersion.ZINK
+                else -> DefaultVersion.GLADIO
+            })
+            if (opengl != GraphicsDrivers.GLADIO) {
+                extractDriverOnce(GraphicsDrivers.GLADIO, DefaultVersion.GLADIO)
+            }
+
+            extractDriverOnce(vulkan, when (vulkan) {
+                GraphicsDrivers.TURNIP -> DefaultVersion.TURNIP
+                GraphicsDrivers.VORTEK -> DefaultVersion.VORTEK
+                else -> DefaultVersion.TURNIP
+            })
+
+            try {
+                GeneralComponents.extractFile(
+                    GeneralComponents.Type.DXVK,
+                    this,
+                    DefaultVersion.DXVK(vulkan),
+                    DefaultVersion.MAJOR_DXVK
+                )
+                ShellLog.info(this, "DXVK extract done")
+            } catch (error: Throwable) {
+                ShellLog.error(this, "DXVK extract failed", error)
+            }
+
+            try {
+                extractDefaultWinComponents()
+            } catch (error: Throwable) {
+                ShellLog.error(this, "Wincomponents extract failed", error)
+            }
+
+            try {
+                WineUtils.applySystemTweaks(this, WineInfo.MAIN_WINE_INFO)
+                WineUtils.changeServicesStatus(container, true)
+                ShellLog.info(this, "Wineprefix system tweaks applied")
+            } catch (error: Throwable) {
+                ShellLog.error(this, "Wineprefix tweaks failed", error)
+            }
+
+            marker.parentFile?.mkdirs()
+            FileUtils.writeString(marker, System.currentTimeMillis().toString())
+            ShellLog.info(this, "Runtime marker written ${marker.absolutePath}")
+        } else {
+            ShellLog.info(this, "Skipping heavy extract (container already prepared)")
+            runCatching {
+                GeneralComponents.extractFile(
+                    GeneralComponents.Type.BOX64,
+                    this,
+                    DefaultVersion.BOX64,
+                    DefaultVersion.BOX64
+                )
+                FileUtils.chmod(File(rootDir, "usr/local/bin/box64"), 0b111_101_101)
+                WinePathCompat.patchBox64Interpreter(this)
+            }
+        }
+
+        // Patch only the files that are known to carry Winlator's package-root paths.
+        // A full rootfs walk is too expensive on phones and can look like a dead launch.
+        ShellLog.info(this, "Runtime path patch: core files start")
+        val replaced = WinePathCompat.patchCoreRuntimePaths(this)
+        ShellLog.info(this, "Runtime path patch: box64 start")
+        val box64Ok = WinePathCompat.patchBox64Interpreter(this)
+        ShellLog.info(this, "Runtime path patch: gladio start")
+        val gladioOk = WinePathCompat.patchGuestGladio(this)
+        ShellLog.info(
+            this,
+            "Rootfs core path rewrite replacements=$replaced box64Ok=$box64Ok gladioOk=$gladioOk " +
+                "newPrefix=${WinePathCompat.newRootfsPrefix(this)}"
+        )
+        if (!box64Ok) {
+            ShellLog.error(this, "box64 still contains com.winlator INTERP — guest will not start")
+        }
+    }
+
+    private fun extractDriverOnce(name: String, version: String) {
+        val ok = GeneralComponents.extractGraphicsDriverAsset(this, name, version)
+        ShellLog.info(this, "Graphics driver extract $name-$version ok=$ok")
+    }
+
+    private fun extractDefaultWinComponents() {
+        // Extract into the active container wineprefix (not the shared home/xuser tree only).
+        val needed = listOf("directsound", "xaudio", "vcrun2010")
+        val dest = File(container.getRootDir(), ".wine/drive_c/windows")
+        dest.mkdirs()
+        for (id in needed) {
+            val asset = "winlator/wincomponents/$id.tzst"
+            val ok = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, asset, dest)
+            ShellLog.info(this, "Wincomponent $id extract ok=$ok dest=${dest.absolutePath}")
+        }
+        try {
+            WineUtils.overrideWinComponentDlls(this, container, container.getWinComponents())
+        } catch (error: Throwable) {
+            ShellLog.error(this, "overrideWinComponentDlls failed", error)
+        }
+    }
+
+    private fun loadDefaultControlsProfile(view: InputControlsView) {
+        val manager = InputControlsManager(this)
+        val profile = manager.getProfiles(true).firstOrNull()
+        if (profile != null) {
+            profile.loadElements(view)
+            view.setProfile(profile)
+            Log.i(TAG, "Loaded touchscreen controls profile: ${profile.name} (${profile.elements.size} elements)")
+        } else {
+            Log.w(TAG, "No touchscreen controls profile found; virtual controls will be empty.")
+        }
+    }
+
+    private fun addRuntimeComponents() {
+        WinePathCompat.ensureBridge(this)
+
+        val rootDir = rootFS.rootDir
+        // Prefer short bridge path for sockets so guest libs (patched to .../files/w) match.
+        val bridgeRoot = WinePathCompat.shortRootfsLink(this).let {
+            if (it.exists()) it.absolutePath else rootDir.absolutePath
+        }
+        val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
+        val vulkan = drivers[0]
+        val opengl = drivers[1]
+
+        File(rootDir, "tmp/.X11-unix").mkdirs()
+        File(rootDir, "tmp/.sound").mkdirs()
+        File(rootDir, "tmp/.sysvshm").mkdirs()
+        File(rootDir, "tmp/shm").mkdirs()
+
+        // Host X server listens on real rootfs path; bridge symlink makes .../w/tmp/... the same inode.
+        environment.addComponent(
+            XServerComponent(
+                xServer,
+                UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.XSERVER_PATH)
+            )
+        )
+        environment.addComponent(
+            SysVSharedMemoryComponent(
+                xServer,
+                UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.SYSVSHM_SERVER_PATH)
+            )
+        )
+
+        if (opengl == GraphicsDrivers.VIRGL) {
+            environment.addComponent(
+                VirGLRendererComponent(
+                    xServer,
+                    UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.VIRGL_SERVER_PATH)
+                )
+            )
+            ShellLog.info(this, "VirGLRendererComponent added")
+        }
+
+        environment.addComponent(
+            ALSAServerComponent(
+                UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.ALSA_SERVER_PATH),
+                ALSAClient.Options()
+            )
+        )
+
+        val winePrefix = File(container.getRootDir(), ".wine").absolutePath
+        // Guest-facing paths must use the SHORT bridge prefix (what we patched into .so files).
+        val guestRoot = WinePathCompat.newRootfsPrefix(this)
+        val alsaSocket = "$guestRoot${UnixSocketConfig.ALSA_SERVER_PATH}"
+        val sysvSocket = "$guestRoot${UnixSocketConfig.SYSVSHM_SERVER_PATH}"
+        val tmpDir = "$guestRoot/tmp"
+        val env = EnvVars(container.envVars)
+        env.put("WINEPREFIX", winePrefix)
+        env.put("HOME", rootDir.absolutePath + RootFS.HOME_PATH)
+        // Critical: Xlib builds /tmp/.X11-unix from TMPDIR on some builds; always set both.
+        env.put("TMPDIR", tmpDir)
+        env.put("TEMP", tmpDir)
+        env.put("TMP", tmpDir)
+        env.put("DISPLAY", ":0")
+        env.put("WINEDLLOVERRIDES", "winemenubuilder.exe=d;mscoree,mshtml=")
+        env.put("ANDROID_ALSA_SERVER", alsaSocket)
+        env.put("ANDROID_SYSVSHM_SERVER", sysvSocket)
+        env.put("ALSA_PLUGIN_DIR", "$guestRoot/usr/lib/alsa-lib")
+        env.put("SDL_AUDIODRIVER", "alsa")
+        env.put("PULSE_SERVER", "")
+        env.put("BOX64_LOG", "1")
+        env.put("BOX64_NOBANNER", "0")
+        env.put("WINEDEBUG", "-all,+err,+fix")
+        env.put("NWJS_ARGS", "--remote-debugging-port=${RuntimeBridge.CDP_PORT}")
+        env.put("CHROME_REMOTE_DEBUGGING_PORT", RuntimeBridge.CDP_PORT.toString())
+        if (gameWorkDir.isNotBlank()) {
+            env.put("WINEPATH", gameWorkDir)
+        }
+        applyPerformanceEnv(env, selectedGraphicsDriver)
+        ShellLog.info(
+            this,
+            "Runtime env ready vulkan=$vulkan opengl=$opengl winePrefix=$winePrefix " +
+                "guestRoot=$guestRoot alsa=$alsaSocket tmp=$tmpDir x11=${WinePathCompat.newX11Path(this)} " +
+                "bridgeRoot=$bridgeRoot"
+        )
+
+        com.rpgrtl.engine.core.ProcessHelper.removeAllDebugCallbacks()
+        com.rpgrtl.engine.core.ProcessHelper.addDebugCallback { line ->
+            if (line.isNullOrBlank()) return@addDebugCallback
+            val text = line.trim()
+            if (text.isEmpty()) return@addDebugCallback
+            ShellLog.info(this@WineDisplayActivity, "WINE: $text")
+            Log.i(TAG, "WINE: $text")
+        }
+
+        launcherComponent = GuestProgramLauncherComponent().apply {
+            setEnvVars(env)
+            setBox64Preset(selectedBox64Preset)
+            setGuestExecutable(buildGuestCommand(gameExePath, gameWorkDir))
+            setDeferredStart(true)
+            setTerminationCallback { status ->
+                runOnUiThread {
+                    ShellLog.info(this@WineDisplayActivity, "Wine guest exited status=$status")
+                    Toast.makeText(
+                        this@WineDisplayActivity,
+                        "游戏进程已结束 (code=$status)。",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+        environment.addComponent(launcherComponent)
+    }
+
+    private fun resolveBox64Preset(): String {
+        val requested = intent.getStringExtra(EXTRA_BOX64_PRESET).orEmpty()
+            .trim()
+            .uppercase(Locale.ENGLISH)
+        return when (requested) {
+            Box64Preset.STABILITY,
+            Box64Preset.CONSERVATIVE,
+            Box64Preset.INTERMEDIATE,
+            Box64Preset.PERFORMANCE,
+            Box64Preset.CUSTOM -> requested
+            else -> Box64Preset.PERFORMANCE
+        }
+    }
+
+    private fun resolveGraphicsDriver(): String {
+        val requested = intent.getStringExtra(EXTRA_GRAPHICS_DRIVER).orEmpty()
+            .trim()
+            .lowercase(Locale.ENGLISH)
+        if (requested.isNotBlank() && requested != "auto") {
+            return normalizeGraphicsDriver(requested)
+        }
+        return detectBestGraphicsDriver()
+    }
+
+    private fun normalizeGraphicsDriver(value: String): String {
+        val parts = GraphicsDrivers.parseIdentifiers(value)
+        return "${parts[0]},${parts[1]}"
+    }
+
+    private fun detectBestGraphicsDriver(): String {
+        val renderer = runCatching { GPUHelper.glGetRenderer(this) }.getOrDefault("")
+        val hardware = buildString {
+            append(renderer).append(' ')
+            append(Build.HARDWARE).append(' ')
+            append(Build.BOARD).append(' ')
+            append(Build.MANUFACTURER).append(' ')
+            append(Build.MODEL).append(' ')
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                append(Build.SOC_MANUFACTURER).append(' ')
+                append(Build.SOC_MODEL)
+            }
+        }.lowercase(Locale.ENGLISH)
+        val vulkan = if (
+            hardware.contains("adreno") ||
+            hardware.contains("qcom") ||
+            hardware.contains("qualcomm") ||
+            hardware.contains("snapdragon")
+        ) {
+            GraphicsDrivers.TURNIP
+        } else {
+            GraphicsDrivers.DEFAULT_VULKAN_DRIVER
+        }
+        val opengl = if (
+            hardware.contains("mali") ||
+            hardware.contains("mt") ||
+            hardware.contains("mediatek") ||
+            hardware.contains("exynos")
+        ) {
+            GraphicsDrivers.VIRGL
+        } else {
+            GraphicsDrivers.DEFAULT_OPENGL_DRIVER
+        }
+        return "$vulkan,$opengl"
+    }
+
+    private fun applyPerformanceEnv(env: EnvVars, graphicsDriver: String) {
+        val drivers = GraphicsDrivers.parseIdentifiers(graphicsDriver)
+        env.put("BOX64_LOG", "0")
+        env.put("BOX64_NOBANNER", "1")
+        env.put("BOX64_DYNAREC", "1")
+        env.put("BOX64_DYNAREC_FASTNAN", "1")
+        env.put("BOX64_DYNAREC_FASTROUND", "1")
+        env.put("BOX64_DYNAREC_BIGBLOCK", "3")
+        env.put("BOX64_DYNAREC_FORWARD", "512")
+        env.put("BOX64_DYNAREC_CALLRET", "1")
+        env.put("BOX64_DYNAREC_NATIVEFLAGS", "1")
+        env.put("BOX64_DYNAREC_WEAKBARRIER", "2")
+        env.put("DXVK_LOG_LEVEL", "none")
+        env.put("DXVK_STATE_CACHE_PATH", RootFS.getDosUserCachePath())
+        env.put("VKD3D_SHADER_CACHE_PATH", RootFS.getDosUserCachePath())
+        env.put("MESA_SHADER_CACHE_DISABLE", "false")
+        // Ren'Py/SDL2 + gladio: 3.3 is more compatible than forcing 4.5.
+        env.put("MESA_GL_VERSION_OVERRIDE", "3.3")
+        env.put("MESA_GLSL_VERSION_OVERRIDE", "330")
+        env.put("vblank_mode", "0")
+        env.put("WINEESYNC", "1")
+        // Ensure Wine uses X11 driver for our XServer.
+        env.put("DISPLAY", ":0")
+        env.put("LIBGL_ALWAYS_SOFTWARE", "0")
+        env.put("GALLIUM_HUD", "")
+
+        if (drivers[0] == GraphicsDrivers.TURNIP) {
+            env.put("MESA_VK_WSI_USE_HWBUF", "1")
+            env.put("MESA_VK_WSI_FORCE_WAIT_FOR_FENCES", "1")
+            env.put("TU_DEBUG", "noconform")
+            env.put("MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE", "1")
+        }
+        if (drivers[1] == GraphicsDrivers.VIRGL) {
+            env.put("GALLIUM_DRIVER", "virpipe")
+            env.put("LIBGL_ALWAYS_SOFTWARE", "0")
+        }
+        if (drivers[1] == GraphicsDrivers.GLADIO || drivers[1] == GraphicsDrivers.ZINK) {
+            // Prefer hardware GLX path used by Winlator gladio.
+            env.put("MESA_LOADER_DRIVER_OVERRIDE", "")
+        }
+    }
+
+    private fun buildGuestCommand(path: String, workDir: String): String {
+        val unixPath = path.removePrefix("file://")
+        val exe = File(unixPath)
+        // Game folder is always mounted as D:. Prefer D:\ relative path so Ren'Py
+        // resolves game/, renpy/, lib/ next to the executable.
+        val dosExe = when {
+            workDir.isNotBlank() &&
+                (exe.absolutePath == workDir || exe.absolutePath.startsWith(workDir.trimEnd('/') + "/")) -> {
+                val rel = exe.absolutePath
+                    .removePrefix(workDir.trimEnd('/'))
+                    .trimStart('/', '\\')
+                    .replace("/", "\\")
+                if (rel.isBlank()) "D:\\${exe.name}" else "D:\\$rel"
+            }
+            else -> {
+                val mapped = toDosPath(exe.absolutePath)
+                if (mapped.isNotBlank()) mapped else "D:\\${exe.name}"
+            }
+        }
+        val dosDir = if (dosExe.contains('\\')) dosExe.substringBeforeLast('\\') else "D:\\"
+        val escapedExe = dosExe.replace("\"", "\\\"")
+        // Launch via cmd /c with cd /d so game current directory (CWD) is set to D:\ (essential for Ren'Py & relative assets).
+        val cmd = "wine explorer /desktop=shell,$screenInfo cmd /c \"cd /d $dosDir && \\\"$escapedExe\\\"\""
+        ShellLog.info(this, "Wine guest command desktop=$screenInfo exe=$escapedExe unix=${exe.absolutePath}")
+        return cmd
+    }
+
+    private fun toDosPath(unixPath: String): String {
+        if (unixPath.isBlank()) return ""
+        val abs = File(unixPath).absolutePath
+        val mapped = WineUtils.unixToDOSPath(abs, container).orEmpty()
+        // Valid DOS path looks like X:\... or X:
+        if (mapped.matches(Regex("""^[A-Za-z]:(\\.*)?$"""))) {
+            return if (mapped.length == 2) "$mapped\\" else mapped
+        }
+        // Fallback through Z: (rootfs parent)
+        return "Z:" + abs.replace("/", "\\")
+    }
+
+    private data class PreparedGame(val exePath: String, val workDir: String)
+
+    /**
+     * Winlator-style: always mount the real game folder as D: — never copy the whole tree.
+     * Requires MANAGE_EXTERNAL_STORAGE (all-files access) for /storage/emulated/0 paths.
+     */
+    private fun prepareGameFiles(rawExePath: String, rawTreeUri: String, gameTitle: String): PreparedGame {
+        val treeUri = rawTreeUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+        val hasAllFiles = hasAllFilesAccess()
+        ShellLog.info(this, "prepareGameFiles allFiles=$hasAllFiles rawExe=$rawExePath tree=$rawTreeUri")
+
+        // Case A: file:// or plain absolute path (preferred fast path from MainActivity).
+        val plainPath = when {
+            rawExePath.startsWith("file://", ignoreCase = true) -> {
+                Uri.parse(rawExePath).path.orEmpty().ifBlank {
+                    rawExePath.removePrefix("file://")
+                }
+            }
+            rawExePath.startsWith("/") -> rawExePath
+            else -> ""
+        }
+        if (plainPath.isNotBlank()) {
+            val exeFile = File(plainPath)
+            if (exeFile.isFile || forceExists(exeFile)) {
+                val workDir = exeFile.parentFile?.absolutePath.orEmpty()
+                mountGameDrive(workDir)
+                ShellLog.info(this, "Direct mount (file path) D:=$workDir exe=${exeFile.name}")
+                return PreparedGame(exeFile.absolutePath, workDir)
+            }
+        }
+
+        // Case B: tree URI → real path under /storage/emulated/0 (Winlator model).
+        val realTreePath = treeUri?.let { resolveFilesystemPathFromUri(it) }.orEmpty()
+        if (realTreePath.isNotBlank()) {
+            val gameDir = File(realTreePath)
+            if (gameDir.isDirectory || forceExists(gameDir)) {
+                // Prefer exe name from content URI if present; else shallow scan.
+                val preferredName = extractExeNameFromUri(rawExePath)
+                val exeFile = when {
+                    preferredName.isNotBlank() && File(gameDir, preferredName).let { it.isFile || forceExists(it) } ->
+                        File(gameDir, preferredName)
+                    else -> findExeInDir(gameDir)
+                }
+                if (exeFile != null) {
+                    mountGameDrive(gameDir.absolutePath)
+                    ShellLog.info(
+                        this,
+                        "Direct mount (tree path) D:=${gameDir.absolutePath} exe=${exeFile.name} allFiles=$hasAllFiles"
+                    )
+                    return PreparedGame(exeFile.absolutePath, gameDir.absolutePath)
+                }
+                ShellLog.info(this, "Tree path exists but no exe found: $realTreePath")
+            } else {
+                ShellLog.info(this, "Tree path not a directory: $realTreePath")
+            }
+        }
+
+        // Case C: document URI for exe → parent folder as D:.
+        if (rawExePath.startsWith("content://", ignoreCase = true)) {
+            val realExePath = resolveFilesystemPathFromUri(Uri.parse(rawExePath))
+            if (realExePath.isNotBlank()) {
+                val exeFile = File(realExePath)
+                if (exeFile.isFile || forceExists(exeFile)) {
+                    val workDir = exeFile.parentFile?.absolutePath.orEmpty()
+                    mountGameDrive(workDir)
+                    ShellLog.info(this, "Direct mount (exe document) D:=$workDir")
+                    return PreparedGame(exeFile.absolutePath, workDir)
+                }
+            }
+        }
+
+        // No copy fallback. Tell user to grant all-files access (same as Winlator).
+        if (!hasAllFiles) {
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "需要「所有文件访问权限」才能像 Winlator 一样直接挂载游戏，请返回设置开启后重试。",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            throw IllegalStateException(
+                "No all-files access; cannot mount $realTreePath. Grant MANAGE_EXTERNAL_STORAGE and retry."
+            )
+        }
+
+        throw IllegalStateException(
+            "Unable to mount game folder. path=$realTreePath exe=$rawExePath"
+        )
+    }
+
+    private fun hasAllFilesAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /** Some OEM File APIs lie about canRead without all-files; existence is enough for mount. */
+    private fun forceExists(file: File): Boolean {
+        return try {
+            file.exists()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun extractExeNameFromUri(raw: String): String {

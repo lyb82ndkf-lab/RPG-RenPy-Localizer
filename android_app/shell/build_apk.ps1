@@ -10,11 +10,11 @@ if (-not (Test-Path (Join-Path $Root "local.properties"))) {
 }
 
 if (Test-Path ".\gradlew.bat") {
-    .\gradlew.bat assembleDebug
+    .\gradlew.bat clean assembleDebug
 } elseif (Get-Command gradle -ErrorAction SilentlyContinue) {
-    gradle assembleDebug
+    gradle clean assembleDebug
 } elseif (Test-Path "D:\gradle-9.5.1\bin\gradle.bat") {
-    & "D:\gradle-9.5.1\bin\gradle.bat" --no-daemon assembleDebug
+    & "D:\gradle-9.5.1\bin\gradle.bat" --no-daemon clean assembleDebug
 } else {
     throw "Gradle was not found. Add Gradle to PATH or provide gradlew.bat."
 }

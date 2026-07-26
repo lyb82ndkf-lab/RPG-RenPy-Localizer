@@ -1,25 +1,181 @@
-<template><div class="stack">
-<section class="card glass-panel header-card"><div class="header-info"><h2 class="card-title">{{ t.title }}</h2><p class="card-desc">{{ t.desc }}</p></div><button class="btn-primary" @click="saveAiSettings">{{ t.save }}</button></section>
-<section class="card glass-panel card-pad stack"><div class="pill-row"><button v-for="p in providers" :key="p.value" class="btn-secondary" :class="{active:aiForm.provider===p.value}" @click="selectProvider(p.value)">{{ p.label }}</button></div><select v-model="aiForm.provider"><option v-for="p in providers" :key="p.value" :value="p.value">{{ p.label }}</option></select><input v-model="aiForm.baseUrl" :placeholder="t.baseUrl"/><input v-if="aiForm.provider!=='ollama'" v-model="aiForm.apiKey" type="password" :placeholder="t.apiKey"/><div class="action-grid two"><input v-model="aiForm.model" :placeholder="t.model"/><button class="btn-secondary" :disabled="busy.models" @click="fetchModels"><span v-if="busy.models" class="mini-spinner"></span>{{ t.models }}</button></div></section>
-<section class="mobile-grid"><div class="card metric"><span>{{ t.batch }}</span><input v-model.number="aiForm.batchSize" type="number" min="1" max="200"/></div><div class="card metric"><span>{{ t.threads }}</span><input v-model.number="aiForm.concurrency" type="number" min="1" max="8"/></div><div class="card metric"><span>{{ t.interval }}</span><input v-model.number="aiForm.requestIntervalMs" type="number" min="0" max="60000"/></div><div class="card metric"><span>{{ t.retry }}</span><input v-model.number="aiForm.rateLimitRetries" type="number" min="0" max="10"/></div></section>
-<section class="card glass-panel card-pad stack"><input v-model="aiForm.targetLang" :placeholder="t.target"/><textarea v-model="testSource" :placeholder="t.testSource"></textarea><button class="btn-primary" :disabled="busy.test" @click="testAi"><span v-if="busy.test" class="mini-spinner"></span>{{ t.test }}</button><div v-if="testResult" class="source-box">{{ testResult }}</div></section>
-<section class="card glass-panel card-pad stack"><h3 class="card-title">{{ t.launch }}</h3><div class="mobile-grid"><label><span>{{ t.render }}</span><select v-model="launch.renderMode"><option value="fast">Fast</option><option value="compat">Compat</option></select></label><label><span>WebGL</span><select v-model="launch.webgl"><option :value="true">On</option><option :value="false">Off</option></select></label><label><span>{{ t.cache }}</span><select v-model="launch.cacheMode"><option value="fast">Fast cache</option><option value="safe">Safe</option></select></label><label><span>{{ t.zoom }}</span><select v-model="launch.disableZoom"><option :value="true">Lock</option><option :value="false">Allow</option></select></label></div><button class="btn-secondary" @click="saveLaunch">{{ t.saveLaunch }}</button></section>
-<section v-if="status" class="notice">{{ status }}</section>
-</div></template><script setup>
-import { onMounted, reactive, ref } from 'vue'
-const t={title:'AI \u8bbe\u7f6e',desc:'\u79fb\u52a8\u7aef\u4e0e PC \u4e00\u81f4\uff1a\u6e20\u9053\u3001\u6a21\u578b\u3001\u5e76\u53d1\u3001\u9650\u901f\u90fd\u53ef\u914d\u7f6e\u3002',save:'\u4fdd\u5b58',baseUrl:'Base URL',apiKey:'API Key',model:'\u6a21\u578b',models:'\u83b7\u53d6\u6a21\u578b',batch:'\u5355\u6279',threads:'\u5e76\u53d1',interval:'\u95f4\u9694ms',retry:'429\u91cd\u8bd5',target:'\u76ee\u6807\u8bed\u8a00\uff1a\u7b80\u4f53\u4e2d\u6587',testSource:'\u8f93\u5165\u6d4b\u8bd5\u539f\u6587',test:'\u6d4b\u8bd5\u7ffb\u8bd1',launch:'\u6e38\u620f\u6d41\u7545\u5ea6',render:'\u6e32\u67d3',cache:'\u7f13\u5b58',zoom:'\u7f29\u653e',saveLaunch:'\u4fdd\u5b58\u8fd0\u884c\u53c2\u6570'}
-const providers=[{value:'openai',label:'OpenAI'},{value:'anthropic',label:'Anthropic'},{value:'ollama',label:'Ollama'}]
-const aiForm=reactive({provider:'openai',apiKey:'',baseUrl:'https://api.openai.com/v1',model:'',batchSize:50,concurrency:1,requestIntervalMs:1200,rateLimitRetries:3,targetLang:'\u7b80\u4f53\u4e2d\u6587',availableModels:[]})
-const launch=reactive({renderMode:'fast',webgl:true,cacheMode:'fast',disableZoom:true,domStorage:true,fileAccess:true,mediaAutoplay:true})
-const busy=reactive({models:false,test:false});const status=ref('');const testSource=ref('Hello, welcome to the game.');const testResult=ref('')
-function parse(raw){try{return raw?typeof raw==='string'?JSON.parse(raw):raw:{}}catch(e){return{ok:false,error:e.message}}}
-function base(provider){return provider==='anthropic'?'https://api.anthropic.com':provider==='ollama'?'http://127.0.0.1:11434':'https://api.openai.com/v1'}
-function payload(){return {...aiForm,availableModels:aiForm.availableModels||[]}}
-function selectProvider(p){aiForm.provider=p;aiForm.baseUrl=base(p);if(p==='ollama')aiForm.apiKey=''}
-function loadAiSettings(){const res=parse(window.RPGRenPyShell?.androidAiSettings?window.RPGRenPyShell.androidAiSettings():localStorage.getItem('rpgrtl_ai_settings'));const ai=res.ai||res.settings||res;if(ai&&Object.keys(ai).length)Object.assign(aiForm,{...ai,provider:ai.provider||'openai',baseUrl:ai.baseUrl||base(ai.provider),targetLang:ai.targetLang||'\u7b80\u4f53\u4e2d\u6587'});}
-function saveAiSettings(){const data=payload();try{const raw=window.RPGRenPyShell?.saveAiSettings?window.RPGRenPyShell.saveAiSettings(JSON.stringify(data)):(localStorage.setItem('rpgrtl_ai_settings',JSON.stringify(data)),JSON.stringify({ok:true}));const res=parse(raw);if(res.ok===false)throw new Error(res.error||'save failed');status.value='AI \u8bbe\u7f6e\u5df2\u4fdd\u5b58'}catch(e){status.value='\u4fdd\u5b58\u5931\u8d25\uff1a'+(e.message||e)}}
-function fetchModels(){busy.models=true;try{const raw=window.RPGRenPyShell?.androidAiModels?window.RPGRenPyShell.androidAiModels(JSON.stringify(payload())):JSON.stringify({ok:true,models:[aiForm.model||'gpt-4o-mini']});const res=parse(raw);if(res.ok===false)throw new Error(res.error||'models failed');aiForm.availableModels=res.models||[];if(!aiForm.model)aiForm.model=aiForm.availableModels[0]||'';status.value='\u5df2\u83b7\u53d6 '+aiForm.availableModels.length+' \u4e2a\u6a21\u578b'}catch(e){status.value='\u83b7\u53d6\u5931\u8d25\uff1a'+(e.message||e)}finally{busy.models=false}}
-function testAi(){if(!testSource.value.trim())return;busy.test=true;testResult.value='';try{const req={settings:payload(),entries:[{entry_id:'mobile-test',source:testSource.value}],targetLang:aiForm.targetLang};const raw=window.RPGRenPyShell?.androidAiTranslate?window.RPGRenPyShell.androidAiTranslate(JSON.stringify(req)):JSON.stringify({ok:true,translations:[{entry_id:'mobile-test',target:'\u4f60\u597d\uff0c\u6b22\u8fce\u6765\u5230\u6e38\u620f\u3002'}]});const res=parse(raw);if(res.ok===false)throw new Error(res.error||'test failed');const first=Array.isArray(res.translations)?res.translations[0]:null;testResult.value=typeof first==='string'?first:first?.target||'';status.value=testResult.value?'\u6d4b\u8bd5\u6210\u529f':'\u672a\u8fd4\u56de\u8bd1\u6587'}catch(e){status.value='\u6d4b\u8bd5\u5931\u8d25\uff1a'+(e.message||e)}finally{busy.test=false}}
-function saveLaunch(){try{window.RPGRenPyShell?.saveLaunchSettings?.(JSON.stringify(launch));status.value='\u8fd0\u884c\u53c2\u6570\u5df2\u4fdd\u5b58\uff0c\u4e0b\u6b21\u542f\u52a8\u751f\u6548'}catch(e){status.value='\u4fdd\u5b58\u5931\u8d25\uff1a'+(e.message||e)}}
-onMounted(loadAiSettings)
-</script><style scoped>.active{background:linear-gradient(135deg,#4dd6c8,#6da7ff)!important;color:#06111c!important}label span{display:block;color:#8da1bc;font-size:10px;margin-bottom:4px}</style>
+<template>
+  <div class="app-page settings-view">
+    <section class="app-hero">
+      <div>
+        <span class="eyebrow">SETTINGS</span>
+        <h2>设置</h2>
+      <p>AI Key 和启动选项分开保存，避免只改 Key 时影响游戏界面缩放。</p>
+      </div>
+      <button class="app-button primary" @click="saveAll">保存</button>
+    </section>
+
+    <section class="action-panel segmented-tabs">
+      <button v-for="tab in tabs" :key="tab.id" class="app-button small" :class="{ primary: activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
+    </section>
+
+    <section v-if="activeTab === 'ai'" class="settings-panel">
+      <h3>AI 翻译</h3>
+      <div class="provider-row">
+        <button v-for="provider in providers" :key="provider.value" class="app-button small" :class="{ primary: aiForm.provider === provider.value }" @click="selectProvider(provider.value)">{{ provider.label }}</button>
+      </div>
+      <label class="form-line"><span>Base URL</span><input v-model="aiForm.baseUrl" /></label>
+      <label v-if="aiForm.provider !== 'ollama'" class="form-line"><span>API Key</span><input v-model="aiForm.apiKey" type="password" /></label>
+      <label class="form-line"><span>Model</span>
+        <div class="model-fetch-row">
+          <select v-if="aiForm.availableModels && aiForm.availableModels.length" v-model="aiForm.model">
+            <option value="">{{ aiForm.model || '选择模型' }}</option>
+            <option v-for="m in aiForm.availableModels" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <input v-else v-model="aiForm.model" placeholder="Model" />
+          <button class="app-button small" :disabled="modelLoading || !aiForm.apiKey" @click="fetchModels">{{ modelLoading ? '获取中' : '获取模型' }}</button>
+        </div>
+      </label>
+      <div class="number-grid">
+        <label><span>单批</span><input v-model.number="aiForm.batchSize" type="number" min="1" max="200" /></label>
+        <label><span>并发</span><input v-model.number="aiForm.concurrency" type="number" min="1" max="8" /></label>
+        <label><span>间隔 ms</span><input v-model.number="aiForm.requestIntervalMs" type="number" min="0" /></label>
+        <label><span>重试</span><input v-model.number="aiForm.rateLimitRetries" type="number" min="0" /></label>
+      </div>
+    </section>
+
+    <section v-if="activeTab === 'launch'" class="settings-panel">
+      <h3>启动方式</h3>
+      <SettingSwitch v-model="game.rpg.directoryCache" title="RPG Maker 目录缓存" desc="HTML WebView 查资源更快" />
+      <SettingSwitch v-model="game.rpg.prebuildPathCache" title="RPG Maker 预建索引" desc="导入后后台建索引，启动时少等待" />
+      <SettingSwitch v-model="game.rpg.translationInject" title="RPG Maker 翻译注入" desc="启动 HTML 时应用翻译" />
+      <SettingSwitch v-model="game.html.webgl" title="HTML WebGL" desc="RPG Maker MV/MZ 推荐开启" />
+      <SettingSwitch v-model="game.renpy.hardwareVideoDecode" title="Ren'Py 视频硬解" desc="Ren'Py 通过内置 Winlator 启动" />
+      <SettingSwitch v-model="game.renpy.liveTranslation" title="实时汉化" desc="开启或关闭 Ren'Py 游戏内实时汉化 Hook" />
+      <SettingSwitch v-model="game.renpy.lowMemory" title="Ren'Py 低内存" desc="低端机减少内存占用" />
+    </section>
+
+    <section v-if="activeTab === 'advanced'" class="settings-panel">
+      <h3>高级</h3>
+      <SettingSwitch v-model="game.rpg.resourceFallback" title="资源回退" desc="兼容大小写和相对路径" />
+      <SettingSwitch v-model="game.rpg.smoothScaling" title="平滑缩放" desc="画面更顺滑" />
+      <SettingSwitch v-model="game.rpg.resizeLargeTextures" title="压缩大纹理" desc="降低 WebView 崩溃风险" />
+      <label class="form-line"><span>快进速度</span><input v-model.number="game.rpg.fastForwardSpeed" type="number" min="1" max="8" /></label>
+      <label class="form-line"><span>字体比例</span><input v-model.number="game.rpg.fontScale" type="number" min="0.4" max="2" step="0.05" /></label>
+    </section>
+
+    <section v-if="status" class="app-status" :class="{ error: status.includes('失败') }">{{ status }}</section>
+    <section v-if="activeTab === 'logs'" class="settings-panel">
+      <h3>运行日志 / Error Log</h3>
+      <p class="log-help">启动失败或闪退后，重新打开 App，到这里点“复制日志”发给我。</p>
+      <div class="provider-row">
+        <button class="app-button small" @click="loadRuntimeLog">刷新</button>
+        <button class="app-button small primary" @click="copyRuntimeLog">复制日志</button>
+        <button class="app-button small" @click="clearRuntimeLog">清空</button>
+      </div>
+      <textarea class="runtime-log-box" readonly :value="runtimeLog || '暂无日志。请先启动一次游戏；如果闪退，重新打开 App 后再来这里复制。'"></textarea>
+    </section>
+  </div>
+</template>
+
+<script setup>
+import { defineComponent, h, onMounted, reactive, ref } from 'vue'
+
+const SettingSwitch = defineComponent({
+  props: { modelValue: Boolean, title: String, desc: String },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    return () => h('label', { class: 'setting-switch' }, [
+      h('div', [h('strong', props.title), h('p', props.desc)]),
+      h('input', { type: 'checkbox', checked: props.modelValue, onChange: (event) => emit('update:modelValue', event.target.checked) })
+    ])
+  }
+})
+const tabs = [{ id: 'ai', label: 'AI' }, { id: 'launch', label: '启动' }, { id: 'advanced', label: '高级' }]
+const activeTab = ref('launch')
+const status = ref('')
+const modelLoading = ref(false)
+const runtimeLog = ref('')
+tabs.push({ id: 'logs', label: '日志' })
+const providers = [{ value: 'openai', label: 'OpenAI' }, { value: 'anthropic', label: 'Anthropic' }, { value: 'ollama', label: 'Ollama' }]
+const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', batchSize: 50, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '简体中文', availableModels: [] })
+const game = reactive({
+  renpy: { autoSave: false, hardwareVideoDecode: true, liveTranslation: true, phoneScale: false, vsync: false, lowMemory: false, lessUpdates: false, modelBasedRenderer: true, recompileScript: false },
+  html: { useHttpServer: false, nwjsApi: true, webgl: true, desktopMode: false, allowExternalModules: false },
+  rpg: { debugLog: false, useRuby18: true, useMiniz: false, customFont: '', smoothScaling: true, vsync: false, frameSkip: false, fastForwardSpeed: 1, solidFonts: false, directoryCache: true, prebuildPathCache: true, fasterPathEnumeration: true, postLoadScript: true, windowSize: '640x480', verticalAlign: 'topCenter', fontScale: 0.75, copyTextToClipboard: false, updateCoreScript: false, useWebGL2: false, resizeLargeTextures: true, usePixiV5: false, translationInject: false, resourceFallback: true }
+})
+function parse(raw) { try { return raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {} } catch (error) { return { ok: false, error: error.message } } }
+function base(provider) { return provider === 'anthropic' ? 'https://api.anthropic.com' : provider === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1' }
+function selectProvider(provider) { aiForm.provider = provider; aiForm.baseUrl = base(provider); if (provider === 'ollama') aiForm.apiKey = ''; aiForm.availableModels = [] }
+function fetchModels() {
+  modelLoading.value = true
+  status.value = ''
+  try {
+    const settingsJson = JSON.stringify(aiPayload())
+    const raw = window.RPGRenPyShell?.androidAiModels ? window.RPGRenPyShell.androidAiModels(settingsJson) : ''
+    const res = parse(raw)
+    if (res.ok === false) throw new Error(res.error || 'fetch models failed')
+    const models = Array.isArray(res.models) ? res.models : []
+    aiForm.availableModels = models
+    if (models.length && !aiForm.model) aiForm.model = models[0]
+    status.value = `获取到 ${models.length} 个模型`
+  } catch (error) {
+    status.value = '获取模型失败：' + (error.message || error)
+  } finally {
+    modelLoading.value = false
+  }
+}
+function merge(target, source) { if (!source) return; Object.keys(source).forEach((key) => { if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) && target[key]) merge(target[key], source[key]); else if (key in target) target[key] = source[key] }) }
+function load() { const ai = parse(window.RPGRenPyShell?.androidAiSettings?.()); merge(aiForm, ai.ai || ai.settings || ai); const launch = parse(window.RPGRenPyShell?.androidLaunchSettings?.() || localStorage.getItem('rpgrtl_launch_settings')); merge(game, launch.game || launch) }
+function aiPayload() { return { ...aiForm, availableModels: aiForm.availableModels || [] } }
+function shellMethod(name) {
+  const shell = window.RPGRenPyShell
+  if (!shell) throw new Error('Android bridge 不可用：当前页面没有拿到原生接口，请重装最新 APK。')
+  if (typeof shell[name] !== 'function') throw new Error(`${name} 不可用：手机上可能还是旧 APK，请卸载后安装最新包。`)
+  return shell[name].bind(shell)
+}
+function loadRuntimeLog() {
+  try {
+    const raw = shellMethod('androidRuntimeLog')()
+    const res = parse(raw)
+    if (res.ok === false) throw new Error(res.error || 'read log failed')
+    runtimeLog.value = res.log || ''
+    status.value = runtimeLog.value ? `已读取 ${runtimeLog.value.length} 字符日志` : '暂无日志'
+  } catch (error) {
+    status.value = '读取日志失败：' + (error.message || error)
+  }
+}
+function copyRuntimeLog() {
+  try {
+    const raw = shellMethod('copyRuntimeLog')()
+    const res = parse(raw)
+    if (res.ok === false) throw new Error(res.error || 'copy log failed')
+    loadRuntimeLog()
+    status.value = `日志已复制（${res.chars || runtimeLog.value.length} 字符）`
+  } catch (error) {
+    status.value = '复制日志失败：' + (error.message || error)
+  }
+}
+function clearRuntimeLog() {
+  try {
+    const raw = shellMethod('clearRuntimeLog')()
+    const res = parse(raw)
+    if (res.ok === false) throw new Error(res.error || 'clear log failed')
+    runtimeLog.value = ''
+    status.value = '日志已清空'
+  } catch (error) {
+    status.value = '清空日志失败：' + (error.message || error)
+  }
+}
+function saveAll() {
+  try {
+    let raw = JSON.stringify({ ok: true })
+    if (activeTab.value === 'ai') {
+      raw = window.RPGRenPyShell?.saveAiSettings ? window.RPGRenPyShell.saveAiSettings(JSON.stringify(aiPayload())) : (localStorage.setItem('rpgrtl_ai_settings', JSON.stringify(aiPayload())), JSON.stringify({ ok: true }))
+    } else {
+      const data = { game, renpy: game.renpy, html: game.html, rpg: game.rpg, webgl: game.html.webgl, disableZoom: true, mediaAutoplay: true, renderMode: game.html.desktopMode ? 'compat' : 'fast', translationInject: game.rpg.translationInject, resourceFallback: game.rpg.resourceFallback }
+      raw = window.RPGRenPyShell?.saveLaunchSettings ? window.RPGRenPyShell.saveLaunchSettings(JSON.stringify(data)) : (localStorage.setItem('rpgrtl_launch_settings', JSON.stringify(data)), JSON.stringify({ ok: true }))
+    }
+    const res = parse(raw)
+    if (res.ok === false) throw new Error(res.error || 'save failed')
+    status.value = '设置已保存'
+  } catch (error) {
+    status.value = '保存失败：' + (error.message || error)
+  }
+}
+onMounted(() => { load(); loadRuntimeLog() })
+</script>

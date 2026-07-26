@@ -56,17 +56,18 @@ public abstract class GeneralComponents {
         }
 
         private String assetFolder() {
+            // RPGTL packages Winlator assets under assets/winlator/...
             switch (this) {
                 case BOX64:
-                    return "box64";
+                    return "winlator/box64";
                 case TURNIP:
-                    return "graphics_driver";
+                    return "winlator/graphics_driver";
                 case WINED3D:
                 case DXVK:
                 case VKD3D:
-                    return "dxwrapper";
+                    return "winlator/dxwrapper";
                 case SOUNDFONT:
-                    return "soundfont";
+                    return "winlator/soundfont";
             }
 
             return "";
@@ -222,6 +223,13 @@ public abstract class GeneralComponents {
                 TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, sourcePath, destination, onExtractFileListener);
             }
         }
+    }
+
+    /** Extract packed graphics driver tzst (gladio/turnip/virgl/zink/vortek) into rootfs. */
+    public static boolean extractGraphicsDriverAsset(Context context, String name, String version) {
+        File rootDir = RootFS.find(context).getRootDir();
+        String asset = "winlator/graphics_driver/" + name + "-" + version + ".tzst";
+        return TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, asset, rootDir);
     }
 
     private static String parseDisplayText(Type type, String filename) {

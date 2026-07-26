@@ -509,6 +509,7 @@
                 <el-button size="small" type="primary" @click="startLive">启动</el-button>
                 <el-button size="small" @click="stopLive">停止</el-button>
                 <el-button size="small" @click="refreshLive">刷新状态</el-button>
+                <el-button size="small" :icon="Notebook" @click="openLiveDebug">调试窗口</el-button>
               </div>
             </div>
           </template>
@@ -558,9 +559,7 @@
             <div class="card-head">
               <strong>AI 翻译</strong>
               <div class="card-head-right wrap">
-                <el-button size="small" @click="loadAiSettings">读取设置</el-button>
-                <el-button size="small" type="primary" @click="saveAiSettings">保存设置</el-button>
-                <el-button size="small" @click="testAi">测试翻译</el-button>
+                <el-tag type="success" effect="plain">自动保存</el-tag>
               </div>
             </div>
           </template>
@@ -581,7 +580,6 @@
                   </div>
                   <div class="profile-actions">
                     <el-button size="small" type="primary" plain @click="saveNamedAiConfig">保存为配置</el-button>
-                    <el-button size="small" @click="loadNamedAiConfig(selectedAiConfigName)" :disabled="!selectedAiConfigName">打开配置</el-button>
                     <el-button size="small" type="danger" plain @click="deleteNamedAiConfig" :disabled="!selectedAiConfigName">删除</el-button>
                   </div>
                 </div>
@@ -671,6 +669,62 @@
 
       <el-dialog v-model="saveDataDialogVisible" title="完整存档数据" width="min(960px, 90vw)">
         <el-input v-model="savePreview" class="save-json-preview" type="textarea" :rows="24" readonly />
+      </el-dialog>
+
+      <el-dialog
+        v-model="liveDebugVisible"
+        title="Ren'Py 实时翻译状态"
+        width="min(1160px, 94vw)"
+        class="live-debug-dialog"
+        destroy-on-close
+        @closed="stopLiveDebugPolling"
+      >
+        <div class="live-debug-shell simplified">
+          <section class="live-debug-main">
+            <div class="live-debug-current">
+              <div>
+                <span>当前游戏文本</span>
+                <strong>{{ liveDebug.status?.current_source || '等待游戏显示一条对话…' }}</strong>
+                <small v-if="liveDebug.status?.current_target">当前译文：{{ liveDebug.status.current_target }}</small>
+              </div>
+              <el-tag :type="liveDebug.status?.connected ? 'success' : 'info'">{{ liveDebug.status?.connected ? '已连接游戏' : '等待连接' }}</el-tag>
+            </div>
+            <div class="live-debug-metrics compact">
+              <div><span>待翻译</span><strong>{{ liveDebug.status?.queue_count || 0 }}</strong></div>
+              <div><span>本次已译</span><strong>{{ liveDebug.worker?.translated || 0 }}</strong></div>
+              <div><span>自动重试</span><strong>{{ liveDebug.worker?.failures || 0 }}</strong></div>
+              <div><span>批量状态</span><strong>{{ liveBatchPlanLabel }}</strong></div>
+            </div>
+            <div v-if="liveDebug.worker?.lastError" class="live-debug-notice">{{ liveDebug.worker.lastError }}</div>
+            <el-tabs v-model="liveDebugTab" class="live-debug-tabs">
+              <el-tab-pane label="翻译队列" name="queue">
+                <el-table :data="liveDebugQueue" height="400" empty-text="队列为空；游戏新文本会自动出现在这里">
+                  <el-table-column label="#" type="index" width="58" />
+                  <el-table-column label="待翻译文本" prop="source" min-width="600" show-overflow-tooltip />
+                  <el-table-column label="状态" width="130">
+                    <template #default="{ row }"><el-tag size="small" :type="row.current ? 'warning' : 'info'">{{ row.current ? '正在处理' : '排队等待' }}</el-tag></template>
+                  </el-table-column>
+                </el-table>
+              </el-tab-pane>
+              <el-tab-pane label="详细日志" name="logs">
+                <el-table :data="liveDebugEvents" height="400" empty-text="尚无翻译活动">
+                  <el-table-column label="步骤" width="150">
+                    <template #default="{ row }"><el-tag size="small" :type="liveDebugStageType(row.stage)">{{ liveDebugStageLabel(row.stage) }}</el-tag></template>
+                  </el-table-column>
+                  <el-table-column label="详细信息" min-width="650">
+                    <template #default="{ row }">{{ liveDebugSummary(row) }}</template>
+                  </el-table-column>
+                </el-table>
+              </el-tab-pane>
+            </el-tabs>
+            <div class="live-debug-actions horizontal">
+              <el-button type="success" :icon="Connection" @click="startLiveFromDebug">启动 AI 翻译</el-button>
+              <el-button type="primary" :icon="MagicStick" @click="forceLiveHello">替换当前文本为 hello</el-button>
+              <el-button :icon="Refresh" @click="loadLiveDebug">刷新</el-button>
+              <el-button plain @click="clearLiveDebug">清空日志</el-button>
+            </div>
+          </section>
+        </div>
       </el-dialog>
 
       <el-tour
@@ -792,6 +846,11 @@ let runtimePollTimer = null;
 const liveStatus = ref({ running: false, connected: false, queue_count: 0, worker: { running: false, state: 'stopped', translated: 0, failures: 0, lastError: '' }, recentEvents: [] });
 const liveSource = ref('');
 const liveTarget = ref('');
+const liveDebugVisible = ref(false);
+const liveDebugTab = ref('queue');
+const liveDebug = ref({ status: {}, worker: {}, tree: [], debugEvents: [], hookEvents: [] });
+const liveDebugSelected = ref(null);
+let liveDebugTimer = null;
 
 const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', batchSize: 50, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '\u7b80\u4f53\u4e2d\u6587' });
 const aiModels = ref([]);
@@ -800,6 +859,9 @@ const aiNamedConfigs = reactive({});
 const selectedAiConfigName = ref('');
 const aiConfigName = ref('');
 let previousAiProvider = 'openai';
+let aiAutosaveTimer = null;
+let aiSettingsReady = false;
+let suppressAiAutosave = false;
 const aiToolTab = ref('test');
 const aiTestSource = ref('Hello, welcome to the game.');
 const aiTestResult = ref('');
@@ -983,6 +1045,27 @@ const selectedTileEvents = computed(() => {
 });
 const liveRecentEvents = computed(() => [...(liveStatus.value?.recentEvents || [])].reverse());
 const liveWorkerStateLabel = computed(() => ({ stopped: '已停止', waiting: '等待文本', translating: '翻译中', retrying: '失败重试', configuration_required: '需要配置 AI' })[liveStatus.value?.worker?.state] || '等待启动');
+const liveBatchPlanLabel = computed(() => {
+  const worker = liveDebug.value?.worker || liveStatus.value?.worker || {};
+  if (worker.state !== 'translating') return liveWorkerStateLabel.value;
+  const batches = Number(worker.activeBatches || 1);
+  const configured = Number(worker.concurrency || 1);
+  const size = Number(worker.batchSize || 0);
+  return size ? `${batches}/${configured} 批运行 × ${size}` : '翻译中';
+});
+const liveDebugEvents = computed(() => [...(liveDebug.value?.debugEvents || [])].reverse());
+const liveDebugHookEvents = computed(() => [...(liveDebug.value?.hookEvents || [])].reverse());
+const liveDebugQueue = computed(() => {
+  const pending = Array.isArray(liveDebug.value?.status?.pending_sources) ? liveDebug.value.status.pending_sources : [];
+  const current = String(liveDebug.value?.worker?.lastSource || '');
+  const sources = [...new Set([current, ...pending].filter(Boolean))];
+  return sources.map((source) => ({ source, current: source === current && liveDebug.value?.worker?.state === 'translating' }));
+});
+const liveDebugCurrentText = computed(() => {
+  const event = liveDebugHookEvents.value.find((item) => item?.source || item?.displayed || item?.target) || liveDebug.value?.status?.last_event || {};
+  return event.target || event.displayed || event.source || '';
+});
+const liveDebugSelectedJson = computed(() => JSON.stringify(liveDebugSelected.value || liveDebug.value || {}, null, 2));
 
 async function startTutorial() {
   translationDialogVisible.value = false;
@@ -1573,6 +1656,67 @@ async function startLive() {
 async function stopLive() { if (!(await ensureProjectLoaded())) return; liveStatus.value = await api('/live/stop', { body: {} }); toast('实时翻译已停止'); }
 async function refreshLive() { if (!(await ensureProjectLoaded())) return; await api('/live/refresh', { body: {} }); await loadLiveStatus(true); }
 async function mergeLive() { if (!(await ensureProjectLoaded())) return; await api('/live/merge', { body: { source: liveSource.value, target: liveTarget.value } }); await loadLiveStatus(true); toast('已写入实时翻译表并通知游戏刷新'); }
+async function openLiveDebug() {
+  if (!(await ensureProjectLoaded())) return;
+  liveDebugVisible.value = true;
+  await loadLiveDebug(false, true);
+  stopLiveDebugPolling();
+  liveDebugTimer = setInterval(() => loadLiveDebug(true, true), 1000);
+}
+function stopLiveDebugPolling() {
+  if (liveDebugTimer) clearInterval(liveDebugTimer);
+  liveDebugTimer = null;
+}
+async function loadLiveDebug(silent = false, autostart = false) {
+  if (!(await ensureProjectLoaded())) return;
+  try {
+    liveDebug.value = await api('/live/debug?limit=240' + (autostart ? '&autostart=1' : ''));
+    liveStatus.value = liveDebug.value.status || liveStatus.value;
+    if (!liveDebugSelected.value && liveDebug.value.debugEvents?.length) liveDebugSelected.value = liveDebug.value.debugEvents[liveDebug.value.debugEvents.length - 1];
+  } catch (error) {
+    if (!silent) toast(error.message, 'warning');
+  }
+}
+async function startLiveFromDebug() {
+  const ok = await startLive();
+  if (ok) await loadLiveDebug(true, true);
+}
+async function clearLiveDebug() {
+  if (!(await ensureProjectLoaded())) return;
+  liveDebugSelected.value = null;
+  liveDebug.value = await api('/live/debug?limit=240&clear=1');
+}
+async function forceLiveHello() {
+  if (!(await ensureProjectLoaded())) return;
+  await api('/live/force-text', { body: { text: 'hello' } });
+  await loadLiveDebug(true);
+  toast("已向当前 Ren'Py 文本框注入 hello");
+}
+function liveDebugStageType(stage) {
+  return ({ capture: 'info', api: 'warning', inject: 'success', filter: 'warning', error: 'danger' })[String(stage || '')] || 'info';
+}
+function liveDebugStageLabel(stage) {
+  return ({ capture: '捕获文本', api: '调用 AI', inject: '写入游戏', filter: '校验译文', error: '自动重试', worker: '翻译服务' })[String(stage || '')] || '系统';
+}
+function liveDebugSummary(row) {
+  const payload = row?.payload || {};
+  const preview = (values) => (Array.isArray(values) ? values.filter(Boolean).slice(0, 2).map((item) => String(item).replace(/\s+/g, ' ').slice(0, 90)).join('；') : '');
+  if (row?.title === 'candidate_batch') return `从游戏捕获 ${payload.raw_count || 0} 条文本，脚本顺序补入 ${payload.seeded_count || 0} 条，本轮准备翻译 ${payload.candidate_count || 0} 条；延迟重试 ${payload.deferred_count || 0} 条。`;
+  if (row?.title === 'parallel_batch_wave') return `${payload.phase === 'repair' ? '批量补救' : '主批处理'}：${payload.candidate_count || 0} 条文本，拆为 ${payload.batch_count || 0} 批，每批最多 ${payload.batch_size || 0} 条，同时最多 ${payload.concurrency || 1} 批；预读窗口上限 ${payload.window_size || 300} 条。`;
+  if (row?.title === 'parallel_repair_wave') return `主批有 ${payload.candidate_count || 0} 条未返回，改为 ${payload.batch_count || 0} 个小批（每批 ${payload.batch_size || 0} 条），仍按 ${payload.concurrency || 1} 批并发重试。`;
+  if (row?.title === 'urgent_current_retry') return '当前屏幕文本未在批量响应中返回，正在立即单独补救；后续文本仍在后台批量翻译。';
+  if (row?.title === 'urgent_current_retry_failed') return '当前屏幕文本的即时补救请求失败，已在极短延迟后重新排队。';
+  if (row?.title === 'submit_request') return `正在向 AI 提交 ${payload.count || 0} 条文本。首条：${preview(payload.texts) || '无'}。模型返回前会一直保持当前游戏画面，不会跳到下一句。`;
+  if (row?.title === 'timeout_split_retry') return `AI 请求超时，已将 ${payload.count || 0} 条文本自动拆为 ${payload.left || 0} 条和 ${payload.right || 0} 条继续重试。`;
+  if (row?.title === 'response_content' || row?.title === 'parsed_translations') return `AI 已返回并解析 ${Array.isArray(payload.translations) ? payload.translations.length : 0} 条译文。示例：${preview(payload.translations) || '无'}。`;
+  if (row?.title === 'merge_live_translations') return `已把 ${payload.count || 0} 条译文写入游戏，当前显示的文本会自动刷新。示例：${Object.values(payload.translations || {}).slice(0, 2).map((item) => String(item).slice(0, 90)).join('；') || '无'}。`;
+  if (row?.title === 'translation_rejected') return `${payload.count || 0} 条译文格式不完整或未翻译，已自动改为小批重试。`;
+  if (row?.title === 'force_text') return `已请求替换当前文本为“${payload.text || 'hello'}”，只会作用于点击时正在显示的这句。`;
+  if (payload.error) return `发生错误：${payload.error}`;
+  if (payload.sources) return `正在处理 ${payload.sources.length} 条文本。`;
+  if (payload.text) return String(payload.text);
+  return '翻译服务状态已更新。';
+}
 function normalizeAiProvider(provider) { const value = String(provider || '').toLowerCase(); if (value.includes('ollama') || value.includes('本地模型')) return 'ollama'; if (value.includes('anthropic') || value.includes('claude')) return 'anthropic'; return 'openai'; }
 function defaultAiBaseUrl(provider) { return provider === 'anthropic' ? 'https://api.anthropic.com' : provider === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1'; }
 function snapshotAiProfile(provider = aiForm.provider) { aiProfiles[provider] = { apiKey: aiForm.apiKey, baseUrl: aiForm.baseUrl, model: aiForm.model, models: [...aiModels.value], batchSize: aiForm.batchSize, concurrency: aiForm.concurrency, requestIntervalMs: aiForm.requestIntervalMs, rateLimitRetries: aiForm.rateLimitRetries, requestTimeoutSec: aiForm.requestTimeoutSec, targetLang: aiForm.targetLang }; }
@@ -1600,6 +1744,18 @@ async function persistAiSettings(showToast = false) {
   await api('/settings', { body: { ai: { ...aiForm, availableModels: [...aiModels.value] }, ai_profiles: { ...aiProfiles }, ai_named_configs: { ...aiNamedConfigs } } });
   if (showToast) toast('AI 设置与命名配置已保存');
 }
+function scheduleAiAutosave() {
+  if (!aiSettingsReady || suppressAiAutosave) return;
+  if (aiAutosaveTimer) clearTimeout(aiAutosaveTimer);
+  aiAutosaveTimer = setTimeout(async () => {
+    aiAutosaveTimer = null;
+    try {
+      await persistAiSettings(false);
+    } catch (error) {
+      toast('AI 设置自动保存失败：' + error.message, 'warning');
+    }
+  }, 500);
+}
 async function saveNamedAiConfig() {
   const name = aiConfigName.value.trim() || selectedAiConfigName.value || `${({ openai: 'OpenAI', anthropic: 'Anthropic', ollama: 'Ollama' })[aiForm.provider] || 'AI'} 配置 ${namedAiConfigList.value.length + 1}`;
   aiNamedConfigs[name] = currentAiConfigSnapshot();
@@ -1610,9 +1766,12 @@ async function saveNamedAiConfig() {
 }
 function loadNamedAiConfig(name) {
   if (!name || !aiNamedConfigs[name]) return;
+  suppressAiAutosave = true;
   selectedAiConfigName.value = name;
   aiConfigName.value = name;
   applyAiConfig(aiNamedConfigs[name]);
+  suppressAiAutosave = false;
+  scheduleAiAutosave();
   toast(`已打开 AI 配置：${name}`);
 }
 async function deleteNamedAiConfig() {
@@ -1633,18 +1792,22 @@ async function onAiProviderChange(provider) {
   aiModels.value = Array.isArray(profile.models) ? profile.models : [];
   previousAiProvider = provider;
   if (provider === 'ollama') await fetchAiModels(true);
+  scheduleAiAutosave();
 }
 async function loadAiSettings(showToast = true) {
   try {
     const data = await api('/settings');
+    suppressAiAutosave = true;
     Object.assign(aiProfiles, data.ai_profiles || {});
     Object.keys(aiNamedConfigs).forEach((key) => delete aiNamedConfigs[key]);
     Object.assign(aiNamedConfigs, data.ai_named_configs || data.aiConfigs || {});
     const ai = data.ai || data;
     applyAiConfig({ ...ai, availableModels: Array.isArray(ai.availableModels) ? ai.availableModels : (Array.isArray(aiProfiles[normalizeAiProvider(ai.provider)]?.models) ? aiProfiles[normalizeAiProvider(ai.provider)].models : []) });
     if (aiForm.provider === 'ollama') await fetchAiModels(true);
+    aiSettingsReady = true;
+    suppressAiAutosave = false;
     if (showToast) toast('已读取本机 AI 设置');
-  } catch (error) { toast('读取设置失败：' + error.message, 'error'); }
+  } catch (error) { suppressAiAutosave = false; toast('读取设置失败：' + error.message, 'error'); }
 }
 async function saveAiSettings(showToast = true) {
   snapshotAiProfile();
@@ -1678,11 +1841,19 @@ async function testAiBatch() {
   if (aiForm.provider !== 'ollama' && !aiForm.apiKey) return toast('请先填写 API Key', 'warning');
   busy.aiTest = true;
   try {
-    const samples = ['Welcome back, brave adventurer.', 'The door is locked.', 'Do you want to save your game?'];
-    const sampleEntries = samples.map((source, index) => ({ entry_id: `sample_${index}`, source, category: 'dialogue' }));
-    const data = await api('/ai/translate', { body: { ...aiForm, timeout: clampAiRequestTimeoutSec(), requestTimeoutSec: clampAiRequestTimeoutSec(), entries: sampleEntries, targetLang: aiForm.targetLang, from: 'auto', to: 'zh' } });
-    const map = normalizeAiTranslationMap(data.translations || []);
-    aiPreview.value = samples.map((source, index) => `${index + 1}. ${source}\\n=> ${getAiTarget(map, sampleEntries[index], index)}`).join('\\n\\n');
+    const samples = ['[mc], nice to see you here.', 'I did not expect you to come back so soon.', 'The hallway is quieter than usual tonight.', 'Can we talk somewhere nobody will hear us?', 'Of course. Follow me to the library.', 'The door is locked from the inside.', 'I found this letter under the old desk.', 'It mentions a promise we made years ago.', 'That cannot be true... can it?', 'Please do not look at me like that.', 'We still have time to fix this.', 'Then tell me everything you know.', 'The rain began before either of us spoke again.', 'I will wait here until you are ready.', 'Do you want to save your game?', 'Yes, save the current progress.', 'No, continue without saving.', 'A new message appears on the screen.', 'Objective updated: find the hidden key.', 'The key should be somewhere near the garden.', 'I hear footsteps behind the door.', 'Do not turn around.', 'Why not?', 'Because someone is standing right behind you.'];
+    const sampleEntries = samples.map((source, index) => ({ entry_id: `renpy_dialogue_${index + 1}`, source, category: 'renpy_dialogue', context: `say_${index + 1}` }));
+    const batchSize = clampAiBatchSize();
+    const concurrency = clampAiConcurrency();
+    const chunks = [];
+    for (let index = 0; index < sampleEntries.length; index += batchSize) chunks.push(sampleEntries.slice(index, index + batchSize));
+    const gate = createRequestGate(clampAiRequestInterval());
+    const map = new Map();
+    await runLimited(chunks, concurrency, async (chunk, chunkIndex) => {
+      const result = await translateChunkWithAI(chunk, { gate, chunkIndex, minSplitSize: 1 });
+      result.forEach((target, key) => map.set(key, target));
+    });
+    aiPreview.value = `Ren'Py 连续对话批量模拟：${sampleEntries.length} 条；单批 ${batchSize} 条；并发 ${concurrency} 批。\\n\\n` + samples.map((source, index) => `${index + 1}. ${source}\\n=> ${getAiTarget(map, sampleEntries[index], index) || '未返回译文'}`).join('\\n\\n');
     toast('批量测试完成');
   } catch (error) { aiPreview.value = '批量测试失败：' + error.message; toast(error.message, 'error'); }
   finally { busy.aiTest = false; }
@@ -1751,6 +1922,23 @@ watch(translationPageSize, () => { translationPage.value = 1; });
 watch(translationPageCount, (count) => { if (translationPage.value > count) translationPage.value = count; });
 watch(selectedTranslationId, syncTranslationDraft);
 watch(selectedDataId, syncDataDraft);
+watch(
+  () => [
+    aiForm.provider,
+    aiForm.apiKey,
+    aiForm.baseUrl,
+    aiForm.model,
+    aiForm.batchSize,
+    aiForm.concurrency,
+    aiForm.requestIntervalMs,
+    aiForm.rateLimitRetries,
+    aiForm.requestTimeoutSec,
+    aiForm.targetLang,
+    aiModels.value.join('\u0001'),
+    selectedAiConfigName.value,
+  ],
+  scheduleAiAutosave,
+);
 watch(dataSection, async (section) => {
   selectedRuntimeDataId.value = null;
   if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null; }
@@ -1783,5 +1971,5 @@ async function init() {
   }
 }
 onMounted(init);
-onBeforeUnmount(() => { if (runtimePollTimer) clearInterval(runtimePollTimer); if (gameStatusTimer) clearInterval(gameStatusTimer); });
+onBeforeUnmount(() => { if (runtimePollTimer) clearInterval(runtimePollTimer); if (gameStatusTimer) clearInterval(gameStatusTimer); if (aiAutosaveTimer) clearTimeout(aiAutosaveTimer); stopLiveDebugPolling(); });
 </script>

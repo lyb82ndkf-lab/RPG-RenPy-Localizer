@@ -13,6 +13,7 @@ public class GPUImage extends Texture {
     private short stride;
     private boolean locked = false;
     private int nativeHandle;
+    private final com.winlator.renderer.GPUImage nativePeer = new com.winlator.renderer.GPUImage(this);
 
     static {
         System.loadLibrary("winlator");
@@ -53,7 +54,7 @@ public class GPUImage extends Texture {
     }
 
     @Keep
-    private void setStride(short stride) {
+    public void setStrideFromNative(short stride) {
         this.stride = stride;
     }
 
@@ -62,7 +63,7 @@ public class GPUImage extends Texture {
     }
 
     @Keep
-    private void setNativeHandle(int nativeHandle) {
+    public void setNativeHandleFromNative(int nativeHandle) {
         this.nativeHandle = nativeHandle;
     }
 
@@ -84,13 +85,23 @@ public class GPUImage extends Texture {
         return hardwareBufferPtr;
     }
 
-    private native long createHardwareBuffer(short width, short height, boolean cpuAccess, boolean useHALPixelFormatBGRA8888);
+    private long createHardwareBuffer(short width, short height, boolean cpuAccess, boolean useHALPixelFormatBGRA8888) {
+        return nativePeer.createHardwareBuffer(width, height, cpuAccess, useHALPixelFormatBGRA8888);
+    }
 
-    private native void destroyHardwareBuffer(long hardwareBufferPtr, boolean locked);
+    private void destroyHardwareBuffer(long hardwareBufferPtr, boolean locked) {
+        nativePeer.destroyHardwareBuffer(hardwareBufferPtr, locked);
+    }
 
-    private native ByteBuffer lockHardwareBuffer(long hardwareBufferPtr);
+    private ByteBuffer lockHardwareBuffer(long hardwareBufferPtr) {
+        return nativePeer.lockHardwareBuffer(hardwareBufferPtr);
+    }
 
-    private native long createImageKHR(long hardwareBufferPtr, int textureId);
+    private long createImageKHR(long hardwareBufferPtr, int textureId) {
+        return nativePeer.createImageKHR(hardwareBufferPtr, textureId);
+    }
 
-    private native void destroyImageKHR(long imageKHRPtr);
+    private void destroyImageKHR(long imageKHRPtr) {
+        nativePeer.destroyImageKHR(imageKHRPtr);
+    }
 }

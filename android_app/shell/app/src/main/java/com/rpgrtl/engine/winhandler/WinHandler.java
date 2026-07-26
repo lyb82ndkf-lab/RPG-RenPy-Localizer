@@ -172,6 +172,19 @@ public class WinHandler {
         });
     }
 
+    /**
+     * Absolute mouse event.  {@code x}/{@code y} are X-screen pixels; converted to
+     * Windows 0..65535 range expected by MOUSEEVENTF_ABSOLUTE.
+     */
+    public void mouseEventAbsolute(int flags, int x, int y, int wheelDelta) {
+        XServer xs = activity.getXServer();
+        int sw = Math.max(1, xs.screenInfo.width - 1);
+        int sh = Math.max(1, xs.screenInfo.height - 1);
+        int nx = (int) Math.max(0, Math.min(65535, (x * 65535L) / sw));
+        int ny = (int) Math.max(0, Math.min(65535, (y * 65535L) / sh));
+        mouseEvent(flags | MouseEventFlags.ABSOLUTE | MouseEventFlags.VIRTUALDESK, nx, ny, wheelDelta);
+    }
+
     public void keyboardEvent(byte vkey, int flags) {
         if (!initReceived) return;
         addAction(() -> {
@@ -323,9 +336,13 @@ public class WinHandler {
                 short x = receiveData.getShort();
                 short y = receiveData.getShort();
                 XServer xServer = activity.getXServer();
-                xServer.pointer.setX(x);
-                xServer.pointer.setY(y);
-                activity.getXServerView().requestRender();
+                // Captured Windows cursors report a fixed capture point (often center/corner).
+                // Relative mode and absolute touch play both own the cursor on the Android side.
+                if (!xServer.isRelativeMouseMovement() && !xServer.isIgnoreGuestCursorWarp()) {
+                    xServer.pointer.setX(x);
+                    xServer.pointer.setY(y);
+                    activity.getXServerView().requestRender();
+                }
                 break;
             }
             case RequestCodes.OPEN_URL: {
@@ -363,19 +380,19 @@ public class WinHandler {
     }
 
     public void start() {
-        try {
-            localhost = InetAddress.getLocalHost();
-        }
-        catch (UnknownHostException e) {
-            try {
-                localhost = InetAddress.getByName("127.0.0.1");
-            }
-            catch (UnknownHostException ex) {}
-        }
-
-        running = true;
-        startSendThread();
         Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                localhost = InetAddress.getLocalHost();
+            }
+            catch (UnknownHostException e) {
+                try {
+                    localhost = InetAddress.getByName("127.0.0.1");
+                }
+                catch (UnknownHostException ex) {}
+            }
+
+            running = true;
+            startSendThread();
             try {
                 socket = new DatagramSocket(null);
                 socket.setReuseAddress(true);

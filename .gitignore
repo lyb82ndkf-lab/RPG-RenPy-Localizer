@@ -51,6 +51,28 @@ tmp_detect_case/
 # Electron
 node_modules/
 release-electron/
+release-electron-staging-*/
 *.blockmap
 .playwright-cli/
 .codex-*.log
+
+# ========== 工具本地环境 ==========
+.claude/
+.codex/
+.codex_tmp/
+.reasonix/
+.agents/
+.agent-memory-store/
+.mcp.json
+opencode.json
+.pytest_cache/
+
+# ========== Android 本地 ==========
+android_app/shell/.kotlin/
+android_app/shell/local.properties
+android_app/shell/gradle.properties
+*.keystore
+*.jks
+
+# ========== 本地大文件目录 ==========
+winlator-main/

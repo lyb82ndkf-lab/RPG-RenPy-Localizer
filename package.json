@@ -1,6 +1,6 @@
 {
   "name": "rpgrenpy-localizer-electron",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "description": "Modern Electron shell for RPGRenPyLocalizer with bundled Python backend.",
   "main": "electron/main.js",
   "private": true,

@@ -442,8 +442,12 @@ public class WineRegistryEditor implements Closeable {
         return location.start != -1 ? location : null;
     }
 
-    private native int[] getKeyLocation(String filename, String key);
+    private int[] getKeyLocation(String filename, String key) {
+        return com.winlator.core.WineRegistryEditor.getKeyLocation(filename, key);
+    }
 
-    private native int[] getValueLocation(String filename, int[] keyLocation, String name);
+    private int[] getValueLocation(String filename, int[] keyLocation, String name) {
+        return com.winlator.core.WineRegistryEditor.getValueLocation(filename, keyLocation, name);
+    }
 }
 

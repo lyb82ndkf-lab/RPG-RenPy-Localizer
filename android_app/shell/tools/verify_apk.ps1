@@ -90,6 +90,13 @@ try {
                     $changed = $true
                 }
             }
+            foreach ($m in [regex]::Matches($js, 'import\(`\./([^`]+\.(?:js|css))`\)')) {
+                $dep = $m.Groups[1].Value
+                if (-not $neededAssets.Contains($dep)) {
+                    [void]$neededAssets.Add($dep)
+                    $changed = $true
+                }
+            }
         }
     }
 

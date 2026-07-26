@@ -64,6 +64,12 @@ public class Pointer {
         triggerOnPointerMove(this.x, this.y);
     }
 
+    /** Updates the renderer-facing pointer position without emitting an X11 motion event. */
+    public void setPositionSilently(int x, int y) {
+        setX(x);
+        setY(y);
+    }
+
     public Bitmask getButtonMask() {
         return buttonMask;
     }

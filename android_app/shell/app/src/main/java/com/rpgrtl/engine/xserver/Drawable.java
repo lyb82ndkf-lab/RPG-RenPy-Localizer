@@ -206,17 +206,31 @@ public class Drawable extends XResource {
         this.useSharedData = useSharedData;
     }
 
-    private static native void drawBitmap(short width, short height, ByteBuffer srcData, ByteBuffer dstData);
+    private static void drawBitmap(short width, short height, ByteBuffer srcData, ByteBuffer dstData) {
+        com.winlator.xserver.Drawable.drawBitmap(width, height, srcData, dstData);
+    }
 
-    private static native void drawAlphaMaskedBitmap(byte foreRed, byte foreGreen, byte foreBlue, byte backRed, byte backGreen, byte backBlue, ByteBuffer srcData, ByteBuffer maskData, ByteBuffer dstData);
+    private static void drawAlphaMaskedBitmap(byte foreRed, byte foreGreen, byte foreBlue, byte backRed, byte backGreen, byte backBlue, ByteBuffer srcData, ByteBuffer maskData, ByteBuffer dstData) {
+        com.winlator.xserver.Drawable.drawAlphaMaskedBitmap(foreRed, foreGreen, foreBlue, backRed, backGreen, backBlue, srcData, maskData, dstData);
+    }
 
-    private static native void copyArea(short srcX, short srcY, short dstX, short dstY, short width, short height, short srcStride, short dstStride, ByteBuffer srcData, ByteBuffer dstData);
+    private static void copyArea(short srcX, short srcY, short dstX, short dstY, short width, short height, short srcStride, short dstStride, ByteBuffer srcData, ByteBuffer dstData) {
+        com.winlator.xserver.Drawable.copyArea(srcX, srcY, dstX, dstY, width, height, srcStride, dstStride, srcData, dstData);
+    }
 
-    private static native void copyAreaOp(short srcX, short srcY, short dstX, short dstY, short width, short height, short srcStride, short dstStride, ByteBuffer srcData, ByteBuffer dstData, int gcFunction);
+    private static void copyAreaOp(short srcX, short srcY, short dstX, short dstY, short width, short height, short srcStride, short dstStride, ByteBuffer srcData, ByteBuffer dstData, int gcFunction) {
+        com.winlator.xserver.Drawable.copyAreaOp(srcX, srcY, dstX, dstY, width, height, srcStride, dstStride, srcData, dstData, gcFunction);
+    }
 
-    private static native void fillRect(short x, short y, short width, short height, int color, short stride, ByteBuffer data);
+    private static void fillRect(short x, short y, short width, short height, int color, short stride, ByteBuffer data) {
+        com.winlator.xserver.Drawable.fillRect(x, y, width, height, color, stride, data);
+    }
 
-    private static native void drawLine(short x0, short y0, short x1, short y1, int color, short lineWidth, short stride, ByteBuffer data);
+    private static void drawLine(short x0, short y0, short x1, short y1, int color, short lineWidth, short stride, ByteBuffer data) {
+        com.winlator.xserver.Drawable.drawLine(x0, y0, x1, y1, color, lineWidth, stride, data);
+    }
 
-    private static native void fromBitmap(Bitmap bitmap, ByteBuffer data);
+    private static void fromBitmap(Bitmap bitmap, ByteBuffer data) {
+        com.winlator.xserver.Drawable.fromBitmap(bitmap, data);
+    }
 }

@@ -75,8 +75,14 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
             if (xServer.grabManager.isOwnerEvents() && window != null) {
                 window.sendEvent(eventId, event, xServer.grabManager.getClient());
             }
-            else if (eventListener.isInterestedIn(eventId)) {
+            else if (eventListener != null && eventListener.isInterestedIn(eventId)) {
                 eventListener.sendEvent(event);
+            }
+            else if (window != null && window.attributes.isEnabled()) {
+                window.sendEvent(eventId, event);
+            }
+            else {
+                grabWindow.sendEvent(eventId, event);
             }
         }
         else if (window != null && window.attributes.isEnabled()) {
@@ -88,11 +94,17 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
         Window grabWindow = xServer.grabManager.getWindow();
         if (grabWindow != null && grabWindow.attributes.isEnabled()) {
             EventListener eventListener = xServer.grabManager.getEventListener();
-            if (xServer.grabManager.isOwnerEvents() && window != null) {
+            if (eventListener != null && xServer.grabManager.isOwnerEvents() && window != null) {
                 window.sendEvent(eventMask, event, eventListener.client);
             }
-            else if (eventListener.isInterestedIn(eventMask)) {
+            else if (eventListener != null && eventListener.isInterestedIn(eventMask)) {
                 eventListener.sendEvent(event);
+            }
+            else if (window != null && window.attributes.isEnabled()) {
+                window.sendEvent(eventMask, event);
+            }
+            else {
+                grabWindow.sendEvent(eventMask, event);
             }
         }
         else if (window != null && window.attributes.isEnabled()) {
@@ -144,15 +156,27 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
 
     @Override
     public void onPointerButtonPress(Pointer.Button button) {
+        updatePointWindow();
         if (xServer.isRelativeMouseMovement()) {
             WinHandler winHandler = xServer.getWinHandler();
             int wheelDelta = button == Pointer.Button.BUTTON_SCROLL_UP ? MOUSE_WHEEL_DELTA : (button == Pointer.Button.BUTTON_SCROLL_DOWN ? -MOUSE_WHEEL_DELTA : 0);
-            winHandler.mouseEvent(MouseEventFlags.getFlagFor(button, true), 0, 0, wheelDelta);
+            if (winHandler != null) {
+                winHandler.mouseEvent(MouseEventFlags.getFlagFor(button, true), 0, 0, wheelDelta);
+            }
         }
         else {
             Window grabWindow = xServer.grabManager.getWindow();
             if (grabWindow == null) {
                 grabWindow = pointWindow.getAncestorWithEventId(Event.BUTTON_PRESS);
+                if (grabWindow == null) {
+                    // Fallbacks: focused app window, then point window itself, then root.
+                    Window focused = xServer.windowManager.getFocusedWindow();
+                    if (focused != null) grabWindow = focused.getAncestorWithEventId(Event.BUTTON_PRESS);
+                    if (grabWindow == null && pointWindow != null && pointWindow != xServer.windowManager.rootWindow) {
+                        grabWindow = pointWindow;
+                    }
+                    if (grabWindow == null) grabWindow = xServer.windowManager.rootWindow;
+                }
                 if (grabWindow != null) xServer.grabManager.activatePointerGrab(grabWindow);
             }
 
@@ -163,14 +187,21 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
                 short x = xServer.pointer.getX();
                 short y = xServer.pointer.getY();
 
-                FullscreenTransformation fullscreenTransformation = grabWindow.getFullscreenTransformation();
-                if (fullscreenTransformation != null) {
-                    short[] transformedPoint = fullscreenTransformation.transformPointerCoords(x, y);
-                    x = transformedPoint[0];
-                    y = transformedPoint[1];
+                // When the window is visually fullscreen-scaled, map root coords with the
+                // same transform used for hit-testing so the guest receives in-window points.
+                boolean useFs = grabWindow.getFullscreenTransformation() != null;
+                short[] localPoint = grabWindow.rootPointToLocal(x, y, useFs);
+                if (useFs) {
+                    FullscreenTransformation ft = grabWindow.getFullscreenTransformation();
+                    // local is in visual size; scale to real window client size for the event.
+                    if (ft.width > 0 && ft.height > 0) {
+                        localPoint[0] = (short) Math.max(0, Math.min(grabWindow.getWidth() - 1,
+                            (localPoint[0] * grabWindow.getWidth()) / ft.width));
+                        localPoint[1] = (short) Math.max(0, Math.min(grabWindow.getHeight() - 1,
+                            (localPoint[1] * grabWindow.getHeight()) / ft.height));
+                    }
+                    // Keep root x/y as injected (visual) coords for the event root fields.
                 }
-
-                short[] localPoint = grabWindow.rootPointToLocal(x, y);
                 Window child = grabWindow.isAncestorOf(pointWindow) ? pointWindow : null;
                 grabWindow.sendEvent(Event.BUTTON_PRESS, new ButtonPress(button.code(), xServer.windowManager.rootWindow, grabWindow, child, x, y, localPoint[0], localPoint[1], eventMask));
             }
@@ -179,14 +210,23 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
 
     @Override
     public void onPointerButtonRelease(Pointer.Button button) {
+        updatePointWindow();
         if (xServer.isRelativeMouseMovement()) {
             WinHandler winHandler = xServer.getWinHandler();
-            winHandler.mouseEvent(MouseEventFlags.getFlagFor(button, false), 0, 0, 0);
+            if (winHandler != null) {
+                winHandler.mouseEvent(MouseEventFlags.getFlagFor(button, false), 0, 0, 0);
+            }
         }
         else {
             Bitmask eventMask = createPointerEventMask();
             Window grabWindow = xServer.grabManager.getWindow();
-            Window window = grabWindow == null || xServer.grabManager.isOwnerEvents() ? pointWindow.getAncestorWithEventMask(eventMask) : null;
+            Window window = grabWindow == null || xServer.grabManager.isOwnerEvents()
+                ? pointWindow.getAncestorWithEventMask(eventMask) : null;
+            if (window == null && grabWindow == null) {
+                Window focused = xServer.windowManager.getFocusedWindow();
+                if (focused != null) window = focused.getAncestorWithEventMask(eventMask);
+                if (window == null) window = pointWindow;
+            }
 
             if (grabWindow != null || window != null) {
                 Window eventWindow = window != null ? window : grabWindow;
@@ -194,17 +234,20 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
                 short x = xServer.pointer.getX();
                 short y = xServer.pointer.getY();
 
-                FullscreenTransformation fullscreenTransformation = eventWindow.getFullscreenTransformation();
-                if (fullscreenTransformation != null) {
-                    short[] transformedPoint = fullscreenTransformation.transformPointerCoords(x, y);
-                    x = transformedPoint[0];
-                    y = transformedPoint[1];
+                boolean useFs = eventWindow.getFullscreenTransformation() != null;
+                short[] localPoint = eventWindow.rootPointToLocal(x, y, useFs);
+                if (useFs) {
+                    FullscreenTransformation ft = eventWindow.getFullscreenTransformation();
+                    if (ft.width > 0 && ft.height > 0) {
+                        localPoint[0] = (short) Math.max(0, Math.min(eventWindow.getWidth() - 1,
+                            (localPoint[0] * eventWindow.getWidth()) / ft.width));
+                        localPoint[1] = (short) Math.max(0, Math.min(eventWindow.getHeight() - 1,
+                            (localPoint[1] * eventWindow.getHeight()) / ft.height));
+                    }
                 }
-
-                short[] localPoint = eventWindow.rootPointToLocal(x, y);
                 Window child = eventWindow.isAncestorOf(pointWindow) ? pointWindow : null;
                 ButtonRelease buttonRelease = new ButtonRelease(button.code(), xServer.windowManager.rootWindow, eventWindow, child, x, y, localPoint[0], localPoint[1], eventMask);
-                sendEvent(window, eventMask, buttonRelease);
+                sendEvent(window != null ? window : eventWindow, eventMask, buttonRelease);
             }
 
             if (xServer.pointer.getButtonMask().isEmpty() && xServer.grabManager.isReleaseWithButtons()) {
@@ -223,14 +266,17 @@ public class InputDeviceManager implements Pointer.OnPointerMotionListener, Keyb
         if (grabWindow != null || window != null) {
             Window eventWindow = window != null ? window : grabWindow;
 
-            FullscreenTransformation fullscreenTransformation = eventWindow.getFullscreenTransformation();
-            if (fullscreenTransformation != null) {
-                short[] transformedPoint = fullscreenTransformation.transformPointerCoords(x, y);
-                x = transformedPoint[0];
-                y = transformedPoint[1];
+            boolean useFs = eventWindow.getFullscreenTransformation() != null;
+            short[] localPoint = eventWindow.rootPointToLocal(x, y, useFs);
+            if (useFs) {
+                FullscreenTransformation ft = eventWindow.getFullscreenTransformation();
+                if (ft.width > 0 && ft.height > 0) {
+                    localPoint[0] = (short) Math.max(0, Math.min(eventWindow.getWidth() - 1,
+                        (localPoint[0] * eventWindow.getWidth()) / ft.width));
+                    localPoint[1] = (short) Math.max(0, Math.min(eventWindow.getHeight() - 1,
+                        (localPoint[1] * eventWindow.getHeight()) / ft.height));
+                }
             }
-
-            short[] localPoint = eventWindow.rootPointToLocal(x, y);
             Window child = eventWindow.isAncestorOf(pointWindow) ? pointWindow : null;
             sendEvent(window, eventMask, new MotionNotify(false, xServer.windowManager.rootWindow, eventWindow, child, x, y, localPoint[0], localPoint[1], getKeyButMask()));
         }

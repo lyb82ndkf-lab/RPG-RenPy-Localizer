@@ -52,8 +52,12 @@ class AndroidAiTranslationService {
         }
         if (sourceByNumber.isEmpty()) return JSONObject().put("ok", true).put("translations", JSONArray())
 
-        val system = "You are a professional game localization translator. Translate Japanese or English game dialogue, item names, UI text, and descriptions into Simplified Chinese. Keep RPG control codes, variables, file names, paths, tags, and placeholders unchanged. If a value is already Simplified Chinese, return it unchanged. Return only a valid JSON object whose keys match the input keys."
-        val user = "Translate the values of this JSON object into Simplified Chinese. Return only JSON, no markdown:\n$sourcePayload"
+        val targetLanguage = requestJson.optString(
+            "targetLang",
+            settings.optString("targetLang", "Simplified Chinese")
+        ).ifBlank { "Simplified Chinese" }
+        val system = "You are a professional game localization translator. Translate Japanese or English game dialogue, item names, UI text, and descriptions into $targetLanguage. Keep RPG control codes, variables, file names, paths, tags, and placeholders unchanged and in their original order. If a value is already in $targetLanguage, return it unchanged. Return only a valid JSON object whose keys match the input keys."
+        val user = "Translate the values of this JSON object into $targetLanguage. Return only JSON, no markdown:\n$sourcePayload"
         val raw = request("POST", chatUrl(provider, settings), provider, apiKey, chatPayload(provider, model, system, user, settings))
         val translated = parseTranslatedObject(extractJsonObject(responseText(provider, raw)))
         val results = JSONArray()
@@ -197,7 +201,8 @@ class AndroidAiTranslationService {
         private const val PROVIDER_OPENAI = "openai_compatible"
         private const val PROVIDER_ANTHROPIC = "anthropic_compatible"
         private const val PROVIDER_OLLAMA = "ollama"
-        private const val MAX_ENTRIES = 120
+        // Keep the mobile payload limit aligned with the desktop batch setting.
+        private const val MAX_ENTRIES = 200
         private const val CONNECT_TIMEOUT_MS = 45_000
         private const val READ_TIMEOUT_MS = 120_000
     }

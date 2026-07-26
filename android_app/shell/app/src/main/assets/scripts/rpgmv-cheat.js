@@ -233,6 +233,13 @@
       else if (action === 'alwaysDash' && window.ConfigManager) { ConfigManager.alwaysDash = on; if (ConfigManager.save) ConfigManager.save(); }
       else if (action === 'showFollowers' && window.$gamePlayer && $gamePlayer.followers) $gamePlayer.followers().setVisible(on);
       else if (action === 'openMenu' && window.SceneManager && window.Scene_Menu) SceneManager.push(Scene_Menu);
+      else if (action === 'teleport' && window.$gamePlayer && window.$gameMap) {
+        var parts = String(value || '').split(/[,\s]+/);
+        var tx = Math.max(0, Math.floor(num(parts[0], $gamePlayer.x || 0)));
+        var ty = Math.max(0, Math.floor(num(parts[1], $gamePlayer.y || 0)));
+        if ($gamePlayer.reserveTransfer) $gamePlayer.reserveTransfer($gameMap.mapId ? $gameMap.mapId() : 0, tx, ty, $gamePlayer.direction ? $gamePlayer.direction() : 2, 0);
+        else if ($gamePlayer.locate) $gamePlayer.locate(tx, ty);
+      }
       else if (action === 'quickSave' && window.DataManager) DataManager.saveGame(0);
       else if (action === 'allItems99') allItems(99);
       else if (action === 'allItems') allItems(value);
@@ -301,6 +308,10 @@
       speed: state.speed || 1,
       battleSpeed: state.battleSpeed || 1,
       expRate: state.expRate || 1,
+      through: !!state.noclip,
+      clickWarp: !!state.clickWarp,
+      godMode: !!state.godMode,
+      autoBattle: !!state.autoBattle,
       mapId: window.$gameMap && $gameMap.mapId ? $gameMap.mapId() : 0,
       x: window.$gamePlayer ? $gamePlayer.x : 0,
       y: window.$gamePlayer ? $gamePlayer.y : 0,

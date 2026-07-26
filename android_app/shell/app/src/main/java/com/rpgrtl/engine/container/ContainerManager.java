@@ -78,6 +78,25 @@ public class ContainerManager {
             handler.post(() -> callback.call(container));
         });
     }
+    public Container ensureDefaultContainer(String name) {
+        JSONObject data = new JSONObject();
+        try {
+            data.put("name", name == null || name.isEmpty() ? "RPGRenPyLocalizer" : name);
+            data.put("screenSize", Container.DEFAULT_SCREEN_SIZE);
+            data.put("envVars", Container.DEFAULT_ENV_VARS);
+            data.put("graphicsDriver", GraphicsDrivers.DEFAULT_VULKAN_DRIVER + "," + GraphicsDrivers.DEFAULT_OPENGL_DRIVER);
+            data.put("dxwrapper", Container.DEFAULT_DXWRAPPER);
+            data.put("audioDriver", Container.DEFAULT_AUDIO_DRIVER);
+            data.put("wincomponents", Container.DEFAULT_WINCOMPONENTS);
+            data.put("drives", Container.DEFAULT_DRIVES);
+            data.put("box64Preset", com.rpgrtl.engine.box64.Box64Preset.PERFORMANCE);
+            data.put("startupSelection", Container.STARTUP_SELECTION_ESSENTIAL);
+        } catch (JSONException e) {
+            return null;
+        }
+        return createContainer(data);
+    }
+
 
     public void duplicateContainerAsync(Container container, Runnable callback) {
         final Handler handler = new Handler();
@@ -246,11 +265,11 @@ public class ContainerManager {
 
     private boolean extractContainerPatternFile(String wineVersion, File containerDir) {
         if (WineInfo.isMainWineVersion(wineVersion)) {
-            boolean result = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "container_pattern.tzst", containerDir);
+            boolean result = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, "winlator/container_pattern.tzst", containerDir);
 
             if (result) {
                 try {
-                    JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "common_dlls.json"));
+                    JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "winlator/common_dlls.json"));
                     copyCommonDlls("x86_64-windows", "system32", commonDlls, containerDir);
                     copyCommonDlls("i386-windows", "syswow64", commonDlls, containerDir);
                 }

@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿#include <jni.h>
 #include <libgen.h>
 #include <sys/stat.h>
 

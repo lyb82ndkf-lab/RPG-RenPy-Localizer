@@ -329,6 +329,36 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .live-pane-head span { color: var(--muted); font-size: 10px; }
 .live-events-pane .el-alert { flex: 0 0 auto; }
 .live-events-pane .el-table { flex: 1 1 auto; min-height: 0; }
+.live-debug-dialog .el-dialog__body { padding-top: 10px; }
+.live-debug-shell { height: min(680px, 72vh); min-height: 520px; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 12px; overflow: hidden; }
+.live-debug-side,
+.live-debug-main { min-height: 0; border: 1px solid var(--line); background: rgba(255,255,255,.022); }
+.live-debug-side { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px; overflow: hidden; }
+.live-debug-main { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; padding: 12px; overflow: hidden; }
+.live-debug-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.live-debug-metrics div { min-width: 0; padding: 10px; border: 1px solid rgba(255,255,255,.07); background: rgba(0,0,0,.12); }
+.live-debug-metrics span,
+.live-debug-current span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.live-debug-metrics strong { color: var(--text); font-size: 16px; }
+.live-debug-tree { min-height: 0; overflow: auto; padding: 4px; background: rgba(0,0,0,.1); }
+.live-debug-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.live-debug-actions .el-button { margin: 0; }
+.live-debug-current { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 58px; padding: 10px 12px; border: 1px solid rgba(77,214,200,.2); background: rgba(77,214,200,.055); }
+.live-debug-current > div { min-width: 0; }
+.live-debug-current strong { display: block; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-debug-tabs { min-height: 0; overflow: hidden; }
+.live-debug-tabs .el-tabs__content,
+.live-debug-tabs .el-tab-pane { height: 100%; min-height: 0; overflow: hidden; }
+.live-debug-json textarea { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 12px; line-height: 1.45; }
+.live-debug-shell.simplified { display: block; height: min(680px, 72vh); min-height: 520px; }
+.live-debug-shell.simplified .live-debug-main { height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr) auto; }
+.live-debug-metrics.compact { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.live-debug-metrics.compact div { padding: 8px 10px; }
+.live-debug-metrics.compact strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-debug-current small { display: block; margin-top: 5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-debug-notice { padding: 8px 10px; border-left: 3px solid var(--warning); background: rgba(235, 170, 52, .08); color: var(--text); font-size: 12px; }
+.live-debug-actions.horizontal { display: flex; flex-wrap: wrap; grid-template-columns: none; }
+@media (max-width: 720px) { .live-debug-metrics.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 *::-webkit-scrollbar { width: 9px; height: 9px; }
 *::-webkit-scrollbar-track { background: rgba(255,255,255,.025); }
 *::-webkit-scrollbar-thumb { background: rgba(112,150,160,.55); border: 3px solid rgba(8, 17, 29, .92); border-radius: 999px; }

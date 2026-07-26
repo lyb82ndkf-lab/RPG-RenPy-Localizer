@@ -1,4 +1,4 @@
-#include <jni.h>
+﻿#include <jni.h>
 #include <wchar.h>
 #include <android/log.h>
 

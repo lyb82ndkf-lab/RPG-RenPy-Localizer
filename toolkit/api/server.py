@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ctypes
 import hashlib
 import json
@@ -97,6 +98,8 @@ class ToolkitApi:
         self.live_worker_thread: threading.Thread | None = None
         self.live_worker_project = ""
         self.live_worker_stats: JsonDict = {"running": False, "state": "stopped", "translated": 0, "failures": 0, "lastError": "", "lastSource": "", "startedAt": 0.0}
+        self.live_debug_events: list[JsonDict] = []
+        self.live_debug_seq = 0
         self.lock = threading.RLock()
 
     def health(self) -> JsonDict:
@@ -938,6 +941,73 @@ class ToolkitApi:
             return status
         return {"running": False}
 
+    def live_debug(self, query: JsonDict) -> JsonDict:
+        service = self._service()
+        limit = _clamp_int(query.get("limit"), 160, 20, 500)
+        autostart = str(query.get("autostart") or "").lower() in {"1", "true", "yes"}
+        if str(query.get("clear") or "").lower() in {"1", "true", "yes"}:
+            with self.lock:
+                self.live_debug_events.clear()
+            if hasattr(service, "append_live_debug_event"):
+                service.append_live_debug_event("debug_clear", "Electron debug view cleared")
+        status = self.live_status()
+        worker_running = bool(status.get("worker", {}).get("running")) if isinstance(status.get("worker"), dict) else False
+        if autostart and isinstance(service, RenPyService) and not worker_running and (status.get("connected") or int(status.get("queue_count") or 0) > 0):
+            service.install_live_translation_bridge(False)
+            self._start_live_worker(service)
+            self._record_live_debug("worker", "autostart_live_worker", {"connected": bool(status.get("connected")), "queue_count": int(status.get("queue_count") or 0)})
+            status = self.live_status()
+        service_events = []
+        if hasattr(service, "read_live_debug_entries"):
+            service_events = _plain(service.read_live_debug_entries(min(limit, 120)))
+        elif hasattr(service, "read_live_debug_events"):
+            service_events = _plain(service.read_live_debug_events(min(limit, 120)))
+        with self.lock:
+            worker_events = list(self.live_debug_events)[-limit:]
+            worker = dict(self.live_worker_stats)
+        tree = [
+            {
+                "id": "bridge",
+                "label": "Hook / Bridge",
+                "children": [
+                    {"id": "bridge-running", "label": f"Local server: {'running' if status.get('running') else 'stopped'}"},
+                    {"id": "bridge-connected", "label": f"Game hook: {'connected' if status.get('connected') else 'waiting'}"},
+                    {"id": "bridge-queue", "label": f"Queue: {status.get('queue_count', 0)}"},
+                    {"id": "bridge-translations", "label": f"Injected cache: {status.get('translation_count', 0)}"},
+                ],
+            },
+            {
+                "id": "worker",
+                "label": "AI Worker",
+                "children": [
+                    {"id": "worker-state", "label": f"State: {worker.get('state', 'unknown')}"},
+                    {"id": "worker-translated", "label": f"Translated: {worker.get('translated', 0)}"},
+                    {"id": "worker-failures", "label": f"Failures: {worker.get('failures', 0)}"},
+                    {"id": "worker-last", "label": f"Last source: {str(worker.get('lastSource') or '')[:80]}"},
+                ],
+            },
+        ]
+        return {
+            "ok": True,
+            "status": status,
+            "worker": worker,
+            "tree": tree,
+            "debugEvents": _plain(worker_events),
+            "hookEvents": service_events,
+        }
+
+    def live_force_text(self, body: JsonDict) -> JsonDict:
+        service = self._service()
+        if not hasattr(service, "force_live_text"):
+            raise ApiError("当前引擎不支持强制替换当前文本。")
+        text = str(body.get("text") or "hello")
+        try:
+            seq = service.force_live_text(text)
+        except RuntimeError as exc:
+            raise ApiError(str(exc), 409) from exc
+        self._record_live_debug("inject", "force_text", {"text": text, "notify_seq": seq})
+        return {"ok": True, "seq": seq, "text": text}
+
     def live_merge(self, body: JsonDict) -> JsonDict:
         source = str(body.get("source") or "")
         target = str(body.get("target") or "")
@@ -951,10 +1021,44 @@ class ToolkitApi:
         count = self._service().notify_game_refresh()
         return {"ok": True, "count": count}
 
+    def _record_live_debug(self, stage: str, title: str, payload: object = "") -> None:
+        with self.lock:
+            self.live_debug_seq += 1
+            event = {
+                "seq": self.live_debug_seq,
+                "time": time.time(),
+                "stage": str(stage or "debug"),
+                "title": str(title or stage or "debug"),
+                "payload": self._redact_debug_payload(payload),
+            }
+            self.live_debug_events.append(event)
+            if len(self.live_debug_events) > 2000:
+                del self.live_debug_events[: len(self.live_debug_events) - 2000]
+
+    def _redact_debug_payload(self, value: object) -> object:
+        if isinstance(value, dict):
+            result: JsonDict = {}
+            for key, item in value.items():
+                name = str(key)
+                if name.lower() in {"apikey", "api_key", "authorization", "x-api-key"}:
+                    text = str(item or "")
+                    result[name] = (text[:6] + "..." + text[-4:]) if len(text) > 12 else ("***" if text else "")
+                else:
+                    result[name] = self._redact_debug_payload(item)
+            return result
+        if isinstance(value, list):
+            return [self._redact_debug_payload(item) for item in value[:200]]
+        return value
+
     @staticmethod
     def _is_live_translation_source(text: str) -> bool:
         value = str(text or "").strip()
         if len(value) < 2 or len(value) > 2000:
+            return False
+        # Paths are often encountered while walking Ren'Py's AST (resource
+        # directory, archive name, script origin). They contain letters but are
+        # never player-facing dialogue and must not occupy an AI worker slot.
+        if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith(("/", "\\", "./", "../", "~/")):
             return False
         clean = re.sub(r"\{[^}]*\}", "", value).strip()
         if not clean or re.fullmatch(r"[\W_]+", clean):
@@ -963,6 +1067,8 @@ class ToolkitApi:
         if re.fullmatch(r"https?://\S+|www\.\S+", lowered):
             return False
         if re.fullmatch(r"\S+\.(?:png|jpe?g|webp|ogg|wav|mp3|json|rpyc?|rpa|exe)", lowered):
+            return False
+        if re.search(r"[\\/]", clean) and re.fullmatch(r"[A-Za-z0-9._ ()\-\\/]+", clean):
             return False
         return any("a" <= char.lower() <= "z" or "\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff" for char in clean)
 
@@ -984,7 +1090,10 @@ class ToolkitApi:
             "baseUrl": str(ai.get("baseUrl") or ""),
             "model": str(ai.get("model") or ""),
             "targetLang": str(ai.get("targetLang") or "简体中文"),
-            "batchSize": max(1, min(int(ai.get("batchSize") or 20), 50)),
+            "batchSize": max(1, min(int(ai.get("batchSize") or 20), 200)),
+            "concurrency": max(1, min(int(ai.get("concurrency") or ai.get("threads") or 1), 8)),
+            "requestIntervalMs": max(0, min(int(ai.get("requestIntervalMs") or ai.get("rateLimitMs") or 1200), 60000)),
+            "windowSize": 300,
         }
 
     def _start_live_worker(self, service: Any) -> None:
@@ -995,7 +1104,7 @@ class ToolkitApi:
         self.live_worker_stop = threading.Event()
         self.live_worker_project = project_root
         with self.lock:
-            self.live_worker_stats = {"running": True, "state": "waiting", "translated": 0, "failures": 0, "lastError": "", "lastSource": "", "startedAt": time.time()}
+            self.live_worker_stats = {"running": True, "state": "waiting", "translated": 0, "failures": 0, "lastError": "", "lastSource": "", "activeBatches": 0, "batchSize": 0, "concurrency": 1, "startedAt": time.time()}
         self.live_worker_thread = threading.Thread(target=self._live_worker_loop, args=(service, self.live_worker_stop, project_root), daemon=True, name="renpy-live-translator")
         self.live_worker_thread.start()
 
@@ -1010,6 +1119,44 @@ class ToolkitApi:
             self.live_worker_stats["running"] = False
             self.live_worker_stats["state"] = "stopped"
 
+    def _filter_live_translations(self, service: Any, sources: list[str], targets: list[str]) -> tuple[dict[str, str], list[str]]:
+        translated: dict[str, str] = {}
+        missing: list[str] = []
+        for source, target in zip(sources, targets):
+            value = str(target or "").strip()
+            if not value or value == source:
+                missing.append(source)
+                continue
+            if isinstance(service, RenPyService) and not RenPyService.control_tokens_preserved(source, value):
+                missing.append(source)
+                continue
+            if isinstance(service, RPGMakerService) and not RPGMakerService.control_tokens_preserved(source, value):
+                missing.append(source)
+                continue
+            translated[source] = value
+        if len(targets) < len(sources):
+            missing.extend(sources[len(targets):])
+        return translated, missing
+
+    def _translate_live_candidates_with_repair(self, service: Any, candidates: list[str], config: JsonDict) -> tuple[dict[str, str], list[str]]:
+        try:
+            targets = self._translate_openai_compatible(candidates, config)
+        except ApiError as exc:
+            # A timeout means the provider received a batch that is too expensive
+            # for its current queue.  Split it immediately instead of making the
+            # user wait for the whole batch to retry unchanged.
+            if exc.status == 504 and len(candidates) > 1:
+                midpoint = max(1, len(candidates) // 2)
+                self._record_live_debug("api", "timeout_split_retry", {"count": len(candidates), "left": midpoint, "right": len(candidates) - midpoint, "reason": str(exc)})
+                left_translated, left_missing = self._translate_live_candidates_with_repair(service, candidates[:midpoint], config)
+                right_translated, right_missing = self._translate_live_candidates_with_repair(service, candidates[midpoint:], config)
+                left_translated.update(right_translated)
+                return left_translated, left_missing + right_missing
+            raise
+        self._record_live_debug("api", "parsed_translations", {"sources": candidates, "targets": targets})
+        translated, missing = self._filter_live_translations(service, candidates, targets)
+        return translated, missing
+
     def _live_worker_loop(self, service: Any, stop_event: threading.Event, project_root: str) -> None:
         failure_streak = 0
         source_attempts: dict[str, int] = {}
@@ -1017,12 +1164,54 @@ class ToolkitApi:
         while not stop_event.is_set() and self.live_worker_project == project_root:
             config = self._live_ai_config()
             batch_size = int(config["batchSize"])
+            concurrency = int(config["concurrency"])
+            wave_size = min(int(config["windowSize"]), batch_size * concurrency)
             now = time.monotonic()
-            raw_candidates = service.take_live_translation_candidates(batch_size)
-            deferred = [source for source in raw_candidates if self._is_live_translation_source(source) and retry_after.get(source, 0.0) > now]
+            # A visible line is the only latency-critical item.  Future lines
+            # may use normal backoff after a malformed/partial AI response, but
+            # never let that backoff prevent the player from receiving the line
+            # currently on screen.
+            try:
+                current_source = str(service.live_bridge_status().get("current_source", "") or "").strip()
+            except Exception:
+                current_source = ""
+            raw_candidates = service.take_live_translation_candidates(wave_size)
+            deferred = [source for source in raw_candidates if self._is_live_translation_source(source) and source != current_source and retry_after.get(source, 0.0) > now]
             if deferred:
                 service.requeue_live_translation_candidates(deferred)
-            candidates = [source for source in raw_candidates if self._is_live_translation_source(source) and retry_after.get(source, 0.0) <= now]
+            candidates = [source for source in raw_candidates if self._is_live_translation_source(source) and (source == current_source or retry_after.get(source, 0.0) <= now)]
+
+            # The runtime AST often ends at a jump/menu after a few nodes. Once
+            # the visible line gives us a reliable anchor, refill from the
+            # extracted script order so a configured 50 x 4 worker can actually
+            # receive up to 200 upcoming entries instead of only 6 or 7.
+            seeded = 0
+            if isinstance(service, RenPyService) and candidates and len(candidates) < wave_size and self.translation_entries:
+                seeded = service.seed_live_translation_queue(self.translation_entries, candidates[0], config["windowSize"])
+                if seeded:
+                    extra_raw = service.take_live_translation_candidates(wave_size - len(candidates))
+                    existing = set(candidates)
+                    for source in extra_raw:
+                        if not self._is_live_translation_source(source) or source in existing:
+                            continue
+                        if source != current_source and retry_after.get(source, 0.0) > now:
+                            service.requeue_live_translation_candidates([source])
+                            continue
+                        candidates.append(source)
+                        existing.add(source)
+            if raw_candidates:
+                self._record_live_debug("capture", "candidate_batch", {
+                    "raw_count": len(raw_candidates),
+                    "candidate_count": len(candidates),
+                    "deferred_count": len(deferred),
+                    "seeded_count": seeded,
+                    "batch_size": batch_size,
+                    "concurrency": concurrency,
+                    "wave_size": wave_size,
+                    "raw": raw_candidates,
+                    "accepted": candidates,
+                    "deferred": deferred,
+                })
             if not candidates:
                 with self.lock:
                     self.live_worker_stats["state"] = "waiting"
@@ -1035,24 +1224,95 @@ class ToolkitApi:
                 stop_event.wait(2.0)
                 continue
             with self.lock:
-                self.live_worker_stats.update({"state": "translating", "lastSource": candidates[0], "lastError": ""})
+                self.live_worker_stats.update({"state": "translating", "lastSource": candidates[0], "lastError": "", "activeBatches": min(concurrency, (len(candidates) + batch_size - 1) // batch_size), "batchSize": batch_size, "concurrency": concurrency})
             try:
-                targets = self._translate_openai_compatible(candidates, config)
-                translated = {
-                    source: str(target or "").strip()
-                    for source, target in zip(candidates, targets)
-                    if str(target or "").strip()
-                    and str(target or "").strip() != source
-                    and (
-                        (not isinstance(service, RenPyService) or RenPyService.control_tokens_preserved(source, str(target or "").strip()))
-                        and (not isinstance(service, RPGMakerService) or RPGMakerService.control_tokens_preserved(source, str(target or "").strip()))
-                    )
-                }
+                debug_config = dict(config)
+                debug_config["_debugLive"] = True
+                chunks = [candidates[index:index + batch_size] for index in range(0, len(candidates), batch_size)]
+                translated: dict[str, str] = {}
+                missing: list[str] = []
+                request_lock = threading.Lock()
+                next_request_at = [0.0]
+
+                def translate_chunks_parallel(work_chunks: list[list[str]], phase: str) -> tuple[dict[str, str], list[str]]:
+                    phase_translated: dict[str, str] = {}
+                    phase_missing: list[str] = []
+                    if not work_chunks:
+                        return phase_translated, phase_missing
+
+                    self._record_live_debug("api", "parallel_batch_wave", {
+                        "candidate_count": sum(len(chunk) for chunk in work_chunks),
+                        "batch_count": len(work_chunks),
+                        "batch_size": max(len(chunk) for chunk in work_chunks),
+                        "concurrency": concurrency,
+                        "window_size": config["windowSize"],
+                        "phase": phase,
+                    })
+
+                    def translate_chunk(chunk: list[str]) -> tuple[dict[str, str], list[str]]:
+                        interval = float(config["requestIntervalMs"]) / 1000.0
+                        with request_lock:
+                            delay = max(0.0, next_request_at[0] - time.monotonic())
+                            next_request_at[0] = max(next_request_at[0], time.monotonic()) + interval
+                        if delay:
+                            time.sleep(delay)
+                        return self._translate_live_candidates_with_repair(service, chunk, debug_config)
+
+                    with ThreadPoolExecutor(max_workers=min(concurrency, len(work_chunks)), thread_name_prefix="renpy-live-batch") as pool:
+                        futures = {pool.submit(translate_chunk, chunk): chunk for chunk in work_chunks}
+                        for future in as_completed(futures):
+                            chunk = futures[future]
+                            try:
+                                chunk_translated, chunk_missing = future.result()
+                                phase_translated.update(chunk_translated)
+                                phase_missing.extend(chunk_missing)
+                            except Exception as exc:
+                                phase_missing.extend(chunk)
+                                self._record_live_debug("error", "batch_request_failed", {"count": len(chunk), "sources": chunk, "error": str(exc), "phase": phase})
+                    return phase_translated, phase_missing
+
+                initial_translated, missing = translate_chunks_parallel(chunks, "primary")
+                translated.update(initial_translated)
+
+                # Some providers reject a large JSON batch but answer the same
+                # entries correctly in a smaller request. Retry those entries in
+                # compact batches while retaining the user's concurrency limit;
+                # never degrade a failed 50-item batch into 50 serial calls.
+                if missing and batch_size > 1:
+                    repair_size = max(2, min(20, (batch_size + 2) // 3))
+                    repair_chunks = [missing[index:index + repair_size] for index in range(0, len(missing), repair_size)]
+                    self._record_live_debug("api", "parallel_repair_wave", {
+                        "candidate_count": len(missing),
+                        "batch_count": len(repair_chunks),
+                        "batch_size": repair_size,
+                        "concurrency": concurrency,
+                    })
+                    repaired, missing = translate_chunks_parallel(repair_chunks, "repair")
+                    translated.update(repaired)
+
+                # Futures finish in arbitrary order; restore the game-script
+                # order before requeuing so current/upcoming dialogue keeps its
+                # natural priority even after a parallel retry wave.
                 missing = [source for source in candidates if source not in translated]
+
+                # A partial batch response must not make the player wait for a
+                # normal exponential retry.  Give the currently visible line
+                # one focused request immediately; all look-ahead lines remain
+                # on the configured parallel batch path.
+                if current_source and current_source in missing:
+                    self._record_live_debug("api", "urgent_current_retry", {"source": current_source})
+                    try:
+                        urgent_targets = self._translate_openai_compatible([current_source], debug_config)
+                        urgent_translated, _ = self._filter_live_translations(service, [current_source], urgent_targets)
+                        if urgent_translated:
+                            translated.update(urgent_translated)
+                            missing = [source for source in missing if source != current_source]
+                    except Exception as exc:
+                        self._record_live_debug("error", "urgent_current_retry_failed", {"source": current_source, "error": str(exc)})
+
                 if translated:
                     service.merge_live_translations(translated, kind="automatic")
-                    if hasattr(service, "write_live_translation_table"):
-                        service.write_live_translation_table(translated)
+                    self._record_live_debug("inject", "merge_live_translations", {"count": len(translated), "translations": translated})
                     with self.lock:
                         for entry in self.translation_entries:
                             if entry.source in translated:
@@ -1065,23 +1325,28 @@ class ToolkitApi:
                         retry_after.pop(source, None)
                 if missing:
                     service.requeue_live_translation_candidates(missing)
+                    self._record_live_debug("filter", "translation_rejected", {"count": len(missing), "sources": missing})
                     for source in missing:
                         source_attempts[source] = source_attempts.get(source, 0) + 1
-                        retry_after[source] = time.monotonic() + min(30.0, 2.0 ** min(source_attempts[source], 5))
+                        retry_delay = 0.5 if source == current_source else min(30.0, 2.0 ** min(source_attempts[source], 5))
+                        retry_after[source] = time.monotonic() + retry_delay
                     with self.lock:
-                        self.live_worker_stats["failures"] = int(self.live_worker_stats.get("failures", 0)) + len(missing)
-                        self.live_worker_stats["lastError"] = f"{len(missing)} 条译文为空、与原文相同或丢失控制符，已延迟重试。"
+                        if any(source_attempts.get(source, 0) >= 3 for source in missing):
+                            self.live_worker_stats["failures"] = int(self.live_worker_stats.get("failures", 0)) + len(missing)
+                        self.live_worker_stats["lastError"] = f"{len(missing)} 条译文暂未可用，已自动拆小批并延迟重试。"
                 failure_streak = 0
                 with self.lock:
                     self.live_worker_stats["state"] = "waiting"
+                    self.live_worker_stats["activeBatches"] = 0
                     if not missing:
                         self.live_worker_stats["lastError"] = ""
             except Exception as exc:
                 service.requeue_live_translation_candidates(candidates)
+                self._record_live_debug("error", "live_worker_exception", {"error": str(exc), "sources": candidates})
                 failure_streak += 1
                 with self.lock:
                     self.live_worker_stats["failures"] = int(self.live_worker_stats.get("failures", 0)) + 1
-                    self.live_worker_stats.update({"state": "retrying", "lastError": str(exc)})
+                    self.live_worker_stats.update({"state": "retrying", "activeBatches": 0, "lastError": str(exc)})
                 stop_event.wait(min(30.0, 2.0 ** min(failure_streak, 5)))
         with self.lock:
             self.live_worker_stats["running"] = False
@@ -1271,10 +1536,11 @@ class ToolkitApi:
         target_lang = str(body.get("targetLang") or "简体中文")
         source_lang = str(body.get("sourceLang") or "自动")
         prompt = (
-            f"你是专业游戏本地化译者。请把以下 {source_lang} 游戏文本翻译成 {target_lang}，必须输出简体中文译文。"
-            "保持 RPG Maker/Ren'Py 控制符、变量、换行和占位符不变。"
-            "除非原文已经是目标语言、纯数字、纯符号或不可翻译控制符，否则不要原样返回原文。"
-            "只返回 JSON 数组，顺序与输入一致，不要解释。"
+            f"你是专业视觉小说本地化译者。把输入数组中的 {source_lang} 游戏文本逐条翻译为 {target_lang}。"
+            "只翻译玩家可见的台词、旁白与选项；保留 Ren'Py/RPG Maker 控制符、变量、文本标签、换行、占位符和人名标记，例如 [mc]、{i}、{w}。"
+            "译文要自然、符合角色语气；不要翻译路径、文件名或代码。"
+            "输出必须且只能是一个 JSON 对象，格式严格为 {\"translations\":[\"译文1\",\"译文2\"]}。"
+            "translations 数组长度必须等于输入长度，按原顺序对应；不要 Markdown、不要解释、不要把原文作为 JSON 的键。"
         )
         if provider == "anthropic":
             url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
@@ -1285,10 +1551,17 @@ class ToolkitApi:
                 "system": prompt,
                 "messages": [{"role": "user", "content": json.dumps(texts, ensure_ascii=False)}],
             }
+            if body.get("_debugLive"):
+                self._record_live_debug("api", "submit_request", {"provider": provider, "url": url, "count": len(texts), "texts": texts, "payload": payload})
             raw = self._http_json(url, payload, {"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"}, timeout=self._ai_timeout(body))
+            if body.get("_debugLive"):
+                self._record_live_debug("api", "raw_response", {"provider": provider, "raw": raw})
             blocks = raw.get("content") or []
             content = "".join(str(item.get("text") or "") for item in blocks if isinstance(item, dict))
-            return self._parse_translation_array(content, len(texts))
+            result = self._parse_translation_array(content, len(texts))
+            if body.get("_debugLive"):
+                self._record_live_debug("api", "response_content", {"content": content, "translations": result})
+            return result
         url = base_url
         if not url.endswith("/chat/completions"):
             url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
@@ -1307,17 +1580,26 @@ class ToolkitApi:
         if api_key and provider != "ollama":
             headers["Authorization"] = f"Bearer {api_key}"
         try:
+            if body.get("_debugLive"):
+                self._record_live_debug("api", "submit_request", {"provider": provider, "url": url, "count": len(texts), "texts": texts, "payload": payload, "headers": headers})
             raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
         except ApiError as exc:
             if exc.status not in {400, 404, 422}:
                 raise
             payload.pop("response_format", None)
             payload.pop("max_tokens", None)
+            if body.get("_debugLive"):
+                self._record_live_debug("api", "retry_request", {"provider": provider, "url": url, "reason": str(exc), "payload": payload, "headers": headers})
             raw = self._http_json(url, payload, headers, timeout=self._ai_timeout(body))
+        if body.get("_debugLive"):
+            self._record_live_debug("api", "raw_response", {"provider": provider, "raw": raw})
         content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
         if isinstance(content, list):
             content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-        return self._parse_translation_array(content, len(texts))
+        result = self._parse_translation_array(content, len(texts))
+        if body.get("_debugLive"):
+            self._record_live_debug("api", "response_content", {"content": content, "translations": result})
+        return result
 
     def _translate_baidu(self, texts: list[str], body: JsonDict) -> list[str]:
         appid = str(body.get("appId") or body.get("apiKey") or "")
@@ -1370,11 +1652,11 @@ class ToolkitApi:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
             raise ApiError(f"HTTP {exc.code}: {detail}", exc.code)
         except (TimeoutError, socket.timeout) as exc:
-            raise ApiError(f"AI request timed out: {exc}. Reduce batch size or increase request timeout seconds in AI settings.", 504)
+            raise ApiError(f"AI 请求超时：{exc}。实时翻译会自动拆分队列后重试。", 504)
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
             if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
-                raise ApiError(f"AI request timed out: {reason}. Reduce batch size or increase request timeout seconds in AI settings.", 504)
+                raise ApiError(f"AI 请求超时：{reason}。实时翻译会自动拆分队列后重试。", 504)
             raise
 
     @staticmethod
@@ -1447,6 +1729,16 @@ class ToolkitApi:
             if isinstance(parsed, dict) and isinstance(parsed.get("translations"), dict):
                 values = [str(value) for value in parsed["translations"].values()]
                 return (values + [""] * expected)[:expected]
+            if isinstance(parsed, dict):
+                # Common small-model variants: {"text":"..."},
+                # {"translation":"..."}, or a single {"source":"target"}
+                # mapping.  Accept the value, never the whole JSON string.
+                for key in ("text", "translation", "target", "result", "content"):
+                    if key in parsed and isinstance(parsed[key], (str, int, float)):
+                        return [str(parsed[key])] + [""] * (expected - 1)
+                scalar_values = [str(value) for value in parsed.values() if isinstance(value, (str, int, float))]
+                if scalar_values:
+                    return (scalar_values + [""] * expected)[:expected]
         except Exception:
             pass
         lines = [line.strip() for line in content.splitlines() if line.strip()]
@@ -1575,8 +1867,10 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/live/start": return api.live_start(body)
     if method == "POST" and path == "/live/stop": return api.live_stop()
     if method == "GET" and path == "/live/status": return api.live_status()
+    if method == "GET" and path == "/live/debug": return api.live_debug(query)
     if method == "POST" and path == "/live/merge": return api.live_merge(body)
     if method == "POST" and path == "/live/refresh": return api.live_refresh()
+    if method == "POST" and path == "/live/force-text": return api.live_force_text(body)
     if method == "POST" and path == "/ai/translate": return api.ai_translate(body)
     if method == "POST" and path == "/ai/models": return api.ai_models(body)
     raise ApiError(f"未知接口：{method} {path}", 404)

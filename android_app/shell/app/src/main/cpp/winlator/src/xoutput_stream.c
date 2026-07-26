@@ -1,4 +1,4 @@
-#include <malloc.h>
+﻿#include <malloc.h>
 #include <string.h>
 #include <jni.h>
 #include <unistd.h>

@@ -19,6 +19,8 @@ public class Pixmap extends XResource {
         return bitmap;
     }
 
-    private static native void toBitmap(ByteBuffer colorData, ByteBuffer maskData, Bitmap bitmap);
+    private static void toBitmap(ByteBuffer colorData, ByteBuffer maskData, Bitmap bitmap) {
+        com.winlator.xserver.Pixmap.toBitmap(colorData, maskData, bitmap);
+    }
 }
 

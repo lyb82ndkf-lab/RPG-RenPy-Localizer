@@ -89,39 +89,65 @@ public class XInputStream {
         destroy(nativePtr);
     }
 
-    private native long nativeAllocate(int fd, int initialCapacity);
+    private long nativeAllocate(int fd, int initialCapacity) {
+        return com.winlator.xconnector.XInputStream.nativeAllocate(fd, initialCapacity);
+    }
 
     @CriticalNative
-    private static native byte readByte(long nativePtr);
+    private static byte readByte(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.readByte(nativePtr);
+    }
 
     @CriticalNative
-    private static native short readShort(long nativePtr);
+    private static short readShort(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.readShort(nativePtr);
+    }
 
     @CriticalNative
-    private static native int readInt(long nativePtr);
+    private static int readInt(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.readInt(nativePtr);
+    }
 
     @CriticalNative
-    private static native long readLong(long nativePtr);
+    private static long readLong(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.readLong(nativePtr);
+    }
 
-    private static native ByteBuffer readByteBuffer(long nativePtr, int length);
-
-    @CriticalNative
-    private static native void skip(long nativePtr, int length);
-
-    @CriticalNative
-    private static native int available(long nativePtr);
-
-    private static native int readMoreData(long nativePtr, boolean canReceiveAncillaryMessages);
+    private static ByteBuffer readByteBuffer(long nativePtr, int length) {
+        return com.winlator.xconnector.XInputStream.readByteBuffer(nativePtr, length);
+    }
 
     @CriticalNative
-    private static native int getActivePosition(long nativePtr);
+    private static void skip(long nativePtr, int length) {
+        com.winlator.xconnector.XInputStream.skip(nativePtr, length);
+    }
 
     @CriticalNative
-    private static native void setActivePosition(long nativePtr, int activePosition);
+    private static int available(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.available(nativePtr);
+    }
+
+    private static int readMoreData(long nativePtr, boolean canReceiveAncillaryMessages) {
+        return com.winlator.xconnector.XInputStream.readMoreData(nativePtr, canReceiveAncillaryMessages);
+    }
 
     @CriticalNative
-    private static native int getAncillaryFd(long nativePtr);
+    private static int getActivePosition(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.getActivePosition(nativePtr);
+    }
 
-    private static native void destroy(long nativePtr);
+    @CriticalNative
+    private static void setActivePosition(long nativePtr, int activePosition) {
+        com.winlator.xconnector.XInputStream.setActivePosition(nativePtr, activePosition);
+    }
+
+    @CriticalNative
+    private static int getAncillaryFd(long nativePtr) {
+        return com.winlator.xconnector.XInputStream.getAncillaryFd(nativePtr);
+    }
+
+    private static void destroy(long nativePtr) {
+        com.winlator.xconnector.XInputStream.destroy(nativePtr);
+    }
 }
 

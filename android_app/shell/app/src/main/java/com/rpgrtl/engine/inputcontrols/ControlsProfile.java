@@ -217,11 +217,32 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
         virtualGamepad = false;
 
         File file = getProfileFile(context, id);
-        if (!file.isFile()) return;
+        if (!file.isFile()) {
+            // Seed from assets if missing.
+            tryReseedFromAssets(file);
+            if (!file.isFile()) return;
+        }
 
         try {
-            JSONObject profileJSONObject = new JSONObject(FileUtils.readString(file));
-            JSONArray elementsJSONArray = profileJSONObject.getJSONArray("elements");
+            String raw = FileUtils.readString(file);
+            JSONObject profileJSONObject = new JSONObject(raw);
+            JSONArray elementsJSONArray = profileJSONObject.optJSONArray("elements");
+            if (elementsJSONArray == null || elementsJSONArray.length() == 0) {
+                // Corrupted / emptied by a bad migration — reseed once from assets.
+                if (tryReseedFromAssets(file)) {
+                    profileJSONObject = new JSONObject(FileUtils.readString(file));
+                    elementsJSONArray = profileJSONObject.optJSONArray("elements");
+                }
+            }
+            if (elementsJSONArray == null) elementsJSONArray = new JSONArray();
+
+            int maxW = inputControlsView != null ? Math.max(1, inputControlsView.getMaxWidth()) : 1;
+            int maxH = inputControlsView != null ? Math.max(1, inputControlsView.getMaxHeight()) : 1;
+            if (inputControlsView != null) {
+                if (maxW <= 1) maxW = Math.max(1, inputControlsView.getWidth());
+                if (maxH <= 1) maxH = Math.max(1, inputControlsView.getHeight());
+            }
+
             for (int i = 0; i < elementsJSONArray.length(); i++) {
                 JSONObject elementJSONObject = elementsJSONArray.getJSONObject(i);
 
@@ -230,12 +251,12 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
                     element = new ControlElement(inputControlsView);
                     element.setType(ControlElement.Type.valueOf(elementJSONObject.getString("type")));
                     element.setShape(ControlElement.Shape.valueOf(elementJSONObject.getString("shape")));
-                    element.setToggleSwitch(elementJSONObject.getBoolean("toggleSwitch"));
-                    element.setX((int)(elementJSONObject.getDouble("x") * inputControlsView.getMaxWidth()));
-                    element.setY((int)(elementJSONObject.getDouble("y") * inputControlsView.getMaxHeight()));
+                    element.setToggleSwitch(elementJSONObject.optBoolean("toggleSwitch", false));
+                    element.setX((int)(elementJSONObject.getDouble("x") * maxW));
+                    element.setY((int)(elementJSONObject.getDouble("y") * maxH));
                     element.setScale((float)elementJSONObject.getDouble("scale"));
-                    element.setText(elementJSONObject.getString("text"));
-                    element.setIconId(elementJSONObject.getInt("iconId"));
+                    element.setText(elementJSONObject.optString("text", ""));
+                    element.setIconId(elementJSONObject.optInt("iconId", 0));
                     if (elementJSONObject.has("range")) element.setRange(ControlElement.Range.valueOf(elementJSONObject.getString("range")));
                     if (elementJSONObject.has("orientation")) element.setOrientation((byte)elementJSONObject.getInt("orientation"));
                     if (elementJSONObject.has("mouseMoveMode")) element.setMouseMoveMode(true);
@@ -243,11 +264,13 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
                 }
 
                 boolean hasGamepadBinding = true;
-                JSONArray bindingsJSONArray = elementJSONObject.getJSONArray("bindings");
-                for (int j = 0; j < bindingsJSONArray.length(); j++) {
-                    Binding binding = Binding.fromString(bindingsJSONArray.getString(j));
-                    if (element != null) element.setBindingAt(j, Binding.fromString(bindingsJSONArray.getString(j)));
-                    if (!binding.isGamepad()) hasGamepadBinding = false;
+                JSONArray bindingsJSONArray = elementJSONObject.optJSONArray("bindings");
+                if (bindingsJSONArray != null) {
+                    for (int j = 0; j < bindingsJSONArray.length(); j++) {
+                        Binding binding = Binding.fromString(bindingsJSONArray.getString(j));
+                        if (element != null) element.setBindingAt(j, binding);
+                        if (!binding.isGamepad()) hasGamepadBinding = false;
+                    }
                 }
 
                 if (!virtualGamepad && hasGamepadBinding) virtualGamepad = true;
@@ -257,6 +280,23 @@ public class ControlsProfile implements Comparable<ControlsProfile>, GamepadSlot
         }
         catch (JSONException e) {
             e.printStackTrace();
+            // Last resort: reseed and mark loaded empty so callers don't loop forever.
+            tryReseedFromAssets(file);
+            elementsLoaded = true;
+        }
+    }
+
+    private boolean tryReseedFromAssets(File targetFile) {
+        try {
+            String assetName = "inputcontrols/profiles/controls-" + id + ".icp";
+            byte[] data = FileUtils.read(context, assetName);
+            if (data == null || data.length == 0) return false;
+            targetFile.getParentFile().mkdirs();
+            FileUtils.write(targetFile, data);
+            return targetFile.isFile() && targetFile.length() > 0;
+        } catch (Throwable ignored) {
+            // Not all profiles have an asset counterpart — that's OK.
+            return false;
         }
     }
 }

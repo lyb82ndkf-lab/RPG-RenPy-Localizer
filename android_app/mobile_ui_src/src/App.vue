@@ -1,22 +1,10 @@
 <template>
   <div class="app-container" :class="{ landscape: isLandscape, portrait: !isLandscape, 'game-tool-mode': inGameToolMode }">
-    <header class="top-bar">
-      <div class="brand-block">
-        <span class="brand-mark"><svg><use :href="iconHref('rpgrtl-gamepad')"></use></svg></span>
-        <div class="brand-copy"><h1>RPGRenPyLocalizer</h1><p>{{ headerSubtitle }}</p></div>
-      </div>
-      <button v-if="hasRunningGame" class="close-btn" :aria-label="t.backGame" @click="closeToolPage">{{ inGameToolMode ? t.backGameShort : '?' }}</button>
-    </header>
-
-    <section class="dashboard-strip" v-if="!inGameToolMode">
-      <div class="dash-item"><span>{{ t.currentGame }}</span><strong>{{ gameTitle }}</strong></div>
-      <div class="dash-item"><span>{{ t.engine }}</span><strong>{{ gameEngine }}</strong></div>
-      <div class="dash-item"><span>{{ t.status }}</span><strong :class="shellStatus.type">{{ shellStatus.visible ? shellStatus.title : t.ready }}</strong></div>
-    </section>
-
-    <section class="game-strip" v-else>
-      <div><span>{{ t.gamePanel }}</span><strong>{{ gameTitle }}</strong></div>
-      <button class="btn-ghost" @click="closeToolPage">{{ t.backGame }}</button>
+    <section v-if="inGameToolMode" class="game-strip">
+      <div class="game-strip-title"><span>游戏工具</span><strong>{{ gameTitle }}</strong></div>
+      <nav class="game-tool-nav" aria-label="游戏工具导航">
+        <router-link v-for="item in gameNavItems" :key="item.to" :to="item.to">{{ item.label }}</router-link>
+      </nav>
     </section>
 
     <div v-if="shellStatus.visible" class="shell-status" :class="shellStatus.type">
@@ -24,15 +12,15 @@
     </div>
 
     <main class="view-content">
-      <router-view v-slot="{ Component }"><transition name="fade" mode="out-in"><component :is="Component" /></transition></router-view>
+      <router-view v-slot="{ Component }"><component :is="Component" /></router-view>
     </main>
 
-    <div v-if="shellStatus.busy" class="launch-overlay" role="status" aria-live="polite">
+    <div v-if="launchOverlayVisible" class="launch-overlay" role="status" aria-live="polite">
       <div class="launch-card"><span class="launch-spinner"></span><strong>{{ shellStatus.title }}</strong><p>{{ shellStatus.message }}</p></div>
     </div>
 
     <nav v-if="!inGameToolMode" class="bottom-nav" :aria-label="t.mainNav">
-      <router-link v-for="item in navItems" :key="item.to" :to="item.to" class="nav-item">
+      <router-link v-for="item in workspaceNavItems" :key="item.to" :to="item.to" class="nav-item">
         <svg class="nav-icon" aria-hidden="true"><use :href="iconHref(item.icon)"></use></svg><span>{{ item.label }}</span>
       </router-link>
     </nav>
@@ -40,37 +28,50 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, reactive, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-const t = {
-  subtitle: '\u7ad6\u5c4f\u5de5\u4f5c\u53f0', backGame: '\u8fd4\u56de\u6e38\u620f', backGameShort: '\u8fd4\u56de', currentGame: '\u5f53\u524d\u6e38\u620f', engine: '\u5f15\u64ce', status: '\u72b6\u6001', ready: '\u5c31\u7eea', mainNav: '\u4e3b\u5bfc\u822a',
-  library: '\u6e38\u620f', translate: '\u7ffb\u8bd1', data: '\u6570\u636e', settings: '\u8bbe\u7f6e', starting: '\u6e38\u620f\u51c6\u5907\u4e2d', error: '\u9700\u8981\u5904\u7406', updated: '\u72b6\u6001\u66f4\u65b0', unknown: '\u672a\u77e5', none: '\u672a\u9009\u62e9', gamePanel: '\u6e38\u620f\u5185\u6570\u636e\u9762\u677f'
-}
+const t = { mainNav: '主导航', starting: '启动中', error: '需要处理', updated: '状态更新', ready: '就绪' }
 const router = useRouter()
 let statusTimer = null
 const viewport = reactive({ width: window.innerWidth || 0, height: window.innerHeight || 0 })
 const appContext = reactive({})
 const shellStatus = reactive({ visible: false, busy: false, type: 'info', title: t.ready, message: '' })
-const navItems = [
-  { to: '/library', label: t.library, icon: 'rpgrtl-gamepad' },
-  { to: '/translations', label: t.translate, icon: 'rpgrtl-translate' },
-  { to: '/cheats', label: t.data, icon: 'rpgrtl-database' },
-  { to: '/settings', label: t.settings, icon: 'rpgrtl-settings' }
+const gameOnlyRoutes = new Set(['/data', '/saves', '/maps', '/controls', '/cheats'])
+const workspaceNavItems = [
+  { to: '/library', label: '游戏库', icon: 'rpgrtl-gamepad' },
+  { to: '/translations', label: '翻译', icon: 'rpgrtl-translate' },
+  { to: '/settings', label: '设置', icon: 'rpgrtl-settings' }
+]
+const gameNavItems = [
+  { to: '/data', label: '数据' },
+  { to: '/cheats', label: '实时' },
+  { to: '/saves', label: '存档' },
+  { to: '/maps', label: '地图' },
+  { to: '/controls', label: '触控' }
 ]
 const isLandscape = computed(() => viewport.width > viewport.height)
 const hasRunningGame = computed(() => Boolean(appContext.has_game || appContext.game_mode === 'in_game' || appContext.mode === 'game'))
-const inGameToolMode = computed(() => isLandscape.value && hasRunningGame.value)
-const headerSubtitle = computed(() => inGameToolMode.value ? t.gamePanel : (shellStatus.message || t.subtitle))
-const gameTitle = computed(() => appContext.game_title || appContext.title || appContext.name || t.none)
-const gameEngine = computed(() => appContext.engine || appContext.backend || t.unknown)
-const busyPatterns = ['checking','scanning','preparing','launching','loading','starting','scan','import','open','\u542f\u52a8','\u626b\u63cf','\u51c6\u5907','\u5bfc\u5165']
-const donePatterns = ['ready','opened','enabled','found','done','\u5b8c\u6210','\u5df2\u6253\u5f00','\u5df2\u542f\u52a8']
-const errorPatterns = ['failed','error','cannot','not found','\u5931\u8d25','\u9519\u8bef','\u5f02\u5e38','\u65e0\u6cd5']
+const inGameToolMode = computed(() => appContext.mode === 'game' || appContext.game_mode === 'in_game')
+const gameTitle = computed(() => appContext.game_title || appContext.title || appContext.name || '已启动游戏')
+const busyPatterns = ['launching','opening rpg maker','opening game','restoring game','启动游戏','进入游戏','打开游戏']
+const donePatterns = ['ready','opened','enabled','found','done','完成','已打开','已启动','已选择','已加入']
+const errorPatterns = ['failed','error','cannot','not found','失败','错误','异常','无法']
 function iconHref(id) { return 'icons.svg#' + id }
+const launchOverlayVisible = computed(() => shellStatus.busy && busyPatterns.some((item) => String(shellStatus.message || '').toLowerCase().includes(item.toLowerCase())))
 function refreshViewport() { viewport.width = window.innerWidth || document.documentElement.clientWidth || 0; viewport.height = window.innerHeight || document.documentElement.clientHeight || 0 }
-function updateContext(ctx = {}) { Object.keys(appContext).forEach((k) => delete appContext[k]); Object.assign(appContext, ctx || {}); window.appContext = ctx || {}; if ((ctx?.game_mode === 'in_game' || ctx?.mode === 'game') && router.currentRoute.value.path !== '/cheats') router.replace('/cheats') }
-function sanitizeShellMessage(message) { return String(message || '').replace(/MTool/gi, 'RPGRenPyLocalizer').replace(/Discord/gi, '\u53cd\u9988\u6e20\u9053').replace(/Click To Exit/gi, '\u8fd4\u56de\u5de5\u5177\u9875') }
+function enforceRoute() {
+  const path = router.currentRoute.value.path
+  if (!hasRunningGame.value && gameOnlyRoutes.has(path)) router.replace('/library')
+  else if (inGameToolMode.value && !gameOnlyRoutes.has(path)) router.replace('/data')
+}
+function updateContext(ctx = {}) {
+  Object.keys(appContext).forEach((k) => delete appContext[k])
+  Object.assign(appContext, ctx || {})
+  window.appContext = ctx || {}
+  enforceRoute()
+}
+function sanitizeShellMessage(message) { return String(message || '').replace(/MTool/gi, 'RPGRenPyLocalizer').replace(/Discord/gi, '反馈渠道').replace(/Click To Exit/gi, '返回工具页') }
 function setShellStatus(message, options = {}) {
   if (!message) return
   const lower = String(message).toLowerCase()
@@ -80,18 +81,21 @@ function setShellStatus(message, options = {}) {
   window.dispatchEvent(new CustomEvent('rpgrtl-shell-message', { detail: { ...shellStatus } }))
   clearTimeout(statusTimer); statusTimer = setTimeout(() => { shellStatus.visible = false; if (!shellStatus.busy) shellStatus.message = '' }, busy ? 15000 : 4500)
 }
-function closeToolPage() { if (window.RPGRenPyShell?.toggleToolPage) window.RPGRenPyShell.toggleToolPage(); else setShellStatus('\u9884\u89c8\u6a21\u5f0f\uff1a\u771f\u673a\u5185\u4f1a\u8fd4\u56de\u6e38\u620f\u753b\u9762') }
+function closeToolPage() { if (window.RPGRenPyShell?.toggleToolPage) window.RPGRenPyShell.toggleToolPage(); else setShellStatus('预览模式：真机会返回游戏画面') }
+
 onMounted(() => {
   refreshViewport(); window.addEventListener('resize', refreshViewport); window.addEventListener('orientationchange', refreshViewport)
   updateContext(window.appContext || {})
   window.onAndroidToolMode = (ctx) => { updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })) }
   window.onAndroidExternalLaunchContext = (ctx) => { updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })) }
   window.onAndroidOpenToolPage = (targetPage) => { if (targetPage?.startsWith('/')) router.replace(targetPage) }
-  window.onAndroidGameFolderPicked = (uri) => { const ctx = { uri, path: uri, name: '\u5df2\u9009\u62e9\u6e38\u620f\u76ee\u5f55', engine: '\u626b\u63cf\u4e2d' }; updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })); setShellStatus('\u5df2\u9009\u62e9\u6e38\u620f\u76ee\u5f55\uff0c\u6b63\u5728\u626b\u63cf\u8d44\u6e90', { busy: true }) }
-  window.onAndroidGameExePicked = (uri) => { const ctx = { uri, path: uri, name: '\u5df2\u9009\u62e9 EXE', engine: 'Windows exe / compatible runner' }; updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })) }
-  window.onAndroidProjectScanned = (payload) => { const ctx = typeof payload === 'string' ? JSON.parse(payload) : payload; updateContext({ ...appContext, ...ctx }); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })) }
+  window.onAndroidGameFolderPicked = (uri) => { const ctx = { uri, path: uri, name: '已选择游戏目录', engine: '扫描中' }; updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })); setShellStatus('已选择游戏目录', { busy: false }) }
+  window.onAndroidGameExePicked = (uri) => { const ctx = { uri, path: uri, name: '已选择 EXE', engine: 'Windows exe / Wine backend', backend: 'wine' }; updateContext(ctx); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })) }
+  window.onAndroidProjectScanned = (payload) => { let ctx = {}; try { ctx = typeof payload === 'string' ? JSON.parse(payload) : (payload || {}) } catch { ctx = { ok:false, error:String(payload||'scan parse error') } }; updateContext({ ...appContext, ...ctx }); window.dispatchEvent(new CustomEvent('rpgrtl-context', { detail: ctx })); window.dispatchEvent(new CustomEvent('rpgrtl-project-scanned', { detail: ctx })) }
   window.onAndroidShellMessage = (message) => setShellStatus(message)
   window.onAndroidShellStatus = (message) => setShellStatus(message)
+  enforceRoute()
 })
+watch([() => router.currentRoute.value.path, hasRunningGame, inGameToolMode], enforceRoute)
 onBeforeUnmount(() => { clearTimeout(statusTimer); window.removeEventListener('resize', refreshViewport); window.removeEventListener('orientationchange', refreshViewport) })
 </script>

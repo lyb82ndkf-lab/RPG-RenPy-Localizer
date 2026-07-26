@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RPGRenPyLocalizer" parent="@android:style/Theme.Material.Light.NoActionBar" />
-    <style name="Theme.RPGRenPyLocalizer.Splash" parent="@android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.RPGRenPyLocalizer" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0B0F16</item>
+        <item name="android:navigationBarColor">#0B0F16</item>
+        <item name="android:windowBackground">#0B0F16</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <style name="Theme.RPGRenPyLocalizer.Splash" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/splash_bg</item>
-        <item name="android:statusBarColor">#101820</item>
-        <item name="android:navigationBarColor">#101820</item>
+        <item name="android:statusBarColor">#0B0F16</item>
+        <item name="android:navigationBarColor">#0B0F16</item>
     </style>
 </resources>

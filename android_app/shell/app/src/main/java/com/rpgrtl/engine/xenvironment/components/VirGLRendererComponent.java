@@ -19,6 +19,7 @@ import java.io.IOException;
 public class VirGLRendererComponent extends EnvironmentComponent implements ConnectionHandler, RequestHandler {
     private final XServer xServer;
     private final UnixSocketConfig socketConfig;
+    private final com.winlator.xenvironment.components.VirGLRendererComponent nativePeer;
     private XConnectorEpoll connector;
 
     static {
@@ -28,6 +29,7 @@ public class VirGLRendererComponent extends EnvironmentComponent implements Conn
     public VirGLRendererComponent(XServer xServer, UnixSocketConfig socketConfig) {
         this.xServer = xServer;
         this.socketConfig = socketConfig;
+        this.nativePeer = new com.winlator.xenvironment.components.VirGLRendererComponent(this);
     }
 
     @Override
@@ -48,7 +50,7 @@ public class VirGLRendererComponent extends EnvironmentComponent implements Conn
     }
 
     @Keep
-    private void killConnection(int fd) {
+    public void killConnectionFromNative(int fd) {
         connector.killConnection(connector.getClientWidthFd(fd));
     }
 
@@ -72,7 +74,7 @@ public class VirGLRendererComponent extends EnvironmentComponent implements Conn
     }
 
     @Keep
-    private void flushFrontbuffer(int drawableId, int framebuffer) {
+    public void flushFrontbufferFromNative(int drawableId, int framebuffer) {
         Drawable drawable = xServer.drawableManager.getDrawable(drawableId);
         if (drawable == null) return;
 
@@ -88,14 +90,24 @@ public class VirGLRendererComponent extends EnvironmentComponent implements Conn
         if (onDrawListener != null) onDrawListener.run();
     }
 
-    private native long handleNewConnection(int fd);
+    private long handleNewConnection(int fd) {
+        return nativePeer.handleNewConnection(fd);
+    }
 
-    private native void handleRequest(long clientPtr);
+    private void handleRequest(long clientPtr) {
+        nativePeer.handleRequest(clientPtr);
+    }
 
-    private native long getCurrentEGLContextPtr();
+    private long getCurrentEGLContextPtr() {
+        return nativePeer.getCurrentEGLContextPtr();
+    }
 
-    private native void destroyClient(long clientPtr);
+    private void destroyClient(long clientPtr) {
+        nativePeer.destroyClient(clientPtr);
+    }
 
-    private native void destroyRenderer(long clientPtr);
+    private void destroyRenderer(long clientPtr) {
+        nativePeer.destroyRenderer(clientPtr);
+    }
 }
 

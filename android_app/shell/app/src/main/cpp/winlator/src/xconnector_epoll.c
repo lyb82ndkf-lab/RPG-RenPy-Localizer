@@ -1,4 +1,4 @@
-#include <stdbool.h>
+﻿#include <stdbool.h>
 #include <jni.h>
 #include <sys/epoll.h>
 #include <sys/poll.h>

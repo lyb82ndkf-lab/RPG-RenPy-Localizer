@@ -87,12 +87,20 @@ public class SysVSharedMemory {
         }
     }
 
-    public static native int createMemoryFd(String name, int size);
+    public static int createMemoryFd(String name, int size) {
+        return com.winlator.sysvshm.SysVSharedMemory.createMemoryFd(name, size);
+    }
 
-    private static native int ashmemCreateRegion(int index, long size);
+    private static int ashmemCreateRegion(int index, long size) {
+        return com.winlator.sysvshm.SysVSharedMemory.ashmemCreateRegion(index, size);
+    }
 
-    public static native ByteBuffer mapSHMSegment(int fd, long size, int offset, boolean readonly);
+    public static ByteBuffer mapSHMSegment(int fd, long size, int offset, boolean readonly) {
+        return com.winlator.sysvshm.SysVSharedMemory.mapSHMSegment(fd, size, offset, readonly);
+    }
 
-    public static native void unmapSHMSegment(ByteBuffer data, long size);
+    public static void unmapSHMSegment(ByteBuffer data, long size) {
+        com.winlator.sysvshm.SysVSharedMemory.unmapSHMSegment(data, size);
+    }
 }
 

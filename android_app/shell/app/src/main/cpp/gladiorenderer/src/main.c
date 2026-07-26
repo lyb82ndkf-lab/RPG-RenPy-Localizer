@@ -1,4 +1,4 @@
-#include "gl_context.h"
+﻿#include "gl_context.h"
 #include "shader_converter.h"
 
 JNIEXPORT jlong JNICALL

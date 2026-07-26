@@ -23,6 +23,7 @@ public class EventListener {
     }
 
     public void sendEvent(Event event) {
+        if (client == null) return;
         try {
             event.send(client.getSequenceNumber(), client.getOutputStream());
         }

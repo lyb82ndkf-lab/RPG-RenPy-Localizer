@@ -31,6 +31,7 @@ public class GLXExtension extends Extension {
     private static final byte DEFAULT_FBCONFIG_ID = 1;
     private final SparseArray<SparseLongArray> clientGLXContexts = new SparseArray<>();
     private final SparseArray<SparseLongArray> clientGLContexts = new SparseArray<>();
+    private final com.winlator.xserver.extensions.GLXExtension nativePeer = new com.winlator.xserver.extensions.GLXExtension(this);
     private final String glxExtensions = "GLX_ARB_create_context GLX_ARB_get_proc_address";
     private final Callback<XClient> onDestroyClientListener = (client) -> {
         destroyAllGLContexts(client.fd);
@@ -312,13 +313,13 @@ public class GLXExtension extends Extension {
     }
 
     @Keep
-    private short[] getWindowSize(int windowId) {
+    public short[] getWindowSizeFromNative(int windowId) {
         Window window = xServer.windowManager.getWindow(windowId);
         return window != null ? new short[]{window.getWidth(), window.getHeight()} : new short[]{0, 0};
     }
 
     @Keep
-    private void clearWindowContent(int windowId) {
+    public void clearWindowContentFromNative(int windowId) {
         Window window = xServer.windowManager.getWindow(windowId);
         if (window != null) {
             Drawable drawable = window.getContent();
@@ -330,7 +331,7 @@ public class GLXExtension extends Extension {
     }
 
     @Keep
-    private boolean updateWindowContent(int drawableId, short width, short height, boolean flipY) {
+    public boolean updateWindowContentFromNative(int drawableId, short width, short height, boolean flipY) {
         Drawable drawable = xServer.drawableManager.getDrawable(drawableId);
         if (drawable == null) return true;
 
@@ -348,7 +349,7 @@ public class GLXExtension extends Extension {
     }
 
     @Keep
-    private long getGLXContextPtr(int clientFd, int id) {
+    public long getGLXContextPtrFromNative(int clientFd, int id) {
         synchronized (clientGLXContexts) {
             SparseLongArray contexts = clientGLXContexts.get(clientFd);
             return contexts != null ? contexts.get(id) : 0;
@@ -377,12 +378,20 @@ public class GLXExtension extends Extension {
         }
     }
 
-    private native long createGLContext(int clientFd);
+    private long createGLContext(int clientFd) {
+        return nativePeer.createGLContext(clientFd);
+    }
 
-    private native void destroyGLContext(long contextPtr);
+    private void destroyGLContext(long contextPtr) {
+        nativePeer.destroyGLContext(contextPtr);
+    }
 
-    private native long createGLXContext(int contextId, long sharedContextPtr);
+    private long createGLXContext(int contextId, long sharedContextPtr) {
+        return nativePeer.createGLXContext(contextId, sharedContextPtr);
+    }
 
-    private native void destroyGLXContext(long contextPtr);
+    private void destroyGLXContext(long contextPtr) {
+        nativePeer.destroyGLXContext(contextPtr);
+    }
 }
 

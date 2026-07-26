@@ -102,35 +102,59 @@ public class XOutputStream {
         return length(nativePtr);
     }
 
-    private native long nativeAllocate(int fd, int initialCapacity);
+    private long nativeAllocate(int fd, int initialCapacity) {
+        return com.winlator.xconnector.XOutputStream.nativeAllocate(fd, initialCapacity);
+    }
 
     @CriticalNative
-    private static native void setAncillaryFd(long nativePtr, int ancillaryFd);
+    private static void setAncillaryFd(long nativePtr, int ancillaryFd) {
+        com.winlator.xconnector.XOutputStream.setAncillaryFd(nativePtr, ancillaryFd);
+    }
 
     @CriticalNative
-    private static native void writeByte(long nativePtr, byte value);
+    private static void writeByte(long nativePtr, byte value) {
+        com.winlator.xconnector.XOutputStream.writeByte(nativePtr, value);
+    }
 
     @CriticalNative
-    private static native void writeShort(long nativePtr, short value);
+    private static void writeShort(long nativePtr, short value) {
+        com.winlator.xconnector.XOutputStream.writeShort(nativePtr, value);
+    }
 
     @CriticalNative
-    private static native void writeInt(long nativePtr, int value);
+    private static void writeInt(long nativePtr, int value) {
+        com.winlator.xconnector.XOutputStream.writeInt(nativePtr, value);
+    }
 
     @CriticalNative
-    private static native void writeLong(long nativePtr, long value);
+    private static void writeLong(long nativePtr, long value) {
+        com.winlator.xconnector.XOutputStream.writeLong(nativePtr, value);
+    }
 
     @CriticalNative
-    private static native void writePad(long nativePtr, int length);
+    private static void writePad(long nativePtr, int length) {
+        com.winlator.xconnector.XOutputStream.writePad(nativePtr, length);
+    }
 
-    private static native void writeAt(long nativePtr, int position, byte[] data);
+    private static void writeAt(long nativePtr, int position, byte[] data) {
+        com.winlator.xconnector.XOutputStream.writeAt(nativePtr, position, data);
+    }
 
-    private static native void writeByteBuffer(long nativePtr, ByteBuffer data, int offset, int length);
+    private static void writeByteBuffer(long nativePtr, ByteBuffer data, int offset, int length) {
+        com.winlator.xconnector.XOutputStream.writeByteBuffer(nativePtr, data, offset, length);
+    }
 
-    private static native boolean sendData(long nativePtr);
+    private static boolean sendData(long nativePtr) {
+        return com.winlator.xconnector.XOutputStream.sendData(nativePtr);
+    }
 
-    private static native void destroy(long nativePtr);
+    private static void destroy(long nativePtr) {
+        com.winlator.xconnector.XOutputStream.destroy(nativePtr);
+    }
 
     @CriticalNative
-    private static native int length(long nativePtr);
+    private static int length(long nativePtr) {
+        return com.winlator.xconnector.XOutputStream.length(nativePtr);
+    }
 }
 

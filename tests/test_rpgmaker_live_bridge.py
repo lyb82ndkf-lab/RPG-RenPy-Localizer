@@ -54,6 +54,148 @@ def test_extracts_database_and_dialogue_only(tmp_path: Path) -> None:
     assert "SCRIPT_TEXT" not in sources
 
 
+def test_rpgmaker_plugin_command_internals_are_not_translated(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    map_path = data / "Map001.json"
+    map_payload = {
+        "width": 1,
+        "height": 1,
+        "events": [
+            None,
+            {
+                "id": 1,
+                "name": "Event name is editor-only here",
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "parameters": ["", 0, 0, 2, "Narrator"]},
+                            {"code": 401, "parameters": ["Hello"]},
+                            {"code": 102, "parameters": [["Yes", "No"], 0, 0, 2, 0]},
+                            {
+                                "code": 357,
+                                "parameters": [
+                                    "TRP_ParticleMZ",
+                                    "set",
+                                    "set/表示",
+                                    {
+                                        "id": "Actor2TP4",
+                                        "target": "enemy:1",
+                                        "name": "def",
+                                        "z": "screen",
+                                        "tag": "",
+                                        "edit": "false",
+                                        "delay": "0",
+                                    },
+                                ],
+                            },
+                            {"code": 657, "parameters": ["データ名 = def"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    }
+    map_path.write_text(json.dumps(map_payload), encoding="utf-8")
+    service = RPGMakerService(project)
+
+    entries = service.extract_translations()
+    sources = {entry.source for entry in entries}
+    ids = {entry.entry_id for entry in entries}
+
+    assert {"Narrator", "Hello", "Yes", "No"}.issubset(sources)
+    assert "def" not in sources
+    assert "Actor2TP4" not in sources
+    assert all("parameters/3" not in entry_id for entry_id in ids)
+    assert all("parameters/0" not in entry_id for entry_id in ids if "list/4" in entry_id)
+
+    translations = {
+        entry.entry_id: TranslationEntry(
+            entry.entry_id,
+            entry.source,
+            f"CN:{entry.source}",
+            entry.file,
+            entry.context,
+            entry.category,
+        )
+        for entry in entries
+    }
+    service.apply_translations(translations)
+    updated = json.loads(map_path.read_text(encoding="utf-8"))
+    commands = updated["events"][1]["pages"][0]["list"]
+
+    assert commands[0]["parameters"][4] == "CN:Narrator"
+    assert commands[1]["parameters"][0] == "CN:Hello"
+    assert commands[2]["parameters"][0] == ["CN:Yes", "CN:No"]
+    assert commands[3]["parameters"][3]["id"] == "Actor2TP4"
+    assert commands[3]["parameters"][3]["name"] == "def"
+    assert commands[4]["parameters"][0] == "データ名 = def"
+
+
+def test_rpgmaker_only_translates_documented_database_slots_and_event_lists(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    map_path = data / "Map001.json"
+    map_path.write_text(json.dumps({
+        "displayName": "Town",
+        "meta": {"name": "PluginInternalName", "description": "Plugin configuration"},
+        "events": [None, {
+            "name": "EditorOnlyEventName",
+            "pages": [{"list": [
+                {"code": 401, "parameters": ["Visible dialogue"]},
+                {"code": 102, "parameters": [["Yes", "No"], 0, 0, 2, 0]},
+            ]}],
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+    (data / "Items.json").write_text(json.dumps([
+        None,
+        {"name": "Potion", "description": "Visible item", "meta": {"name": "DoNotTranslate"}},
+    ], ensure_ascii=False), encoding="utf-8")
+
+    service = RPGMakerService(project)
+    entries = service.extract_translations()
+    sources = {entry.source for entry in entries}
+    assert {"Town", "Potion", "Visible item", "Visible dialogue", "Yes", "No"}.issubset(sources)
+    assert not {"PluginInternalName", "Plugin configuration", "EditorOnlyEventName", "DoNotTranslate"} & sources
+
+    translations = {
+        entry.entry_id: TranslationEntry(entry.entry_id, entry.source, f"CN:{entry.source}", entry.file, entry.context, entry.category)
+        for entry in entries
+    }
+    service.apply_translations(translations)
+    updated_map = json.loads(map_path.read_text(encoding="utf-8"))
+    updated_item = json.loads((data / "Items.json").read_text(encoding="utf-8"))
+    assert updated_map["displayName"] == "CN:Town"
+    assert updated_map["meta"] == {"name": "PluginInternalName", "description": "Plugin configuration"}
+    assert updated_map["events"][1]["name"] == "EditorOnlyEventName"
+    assert updated_map["events"][1]["pages"][0]["list"][0]["parameters"][0] == "CN:Visible dialogue"
+    assert updated_map["events"][1]["pages"][0]["list"][1]["parameters"][0] == ["CN:Yes", "CN:No"]
+    assert updated_item[1]["name"] == "CN:Potion"
+    assert updated_item[1]["meta"]["name"] == "DoNotTranslate"
+
+
+def test_rpgmaker_source_fallback_never_crosses_database_dialogue_boundary(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    (data / "Items.json").write_text(json.dumps([None, {"name": "Yes", "description": "Item"}]), encoding="utf-8")
+    (data / "Map001.json").write_text(json.dumps({"events": [None, {"pages": [{"list": [
+        {"code": 102, "parameters": [["Yes"], 0, 0, 2, 0]},
+    ]}]}]}), encoding="utf-8")
+    service = RPGMakerService(project)
+    entries = service.extract_translations()
+    choice = next(entry for entry in entries if entry.category == "dialogue" and entry.source == "Yes")
+    service.apply_translations({choice.entry_id: TranslationEntry(
+        choice.entry_id, "Yes", "是", choice.file, choice.context, choice.category,
+    )})
+    items = json.loads((data / "Items.json").read_text(encoding="utf-8"))
+    game_map = json.loads((data / "Map001.json").read_text(encoding="utf-8"))
+    assert items[1]["name"] == "Yes"
+    assert game_map["events"][1]["pages"][0]["list"][0]["parameters"][0] == ["是"]
+
+
 def test_rpgmaker_control_tokens_must_be_preserved(tmp_path: Path) -> None:
     service = RPGMakerService(make_project(tmp_path))
     slash = chr(92)
@@ -75,6 +217,24 @@ def test_manual_target_save_rejects_broken_control_tokens(tmp_path: Path) -> Non
         pass
     else:
         raise AssertionError("broken RPG Maker control tokens were accepted")
+
+
+def test_partial_target_save_keeps_valid_entries_when_one_control_token_is_missing(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.project = project
+    api.translation_entries = [
+        TranslationEntry("1", r"\C[27]Hello", "", "Map001.json", category="dialogue"),
+        TranslationEntry("2", "Goodbye", "", "Map001.json", category="dialogue"),
+    ]
+    result = api.translations_save_targets({"allowPartial": True, "updates": [
+        {"entry_id": "1", "target": "你好"},
+        {"entry_id": "2", "target": "再见"},
+    ]})
+    assert result["changed"] == 1
+    assert result["rejected"] and result["rejected"][0]["entry_id"] == "1"
+    assert api.translation_entries[0].target == ""
+    assert api.translation_entries[1].target == "再见"
 
 
 def test_runtime_patch_rejects_broken_control_tokens(tmp_path: Path) -> None:
@@ -140,6 +300,46 @@ def test_bridge_install_uses_www_runtime_root_for_deployed_projects(tmp_path: Pa
     plugins_text = (game_dir / "js" / "plugins.js").read_text(encoding="utf-8")
     assert RUNTIME_BRIDGE_NAME in plugins_text
     assert not (root / "js" / "plugins").exists()
+
+
+def test_uninstall_bridge_restores_original_game_and_removes_tool_font(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    service = RPGMakerService(project)
+    bridge_path = service.install_runtime_bridge()
+    fonts = project.root / "fonts"
+    fonts.mkdir()
+    generated_font = fonts / "RPGRenPyLocalizerCJK.ttf"
+    generated_font.write_bytes(b"tool-font")
+
+    removed = service.uninstall_runtime_bridge()
+
+    assert removed >= 3
+    assert not bridge_path.exists()
+    assert not generated_font.exists()
+    assert RUNTIME_BRIDGE_NAME not in (project.root / "js" / "plugins.js").read_text(encoding="utf-8")
+
+
+def test_runtime_translation_uses_in_place_bridge_without_copying_game_files(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    (data / "Map001.json").write_text(json.dumps({"events": [None, {"pages": [{"list": [{"code": 401, "parameters": ["Hello"]}]}]}]}), encoding="utf-8")
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.project = project
+    api.translation_entries = RPGMakerService(project).extract_translations()
+    hello = next(entry for entry in api.translation_entries if entry.source == "Hello")
+    hello.target = "你好"
+
+    result = api.translations_runtime({"versionId": "current"})
+
+    assert result["mode"] == "in-place"
+    assert Path(result["path"]) == project.root
+    assert (project.root / "js" / "plugins" / f"{RUNTIME_BRIDGE_NAME}.js").exists()
+    assert RUNTIME_BRIDGE_NAME in (project.root / "js" / "plugins.js").read_text(encoding="utf-8")
+    assert not (project.root / ".rpgrtl_workspace" / "runtime_game").exists()
+    assert json.loads((project.root / "data" / "Map001.json").read_text(encoding="utf-8"))["events"][1]["pages"][0]["list"][0]["parameters"][0] == "Hello"
+    live_table = json.loads(Path(result["translationTable"]).read_text(encoding="utf-8"))
+    assert live_table["translations"]["Hello"] == "你好"
 
 
 def test_live_capture_queue_only_accepts_safe_dialogue_events(tmp_path: Path) -> None:
@@ -449,6 +649,34 @@ def test_translation_cache_writes_original_and_translated_files(tmp_path: Path) 
     assert [(item["source"], item["target"]) for item in translated["entries"]] == [("Hello", "浣犲ソ")]
 
 
+def test_translation_versions_keep_full_project_and_support_live_switch(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.project = project
+    api.translation_entries = [
+        TranslationEntry(str(index), f"Line {index}", f"译文 {index}", "Map001.json", category="dialogue")
+        for index in range(5001)
+    ]
+
+    # `all=1` is deliberately not constrained by the legacy 5000 row cap.
+    assert len(api.translations({"all": "1"})["entries"]) == 5001
+    api._persist_translation_cache()
+    version = api._create_translation_snapshot("测试版本", force=True)
+    assert version is not None
+    assert api.translations_versions()["versions"][1]["id"] == version["id"]
+
+    result = api.translations_runtime({"versionId": version["id"], "hotSwitch": True})
+    try:
+        assert result["hotSwitched"] is True
+        assert _RPGRM_LIVE_SERVER_STATE["translations"]["Line 5000"] == "译文 5000"
+        original = api.translations_runtime({"versionId": "original", "hotSwitch": True})
+        assert original["liveApplied"] == 0
+    finally:
+        RPGMakerService(project).stop_live_bridge_server()
+        _RPGRM_LIVE_SERVER_STATE["translations"] = {}
+        _RPGRM_LIVE_SERVER_STATE["events"] = []
+
+
 def test_runtime_patch_starts_rpgmaker_server_for_live_replacement(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
@@ -466,7 +694,34 @@ def test_runtime_patch_starts_rpgmaker_server_for_live_replacement(tmp_path: Pat
         _RPGRM_LIVE_SERVER_STATE["events"] = []
 
 
-def test_runtime_copy_returns_playable_launcher(tmp_path: Path) -> None:
+def test_translation_runtime_keeps_selected_version_in_lightweight_live_table(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    launcher = project.root / "Project1.exe"
+    launcher.write_bytes(b"fake exe")
+    project.launcher_path = launcher
+    data = project.data_dir
+    assert data is not None
+    (data / "Map001.json").write_text(json.dumps({"events": [None, {"pages": [{"list": [{"code": 401, "parameters": ["Hello"]}]}]}]}), encoding="utf-8")
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.project = project
+    api.translation_entries = [TranslationEntry("1", "Hello", "你好", "Map001.json", category="dialogue")]
+
+    result = api.translations_runtime({"entries": [{"entry_id": "1", "source": "Hello", "target": "你好", "file": "Map001.json", "category": "dialogue"}]})
+    try:
+        original_map = project.root / "data" / "Map001.json"
+        original = json.loads(original_map.read_text(encoding="utf-8"))
+        live_table = json.loads(Path(result["translationTable"]).read_text(encoding="utf-8"))
+
+        assert result["changed"] == 0
+        assert original["events"][1]["pages"][0]["list"][0]["parameters"][0] == "Hello"
+        assert live_table["translations"]["Hello"] == "你好"
+    finally:
+        RPGMakerService(project).stop_live_bridge_server()
+        _RPGRM_LIVE_SERVER_STATE["translations"] = {}
+        _RPGRM_LIVE_SERVER_STATE["events"] = []
+
+
+def test_in_place_runtime_returns_original_launcher_without_copying_it(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     launcher = project.root / "Project1.exe"
     launcher.write_bytes(b"fake exe")
@@ -475,14 +730,41 @@ def test_runtime_copy_returns_playable_launcher(tmp_path: Path) -> None:
     assert data is not None
     (data / "Map001.json").write_text(json.dumps({"events": [None, {"pages": [{"list": [{"code": 401, "parameters": ["Hello"]}]}]}]}), encoding="utf-8")
 
-    path, copied_launcher, changed = RPGMakerService(project).build_runtime_copy({"1": TranslationEntry("1", "Hello", "浣犲ソ", "Map001.json", category="dialogue")})
+    bridge, table, launcher, count = RPGMakerService(project).install_in_place_runtime({"1": TranslationEntry("1", "Hello", "浣犲ソ", "Map001.json", category="dialogue")})
 
-    assert changed == 1
-    assert path == project.root / ".rpgrtl_workspace" / "runtime_game"
-    assert copied_launcher == path / "Project1.exe"
-    assert copied_launcher.exists()
-    translated_map = json.loads((path / "data" / "Map001.json").read_text(encoding="utf-8"))
-    assert translated_map["events"][1]["pages"][0]["list"][0]["parameters"][0] == "浣犲ソ"
+    assert bridge.exists()
+    assert table == project.root / ".rpgrtl_workspace" / "live_translation.json"
+    assert launcher == project.root / "Project1.exe"
+    assert count == 1
+    assert not (project.root / ".rpgrtl_workspace" / "runtime_game").exists()
+    assert json.loads((project.root / "data" / "Map001.json").read_text(encoding="utf-8"))["events"][1]["pages"][0]["list"][0]["parameters"][0] == "Hello"
+
+
+def test_in_place_runtime_does_not_copy_cjk_font_or_game_assets(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    fake_font = tmp_path / "fake-cjk.ttf"
+    fake_font.write_bytes(b"fake font")
+    service = RPGMakerService(project)
+    service._find_system_cjk_font = lambda: fake_font  # type: ignore[method-assign]
+
+    service.install_in_place_runtime({})
+
+    assert not (project.root / "fonts" / "RPGRenPyLocalizerCJK.ttf").exists()
+    assert not (project.root / ".rpgrtl_workspace" / "runtime_game").exists()
+
+
+def test_live_translation_table_is_loaded_directly_by_runtime_bridge(tmp_path: Path) -> None:
+    service = RPGMakerService(make_project(tmp_path))
+    path, count = service.write_live_translation_table({"Hello": "你好"})
+
+    bridge = service.install_runtime_bridge()
+    source = bridge.read_text(encoding="utf-8")
+
+    assert path.name == "live_translation.json"
+    assert count == 1
+    assert "loadLocalTranslationTable" in source
+    assert "live_translation.json" in source
+    assert 'Graphics.loadFont(RPGRenPyCjkFontFamily' not in source
 
 
 def test_library_launch_finds_non_game_exe_for_old_entries(tmp_path: Path) -> None:

@@ -71,7 +71,19 @@
         </div>
         <div class="game-strip-actions">
           <el-button size="small" @click="currentView = 'library'" :disabled="gameRunning">{{ gameRunning ? '游戏运行中' : '切换游戏' }}</el-button>
-          <el-button v-if="currentView === 'translations'" size="small" type="primary" :loading="busy.translation" :disabled="!selectedEntry" @click="startTranslation">{{ isRpgMakerSelected ? '一键翻译并启动' : '开始翻译' }}</el-button>
+          <el-dropdown v-if="currentView === 'translations' && isRpgMakerSelected" trigger="click" :disabled="!selectedEntry || busy.translation" @command="launchTranslationVersion">
+            <el-button size="small" type="primary" :loading="busy.translation">选择译文启动<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="current">完成翻译并启动当前译文</el-dropdown-item>
+                <el-dropdown-item command="original">原文（不替换）</el-dropdown-item>
+                <el-dropdown-item v-for="version in translationVersions" :key="version.id" :command="version.id" :disabled="!version.available">
+                  {{ version.label }}{{ version.reason ? ` · ${version.reason}` : '' }}（{{ version.count || 0 }} 条）
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button v-else-if="currentView === 'translations'" size="small" type="primary" :loading="busy.translation" :disabled="!selectedEntry" @click="startTranslation">开始翻译</el-button>
           <el-button v-else-if="currentView === 'data'" size="small" :disabled="!selectedEntry" @click="loadData(true)">载入数据</el-button>
           <el-button v-else-if="currentView === 'saves'" size="small" :disabled="!selectedEntry" @click="loadSaveSlots">载入存档</el-button>
           <el-button v-else-if="currentView === 'maps'" size="small" :disabled="!selectedEntry" @click="loadMaps">载入地图</el-button>
@@ -165,7 +177,9 @@
                 </el-select>
                 <el-switch v-model="translationMissingOnly" size="small" active-text="仅未译" />
                 <el-button size="small" :icon="Refresh" @click="loadTranslations(true)" :loading="busy.translation">刷新</el-button>
-                <el-button size="small" type="primary" :loading="busy.translation" :disabled="!translations.length" @click="translateBatch">AI 批译</el-button>
+                <el-button v-if="busy.translation" size="small" type="danger" plain @click="stopTranslationBatch">停止并保存</el-button>
+                <el-button v-else size="small" type="primary" :disabled="!translations.length" @click="translateBatch({ scope: 'filtered' })">AI 批译</el-button>
+                <el-button size="small" type="warning" plain :loading="busy.translation" :disabled="!translations.length || busy.translation" @click="repairMissingTranslations">修复未译</el-button>
                 <el-dropdown trigger="click" @command="handleTranslationCommand">
                   <el-button size="small">翻译包</el-button>
                   <template #dropdown>
@@ -590,20 +604,25 @@
                       <el-option label="OpenAI &#x517C;&#x5BB9;&#x63A5;&#x53E3;" value="openai" />
                       <el-option label="Anthropic &#x517C;&#x5BB9;&#x63A5;&#x53E3;" value="anthropic" />
                       <el-option label="Ollama &#x672C;&#x5730;&#x6A21;&#x578B;" value="ollama" />
+                      <el-option label="本机已登录 Agent（无需 API Key）" value="accountbridge" />
                     </el-select>
                   </label>
-                  <label class="ai-field ai-field-wide">
+                  <label v-if="aiForm.provider !== 'accountbridge'" class="ai-field ai-field-wide">
                     <span>&#x63A5;&#x53E3;&#x5730;&#x5740; Base URL</span>
                     <el-input v-model="aiForm.baseUrl" :placeholder="aiForm.provider === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1'" />
                   </label>
-                  <label v-if="aiForm.provider !== 'ollama'" class="ai-field ai-field-wide">
+                  <label v-if="aiForm.provider !== 'ollama' && aiForm.provider !== 'accountbridge'" class="ai-field ai-field-wide">
                     <span>API Key</span>
                     <el-input v-model="aiForm.apiKey" type="password" show-password placeholder="&#x7C98;&#x8D34;&#x4F60;&#x7684; API Key" />
                   </label>
-                  <div v-else class="ollama-note ai-field-wide"><el-tag type="success" effect="plain">&#x65E0;&#x9700; API Key</el-tag><span>&#x5207;&#x6362;&#x5230; Ollama &#x65F6;&#x4F1A;&#x81EA;&#x52A8;&#x68C0;&#x6D4B;&#x672C;&#x673A;&#x5DF2;&#x7ECF;&#x5B89;&#x88C5;&#x7684;&#x6A21;&#x578B;&#x3002;</span></div>
+                  <div v-else-if="aiForm.provider === 'ollama'" class="ollama-note ai-field-wide"><el-tag type="success" effect="plain">&#x65E0;&#x9700; API Key</el-tag><span>&#x5207;&#x6362;&#x5230; Ollama &#x65F6;&#x4F1A;&#x81EA;&#x52A8;&#x68C0;&#x6D4B;&#x672C;&#x673A;&#x5DF2;&#x7ECF;&#x5B89;&#x88C5;&#x7684;&#x6A21;&#x578B;&#x3002;</span></div>
+                  <template v-else>
+                    <label class="ai-field"><span>本机 Agent</span><el-select v-model="aiForm.accountProvider" @change="onAccountProviderChange"><el-option label="自动检测（推荐：agy/Claude/Codex/OpenCode）" value="local-agent-auto" /><el-option label="Antigravity（agy CLI 登录态）" value="antigravity-cli" /><el-option label="Claude Code（本机 CLI）" value="anthropic" /><el-option label="Codex CLI（本机登录态）" value="openai-codex" /><el-option label="OpenCode（本机 CLI）" value="opencode" /><el-option label="Gemini / Google 账号（浏览器 OAuth，备用）" value="gemini-cli" /><el-option label="GitHub Copilot（旧桥接）" value="github-copilot" /><el-option label="Kimi Coding（旧桥接）" value="kimi-coding" /><el-option label="xAI / Grok（旧桥接）" value="xai" /></el-select></label>
+                    <div class="ollama-note ai-field-wide"><el-button v-if="aiForm.accountProvider === 'gemini-cli'" type="primary" plain @click="startAccountLogin">登录 Gemini 账号</el-button><el-tag v-else type="success" effect="plain">读取本机 CLI 登录态</el-tag><span>{{ accountLoginStatus || (aiForm.accountProvider === 'gemini-cli' ? 'Gemini OAuth 仅作为备用；推荐使用本机 Agent 自动或 Antigravity。' : '请先在终端登录对应 CLI，例如运行 agy、claude、codex 或 opencode；本软件只调用 CLI，不读取账号密码。') }}</span></div>
+                  </template>
                   <div class="ai-field ai-field-wide">
                     <span>&#x6A21;&#x578B; Model</span>
-                    <div class="model-picker"><el-select v-model="aiForm.model" filterable allow-create placeholder="&#x4F8B;&#x5982; gpt-4o-mini / claude / qwen"><el-option v-for="model in aiModels" :key="model" :label="model" :value="model" /></el-select><el-button :loading="busy.models" @click="fetchAiModels(false)"><span v-if="aiForm.provider === 'ollama'">&#x68C0;&#x6D4B;&#x672C;&#x5730;&#x6A21;&#x578B;</span><span v-else>&#x83B7;&#x53D6;&#x6A21;&#x578B;</span></el-button></div>
+                  <div class="model-picker"><el-select v-model="aiForm.model" filterable allow-create placeholder="&#x4F8B;&#x5982; gpt-4o-mini / claude / qwen"><el-option v-for="model in aiModels" :key="model" :label="model" :value="model" /></el-select><el-button :loading="busy.models" @click="fetchAiModels(false)"><span v-if="aiForm.provider === 'ollama'">&#x68C0;&#x6D4B;&#x672C;&#x5730;&#x6A21;&#x578B;</span><span v-else-if="aiForm.provider === 'accountbridge'">读取可选模型</span><span v-else>&#x83B7;&#x53D6;&#x6A21;&#x578B;</span></el-button></div>
                   </div>
                 </div>
                 <div class="ai-section-caption">&#x6279;&#x8BD1;&#x53C2;&#x6570;</div>
@@ -755,7 +774,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen } from '@element-plus/icons-vue';
+import { ArrowDown, Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen } from '@element-plus/icons-vue';
 import logoUrl from './assets/app-logo.png';
 
 const navItems = [
@@ -798,6 +817,7 @@ let gameStatusTimer = null;
 const loadedViewKeys = new Set();
 
 const translations = ref([]);
+const translationVersions = ref([]);
 const translationSearch = ref('');
 const translationCategory = ref('');
 const translationMissingOnly = ref(false);
@@ -809,6 +829,7 @@ const translationDraft = reactive({ source: '', target: '' });
 const translationMeta = ref('');
 const translationDialogVisible = ref(false);
 const translationProgress = reactive({ active: false, title: 'AI 批译进度', message: '等待开始', current: 0, total: 0, success: 0, failed: 0 });
+const translationStopRequested = ref(false);
 
 const dataRecords = ref([]);
 const dataSearch = ref('');
@@ -852,8 +873,9 @@ const liveDebug = ref({ status: {}, worker: {}, tree: [], debugEvents: [], hookE
 const liveDebugSelected = ref(null);
 let liveDebugTimer = null;
 
-const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', batchSize: 50, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '\u7b80\u4f53\u4e2d\u6587' });
+const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', localAgentPath: '', accountProvider: 'local-agent-auto', batchSize: 50, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '\u7b80\u4f53\u4e2d\u6587' });
 const aiModels = ref([]);
+const accountLoginStatus = ref('');
 const aiProfiles = reactive({});
 const aiNamedConfigs = reactive({});
 const selectedAiConfigName = ref('');
@@ -987,11 +1009,11 @@ const visibleNavItems = computed(() => navItems.filter((item) => {
   if (isRpgMakerSelected.value && item.key === 'live') return false;
   return true;
 }));
-const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => item.source && !item.target).length);
+const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => needsTranslationRepair(item)).length);
 const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([name, config]) => ({
   name,
   provider: config.provider || 'openai',
-  providerLabel: ({ openai: 'OpenAI 兼容', anthropic: 'Anthropic', ollama: 'Ollama' })[normalizeAiProvider(config.provider)] || 'OpenAI 兼容',
+  providerLabel: ({ openai: 'OpenAI 兼容', anthropic: 'Anthropic', ollama: 'Ollama', accountbridge: '订阅账号' })[normalizeAiProvider(config.provider)] || 'OpenAI 兼容',
   model: config.model || '',
 })).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
 const viewMeta = computed(() => viewMetaMap[currentView.value] || viewMetaMap.library);
@@ -1001,11 +1023,26 @@ const filteredLibrary = computed(() => {
   return entries.value.filter((entry) => [entry.name, entry.path, entry.engine, entry.launcher_path, entry.note].some((value) => String(value || '').toLowerCase().includes(q)));
 });
 const translationCategories = computed(() => Array.from(new Set(translations.value.map((item) => item.category || item.file).filter(Boolean))));
+function hasUsableTranslation(item) {
+  const target = String(item?.target || '').trim();
+  const source = String(item?.source || '').trim();
+  return !!target && (target !== source || isAutoConfirmableSource(source));
+}
+function isAutoConfirmableSource(value) {
+  const visible = String(value || '')
+    .replace(/\\(?:[A-Za-z]+\[[^\]]*\]|[A-Za-z]+|.)/g, '')
+    .replace(/\[[^\]]+\]|\{[^}]+\}/g, '')
+    .trim();
+  return !visible || !/\p{L}/u.test(visible);
+}
+function needsTranslationRepair(item) {
+  return !!String(item?.source || '').trim() && !hasUsableTranslation(item);
+}
 const filteredTranslations = computed(() => {
   const q = translationSearch.value.trim().toLowerCase();
   return translations.value.filter((item) => {
     if (translationCategory.value && (item.category || item.file) !== translationCategory.value) return false;
-    if (translationMissingOnly.value && item.target) return false;
+    if (translationMissingOnly.value && !needsTranslationRepair(item)) return false;
     if (!q) return true;
     return [item.source, item.target, item.file, item.context].some((value) => String(value || '').toLowerCase().includes(q));
   });
@@ -1109,6 +1146,7 @@ async function loadLibrary() {
     const data = await api('/library');
     entries.value = data.entries || [];
     if (selectedPath.value && !entries.value.some((entry) => entry.path === selectedPath.value)) selectedPath.value = '';
+    if (data.removed) toast(`已从游戏库移除 ${data.removed} 个不存在或无法启动的游戏路径。`, 'warning');
   } finally {
     busy.refresh = false;
   }
@@ -1167,8 +1205,19 @@ async function addGameFolder() {
     toast(`文件夹导入完成：新增 ${data.added || 0} 个，更新 ${data.updated || 0} 个`);
   } catch (error) { toast(error.message, 'error'); } finally { busy.add = false; }
 }
-async function buildRpgMakerRuntimeAndLaunch() {
-  const data = await api('/translations/runtime', { body: { entries: translations.value } });
+async function loadTranslationVersions() {
+  if (!isRpgMakerSelected.value || !selectedEntry.value) { translationVersions.value = []; return; }
+  const data = await api('/translations/versions');
+  translationVersions.value = (data.versions || []).filter((item) => item.id !== 'original');
+}
+async function buildRpgMakerRuntimeAndLaunch(versionId = 'current', hotSwitch = false) {
+  const body = { versionId, hotSwitch };
+  if (versionId === 'current') body.entries = translations.value;
+  const data = await api('/translations/runtime', { body });
+  if (data.hotSwitched) {
+    toast(versionId === 'original' ? '已热切换为原文，当前对话会自动刷新。' : '已热切换所选译文，当前对话会自动刷新。');
+    return true;
+  }
   if (!data.launcher) {
     toast('已准备翻译副本，但没有找到可启动文件，请手动打开副本目录。', 'warning');
     if (data.path) await window.rpgrtl.openPath(data.path);
@@ -1178,6 +1227,27 @@ async function buildRpgMakerRuntimeAndLaunch() {
   toast(`RPGMaker 译文副本已启动 PID ${launch.pid}`);
   await loadGameStatus();
   return true;
+}
+async function buildRenpyRuntimeAndLaunch() {
+  const data = await api('/translations/runtime', { body: { entries: translations.value } });
+  if (!data.launcher) {
+    toast('已生成 RenPy 翻译副本，但没有找到可启动文件。', 'warning');
+    if (data.runtimeRoot) await window.rpgrtl.openPath(data.runtimeRoot);
+    return false;
+  }
+  const launch = await api('/project/launch', { body: { launcherPath: data.launcher } });
+  toast(`RenPy 译文副本已启动 PID ${launch.pid}`);
+  await loadGameStatus();
+  return true;
+}
+async function launchTranslationVersion(versionId) {
+  if (!requireGameSelected()) return;
+  if (versionId === 'current') return startTranslation();
+  busy.translation = true;
+  try {
+    await buildRpgMakerRuntimeAndLaunch(versionId, gameRunning.value);
+    if (!gameRunning.value) await loadLibrary();
+  } catch (error) { toast(error.message, 'error'); } finally { busy.translation = false; }
 }
 async function ensureRpgMakerReadyBeforeLaunch() {
   if (!isRpgMakerSelected.value) return true;
@@ -1230,11 +1300,12 @@ async function loadTranslations(refresh = false) {
   if (!(await ensureProjectLoaded(refresh))) return;
   busy.translation = true;
   try {
-    const data = await api('/translations?limit=5000&refresh=' + (refresh ? 1 : 0));
+    const data = await api('/translations?all=1&refresh=' + (refresh ? 1 : 0));
     translations.value = data.entries || [];
     translationPage.value = 1;
     if (!translations.value.some((item) => item.entry_id === selectedTranslationId.value)) selectedTranslationId.value = translations.value[0]?.entry_id || '';
     syncTranslationDraft();
+    await loadTranslationVersions();
   } finally { busy.translation = false; }
 }
 function translationCategoryLabel(category) {
@@ -1276,6 +1347,7 @@ function createRequestGate(intervalMs) {
 }
 function validateAiReady() {
   if (!aiForm.model) { toast('请先在 AI 设置里选择模型', 'warning'); currentView.value = 'ai'; return false; }
+  if (aiForm.provider === 'accountbridge') return true;
   if (aiForm.provider !== 'ollama' && !aiForm.apiKey) { toast('请先在 AI 设置里填写 API Key', 'warning'); currentView.value = 'ai'; return false; }
   if (!aiForm.baseUrl) { toast('请先在 AI 设置里填写接口 URL', 'warning'); currentView.value = 'ai'; return false; }
   return true;
@@ -1304,7 +1376,7 @@ function normalizeAiTranslationMap(translationsResult) {
 }
 function isUsefulAiTarget(entry, target) {
   const value = String(target || '').trim();
-  return Boolean(value);
+  return Boolean(value) && (value !== String(entry?.source || '').trim() || isAutoConfirmableSource(entry?.source));
 }
 function getAiTarget(map, entry, index) {
   const entryKey = String(entry?.entry_id || '');
@@ -1318,6 +1390,7 @@ async function callTranslateApi(payload, gate) {
   return api('/ai/translate', { body: payload });
 }
 async function translateChunkOnce(chunk, options = {}) {
+  if (options.shouldStop?.()) return new Map();
   const gate = options.gate;
   const data = await callTranslateApi({ ...aiForm, maxTokens: 8192, timeout: clampAiRequestTimeoutSec(), requestTimeoutSec: clampAiRequestTimeoutSec(), entries: chunk.map(aiEntryPayload), targetLang: aiForm.targetLang, from: 'auto', to: 'zh' }, gate);
   let map = normalizeAiTranslationMap(data.translations || []);
@@ -1335,6 +1408,7 @@ async function translateChunkWithAI(chunk, options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       const map = await translateChunkOnce(chunk, options);
+      if (options.shouldStop?.()) return map;
       const missing = chunk.filter((entry, index) => !isUsefulAiTarget(entry, getAiTarget(map, entry, index)));
       // A long JSON response can be truncated by a gateway/model. Salvage the
       // valid part and re-request only the missing entries in smaller chunks.
@@ -1376,13 +1450,41 @@ async function translateSelectedWithAI() {
 async function applyTranslations() { if (!requireGameSelected()) return; const result = await api('/translations/apply', { body: { entries: translations.value } }); toast('永久写入完成：' + (result.changed || 0) + ' 处'); }
 async function runtimePatch() { if (!requireGameSelected()) return; const data = await api('/translations/runtime', { body: { entries: translations.value } }); toast('补丁已生成：' + (data.changed || 0) + ' 处'); if (data.path) await window.rpgrtl.openPath(data.path); }
 async function replaceTranslationMode(mode) { if (!requireGameSelected()) return; const data = await api('/translations/runtime', { body: { entries: translations.value, mode } }); if (data.path) await window.rpgrtl.openPath(data.path); toast(mode === 'original' ? '已生成原文替换补丁' : '已生成译文替换补丁'); }
-async function openImportPack() { const path = await window.rpgrtl.openPack(); if (!path || !requireGameSelected()) return; const data = await api('/translations/import', { body: { path: path } }); toast('导入完成：匹配 ' + data.matched + '/' + data.imported); await loadTranslations(true); }
-async function openExportPack() { const path = await window.rpgrtl.savePack(); if (!path || !requireGameSelected()) return; await api('/translations/export', { body: { path: path, entries: translations.value } }); toast('翻译包已导出'); }
-async function runLimited(items, limit, worker) {
+function currentGameDialogLocation() {
+  return {
+    gamePath: selectedEntry.value?.path || '',
+    launcherPath: selectedEntry.value?.launcher_path || '',
+  };
+}
+function rpgMakerControlTokens(value) {
+  return String(value || '').match(/\\(?:[A-Za-z]+\[[^\]]*\]|[A-Za-z]+|.)/g) || [];
+}
+function restoreLeadingRpgMakerControlTokens(entry, value) {
+  const target = String(value || '').trim();
+  if (!isRpgMakerSelected.value || !target) return target;
+  const source = String(entry?.source || '');
+  const expected = rpgMakerControlTokens(source);
+  const actual = rpgMakerControlTokens(target);
+  // Colour/font escape sequences are commonly at the very beginning of a
+  // dialogue line. Models occasionally omit them even when asked to preserve
+  // them; restoring a source-only prefix is safe and keeps the line renderable.
+  const prefix = expected.join('');
+  if (expected.length && !actual.length && prefix && source.startsWith(prefix)) return prefix + target;
+  return target;
+}
+function hasPreservedRpgMakerControlTokens(entry, target) {
+  if (!isRpgMakerSelected.value) return true;
+  const expected = rpgMakerControlTokens(entry?.source);
+  return expected.join('\u0000') === rpgMakerControlTokens(target).join('\u0000');
+}
+async function openImportPack() { if (!requireGameSelected()) return; const path = await window.rpgrtl.openPack(currentGameDialogLocation()); if (!path) return; const data = await api('/translations/import', { body: { path } }); toast('导入完成：匹配 ' + data.matched + '/' + data.imported); await loadTranslations(true); }
+async function openExportPack() { if (!requireGameSelected()) return; const path = await window.rpgrtl.savePack(currentGameDialogLocation()); if (!path) return; const data = await api('/translations/export', { body: { path } }); await loadTranslationVersions(); toast(data.version ? `翻译包已导出，并已保存版本 ${data.version.label}` : '翻译包已导出'); }
+async function runLimited(items, limit, worker, shouldStop = () => false) {
   const results = [];
   let cursor = 0;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (cursor < items.length) {
+      if (shouldStop()) break;
       const index = cursor;
       cursor += 1;
       results[index] = await worker(items[index], index);
@@ -1400,62 +1502,137 @@ async function translateBatch(options = {}) {
   const concurrency = clampAiConcurrency();
   const requestIntervalMs = clampAiRequestInterval();
   const maxRetries = clampAiRateLimitRetries();
-  const allTargets = translations.value.filter((item) => !item.target && item.source);
+  const scope = options.scope || 'filtered';
+  const sourceList = scope === 'all' ? translations.value : filteredTranslations.value;
+  const allTargets = sourceList.filter((item) => needsTranslationRepair(item));
   const maxCount = Math.max(0, Number(options.maxCount || 0));
-  const targets = maxCount ? allTargets.slice(0, maxCount) : allTargets;
+  const selectedTargets = maxCount ? allTargets.slice(0, maxCount) : allTargets;
+  const knownBySource = new Map();
+  translations.value.forEach((entry) => {
+    if (hasUsableTranslation(entry)) knownBySource.set(String(entry.source || ''), String(entry.target || '').trim());
+  });
+  const cacheFillUpdates = [];
+  const autoConfirmedUpdates = [];
+  const aiTargets = [];
+  selectedTargets.forEach((entry) => {
+    if (isAutoConfirmableSource(entry.source)) {
+      entry.target = String(entry.source || '');
+      autoConfirmedUpdates.push({ ...entry, target: entry.target });
+      return;
+    }
+    const cachedTarget = knownBySource.get(String(entry.source || ''));
+    if (cachedTarget) {
+      entry.target = cachedTarget;
+      cacheFillUpdates.push({ ...entry, target: cachedTarget });
+    } else {
+      aiTargets.push(entry);
+    }
+  });
+  const immediateUpdates = [...cacheFillUpdates, ...autoConfirmedUpdates];
+  if (immediateUpdates.length) {
+    await api('/translations/save-targets', { body: { updates: immediateUpdates } });
+  }
+  // RPG Maker databases repeat the same label/text in many records.  Keep
+  // one representative per source for the API and fan its result back out to
+  // all matching records, avoiding duplicate prompts even across concurrency.
+  const sourceGroups = new Map();
+  aiTargets.forEach((entry) => {
+    const key = String(entry.source || '');
+    const group = sourceGroups.get(key) || [];
+    group.push(entry);
+    sourceGroups.set(key, group);
+  });
+  const targets = Array.from(sourceGroups.values()).map((group) => group[0]);
   if (!targets.length) {
-    aiPreview.value = '没有找到未翻译文本。';
+    aiPreview.value = immediateUpdates.length ? `已保存 ${cacheFillUpdates.length} 条缓存命中与 ${autoConfirmedUpdates.length} 条无需翻译文本，无需请求 AI。` : '没有找到未翻译文本。';
     resetTranslationProgress(0);
-    toast('没有找到未翻译文本', 'warning');
-    return 0;
+    toast(immediateUpdates.length ? `已保存 ${immediateUpdates.length} 条无需 AI 的条目` : '没有找到未翻译文本', immediateUpdates.length ? 'success' : 'warning');
+    return immediateUpdates.length;
   }
   if (manageBusy) busy.translation = true;
-  resetTranslationProgress(targets.length, `AI 批译：单批 ${batchSize}，并发 ${concurrency}，间隔 ${requestIntervalMs}ms`);
-  aiPreview.value = `正在翻译 ${targets.length} 条：单批 ${batchSize}，并发 ${concurrency}，请求间隔 ${requestIntervalMs}ms，429重试 ${maxRetries} 次...`;
+  translationStopRequested.value = false;
+  resetTranslationProgress(aiTargets.length, `AI 批译：${aiTargets.length} 条文本 / ${targets.length} 条唯一原文，按来源文件分批，单批 ${batchSize}，并发 ${concurrency}`);
+  aiPreview.value = `当前范围：${scope === 'all' ? '全部项目' : '当前筛选'}；真正待修复 ${selectedTargets.length} 条，缓存补齐 ${cacheFillUpdates.length} 条，无需翻译 ${autoConfirmedUpdates.length} 条，提交 AI ${aiTargets.length} 条。请求会按来源文件与原始顺序分批；单批 ${batchSize}，并发 ${concurrency}，请求间隔 ${requestIntervalMs}ms，429重试 ${maxRetries} 次...`;
   const chunks = [];
-  for (let i = 0; i < targets.length; i += batchSize) chunks.push(targets.slice(i, i + batchSize));
-  const updates = [];
+  const targetsByFile = new Map();
+  targets.forEach((entry) => {
+    const file = String(entry.file || '(unknown source file)');
+    const group = targetsByFile.get(file) || [];
+    group.push(entry);
+    targetsByFile.set(file, group);
+  });
+  targetsByFile.forEach((fileTargets, file) => {
+    for (let i = 0; i < fileTargets.length; i += batchSize) chunks.push({ file, entries: fileTargets.slice(i, i + batchSize) });
+  });
   const failureMessages = [];
   const requestGate = createRequestGate(requestIntervalMs);
   let completedChunks = 0;
+  let savedCount = immediateUpdates.length;
+  let saveQueue = Promise.resolve();
+  const saveChunkUpdates = (chunkUpdates) => {
+    if (!chunkUpdates.length) return Promise.resolve();
+    const task = saveQueue.then(async () => {
+      translationProgress.message = `正在保存已完成的 ${chunkUpdates.length} 条译文...`;
+      const result = await api('/translations/save-targets', { body: { updates: chunkUpdates, allowPartial: true } });
+      savedCount += Number(result.changed || chunkUpdates.length);
+      const rejected = Array.isArray(result.rejected) ? result.rejected : [];
+      if (rejected.length) {
+        translationProgress.failed += rejected.length;
+        failureMessages.push(...rejected.map((item) => `保存跳过：${item.reason || item.entry_id}`));
+      }
+    });
+    saveQueue = task.catch(() => {});
+    return task;
+  };
   try {
-    await runLimited(chunks, concurrency, async (chunk, chunkIndex) => {
-      translationProgress.message = `正在处理第 ${chunkIndex + 1}/${chunks.length} 个批次（${chunk.length} 条）...`;
+    await runLimited(chunks, concurrency, async (chunkPlan, chunkIndex) => {
+      const chunk = chunkPlan.entries;
+      translationProgress.message = `正在处理 ${chunkPlan.file} 的第 ${chunkIndex + 1}/${chunks.length} 批（${chunk.length} 条）...`;
       try {
-        const map = await translateChunkWithAI(chunk, { gate: requestGate, chunkIndex });
+        const map = await translateChunkWithAI(chunk, { gate: requestGate, chunkIndex, shouldStop: () => translationStopRequested.value });
         let chunkSuccess = 0;
+        let chunkAffected = 0;
+        const chunkUpdates = [];
         chunk.forEach((entry, index) => {
-          const target = getAiTarget(map, entry, index);
-          if (isUsefulAiTarget(entry, target)) {
-            entry.target = target;
-            updates.push({ ...entry, target });
-            chunkSuccess += 1;
+          const target = restoreLeadingRpgMakerControlTokens(entry, getAiTarget(map, entry, index));
+          if (isUsefulAiTarget(entry, target) && hasPreservedRpgMakerControlTokens(entry, target)) {
+            const group = sourceGroups.get(String(entry.source || '')) || [entry];
+            group.forEach((related) => {
+              related.target = target;
+              chunkUpdates.push({ ...related, target });
+            });
+            chunkSuccess += group.length;
           }
+          chunkAffected += (sourceGroups.get(String(entry.source || '')) || [entry]).length;
         });
         translationProgress.success += chunkSuccess;
-        translationProgress.failed += Math.max(0, chunk.length - chunkSuccess);
+        translationProgress.failed += Math.max(0, chunkAffected - chunkSuccess);
+        // Persist each completed chunk.  A bad AI answer in one chunk must not
+        // discard thousands of already valid translations when export follows.
+        await saveChunkUpdates(chunkUpdates);
       } catch (error) {
-        translationProgress.failed += chunk.length;
+        translationProgress.failed += chunk.reduce((sum, entry) => sum + (sourceGroups.get(String(entry.source || '')) || [entry]).length, 0);
         translationProgress.message = `Batch ${chunkIndex + 1} failed: ${error.message}. If it still times out, set batch size to 30-80 or timeout to 300-600s.`;
         failureMessages.push(`Batch ${chunkIndex + 1}: ${String(error?.message || error || 'unknown error')}`);
         // Keep other workers running; one failed request must not abort the batch.
       } finally {
         completedChunks += 1;
-        translationProgress.current += chunk.length;
+        translationProgress.current += chunk.reduce((sum, entry) => sum + (sourceGroups.get(String(entry.source || '')) || [entry]).length, 0);
         if (translationProgress.active) {
           translationProgress.message = `已完成 ${completedChunks}/${chunks.length} 个批次，成功 ${translationProgress.success} 条，失败 ${translationProgress.failed} 条。`;
         }
       }
-    });
-    if (updates.length) {
-      translationProgress.message = `正在保存 ${updates.length} 条译文...`;
-      await api('/translations/save-targets', { body: { updates } });
-    }
+    }, () => translationStopRequested.value);
+    await saveQueue;
+    if (savedCount > immediateUpdates.length) await loadTranslations(false);
     aiPreview.value = targets.map((entry, index) => (index + 1) + '. ' + entry.source + '\\n=> ' + (entry.target || '未返回有效译文')).join('\\n\\n');
-    const message = updates.length ? `已批译 ${updates.length}/${targets.length} 条` : 'AI 返回了结果，但没有可写入的有效译文；请检查提示词/模型输出。';
+    const totalWritten = savedCount;
+    const message = translationStopRequested.value
+      ? `已停止，已安全保存 ${totalWritten} 条译文；下次可继续翻译剩余内容。`
+      : (totalWritten ? `已修复 ${totalWritten}/${selectedTargets.length} 条（AI 请求 ${targets.length} 条唯一原文）` : 'AI 返回了结果，但没有可写入的有效译文；请检查提示词/模型输出。');
     finishTranslationProgress(message);
-    toast(message, updates.length ? 'success' : 'warning');
-    return updates.length;
+    toast(message, totalWritten ? 'success' : 'warning');
+    return totalWritten;
   } catch (error) {
     finishTranslationProgress('批译失败：' + error.message);
     toast('批译失败：' + error.message, 'error');
@@ -1463,6 +1640,18 @@ async function translateBatch(options = {}) {
   } finally {
     if (manageBusy) busy.translation = false;
   }
+}
+function stopTranslationBatch() {
+  if (!busy.translation) return;
+  translationStopRequested.value = true;
+  translationProgress.message = '已请求停止：不会启动新批次，正在保存已完成批次的译文...';
+  toast('正在停止；已完成的译文会保留并保存。', 'warning');
+}
+async function repairMissingTranslations() {
+  translationMissingOnly.value = true;
+  translationPage.value = 1;
+  await nextTick();
+  return translateBatch({ scope: 'filtered' });
 }
 async function loadData(refresh = false) {
   if (!(await ensureProjectLoaded(refresh))) return;
@@ -1483,13 +1672,13 @@ async function startTranslation() {
   try {
     let previousRemaining = Number.POSITIVE_INFINITY;
     for (let pass = 0; pass < 200; pass += 1) {
-      const remaining = translations.value.filter((item) => !item.target && item.source).length;
+      const remaining = translations.value.filter((item) => needsTranslationRepair(item)).length;
       if (!remaining || remaining >= previousRemaining) break;
       previousRemaining = remaining;
-      const translated = await translateBatch({ manageBusy: false });
+      const translated = await translateBatch({ manageBusy: false, scope: 'all' });
       if (!translated) break;
     }
-    const remaining = translations.value.filter((item) => !item.target && item.source).length;
+    const remaining = translations.value.filter((item) => needsTranslationRepair(item)).length;
     if (isRpgMakerSelected.value) {
       if (remaining) {
         toast(`RPGMaker 仍有 ${remaining} 条未译，未启动游戏。请检查 AI 设置或手动补译后再点开始翻译。`, 'warning');
@@ -1499,10 +1688,8 @@ async function startTranslation() {
       toast('RPGMaker 翻译完成，已生成运行时副本并启动游戏。');
       return;
     }
-    const liveStarted = await startLive();
-    toast(liveStarted
-      ? '翻译完成，原文和译文已保存，并已启动实时替换'
-      : '翻译完成，原文和译文已保存；RenPy 请先启动游戏后再开启实时翻译');
+    await buildRenpyRuntimeAndLaunch();
+    toast('RenPy 翻译完成，已生成独立运行副本并启动；原游戏保持原文。');
   } catch (error) {
     toast(error.message, 'error');
   } finally { busy.translation = false; }
@@ -1717,18 +1904,20 @@ function liveDebugSummary(row) {
   if (payload.text) return String(payload.text);
   return '翻译服务状态已更新。';
 }
-function normalizeAiProvider(provider) { const value = String(provider || '').toLowerCase(); if (value.includes('ollama') || value.includes('本地模型')) return 'ollama'; if (value.includes('anthropic') || value.includes('claude')) return 'anthropic'; return 'openai'; }
-function defaultAiBaseUrl(provider) { return provider === 'anthropic' ? 'https://api.anthropic.com' : provider === 'ollama' ? 'http://127.0.0.1:11434' : 'https://api.openai.com/v1'; }
-function snapshotAiProfile(provider = aiForm.provider) { aiProfiles[provider] = { apiKey: aiForm.apiKey, baseUrl: aiForm.baseUrl, model: aiForm.model, models: [...aiModels.value], batchSize: aiForm.batchSize, concurrency: aiForm.concurrency, requestIntervalMs: aiForm.requestIntervalMs, rateLimitRetries: aiForm.rateLimitRetries, requestTimeoutSec: aiForm.requestTimeoutSec, targetLang: aiForm.targetLang }; }
+function normalizeAiProvider(provider) { const value = String(provider || '').toLowerCase(); if (value.includes('accountbridge') || value.includes('account-bridge') || value.includes('localagent') || value.includes('local-agent') || value.includes('订阅账号') || value.includes('本地agent') || value.includes('本地 agent')) return 'accountbridge'; if (value.includes('ollama') || value.includes('本地模型')) return 'ollama'; if (value.includes('anthropic') || value.includes('claude')) return 'anthropic'; return 'openai'; }
+function defaultAiBaseUrl(provider) { return provider === 'anthropic' ? 'https://api.anthropic.com' : provider === 'ollama' ? 'http://127.0.0.1:11434' : provider === 'accountbridge' ? '' : 'https://api.openai.com/v1'; }
+function snapshotAiProfile(provider = aiForm.provider) { aiProfiles[provider] = { apiKey: aiForm.apiKey, baseUrl: aiForm.baseUrl, model: aiForm.model, localAgentPath: aiForm.localAgentPath, accountProvider: aiForm.accountProvider, models: [...aiModels.value], batchSize: aiForm.batchSize, concurrency: aiForm.concurrency, requestIntervalMs: aiForm.requestIntervalMs, rateLimitRetries: aiForm.rateLimitRetries, requestTimeoutSec: aiForm.requestTimeoutSec, targetLang: aiForm.targetLang }; }
 function currentAiConfigSnapshot() {
   return { ...aiForm, availableModels: [...aiModels.value], models: [...aiModels.value] };
 }
 function applyAiConfig(config = {}) {
   const provider = normalizeAiProvider(config.provider || aiForm.provider);
   aiForm.provider = provider;
-  aiForm.apiKey = provider === 'ollama' ? '' : (config.apiKey || '');
+  aiForm.apiKey = ['ollama', 'accountbridge'].includes(provider) ? '' : (config.apiKey || '');
   aiForm.baseUrl = config.baseUrl || defaultAiBaseUrl(provider);
   aiForm.model = config.model || '';
+  aiForm.localAgentPath = config.localAgentPath || aiForm.localAgentPath || '';
+  aiForm.accountProvider = config.accountProvider || aiForm.accountProvider || 'local-agent-auto';
   aiForm.batchSize = Math.max(1, Math.min(Number(config.batchSize || aiForm.batchSize || 50), 200));
   aiForm.concurrency = Math.max(1, Math.min(Number(config.concurrency || config.threads || aiForm.concurrency || 1), 8));
   aiForm.requestIntervalMs = Math.max(0, Math.min(Number(config.requestIntervalMs ?? config.rateLimitMs ?? aiForm.requestIntervalMs ?? 1200), 60000));
@@ -1757,7 +1946,7 @@ function scheduleAiAutosave() {
   }, 500);
 }
 async function saveNamedAiConfig() {
-  const name = aiConfigName.value.trim() || selectedAiConfigName.value || `${({ openai: 'OpenAI', anthropic: 'Anthropic', ollama: 'Ollama' })[aiForm.provider] || 'AI'} 配置 ${namedAiConfigList.value.length + 1}`;
+  const name = aiConfigName.value.trim() || selectedAiConfigName.value || `${({ openai: 'OpenAI', anthropic: 'Anthropic', ollama: 'Ollama', accountbridge: '订阅账号' })[aiForm.provider] || 'AI'} 配置 ${namedAiConfigList.value.length + 1}`;
   aiNamedConfigs[name] = currentAiConfigSnapshot();
   selectedAiConfigName.value = name;
   aiConfigName.value = name;
@@ -1786,13 +1975,59 @@ async function deleteNamedAiConfig() {
 async function onAiProviderChange(provider) {
   snapshotAiProfile(previousAiProvider);
   const profile = aiProfiles[provider] || {};
-  aiForm.apiKey = provider === 'ollama' ? '' : (profile.apiKey || '');
+  aiForm.apiKey = ['ollama', 'accountbridge'].includes(provider) ? '' : (profile.apiKey || '');
   aiForm.baseUrl = profile.baseUrl || defaultAiBaseUrl(provider);
   aiForm.model = profile.model || '';
+  aiForm.localAgentPath = profile.localAgentPath || aiForm.localAgentPath || '';
+  aiForm.accountProvider = profile.accountProvider || aiForm.accountProvider || 'local-agent-auto';
   aiModels.value = Array.isArray(profile.models) ? profile.models : [];
   previousAiProvider = provider;
   if (provider === 'ollama') await fetchAiModels(true);
   scheduleAiAutosave();
+}
+async function onAccountProviderChange() {
+  // Account selection always means the local subscription bridge. This
+  // prevents a saved OpenAI-compatible profile from issuing a remote
+  // /models request with an empty or stale bearer token.
+  aiForm.provider = 'accountbridge';
+  aiModels.value = [];
+  aiForm.model = '';
+  await fetchAiModels(true);
+  scheduleAiAutosave();
+}
+async function startAccountLogin() {
+  if (!window.rpgrtl?.startAccountLogin) return toast('当前应用版本不支持账号登录，请重新打包桌面端。', 'error');
+  try {
+    // Logging into a subscription account is an explicit mode switch. Do not
+    // let a previously loaded OpenAI profile send /models with its stale URL
+    // and empty bearer token before the bridge request is made.
+    aiForm.provider = 'accountbridge';
+    aiForm.apiKey = '';
+    aiForm.baseUrl = '';
+    previousAiProvider = 'accountbridge';
+    await persistAiSettings(false);
+    const result = await window.rpgrtl.startAccountLogin({ provider: aiForm.accountProvider });
+    if (result.mode === 'google-browser-oauth' || result.mode === 'gemini-cli-oauth') {
+      accountLoginStatus.value = '已打开浏览器：请完成 Google 授权。成功后浏览器会显示 localhost 授权成功页，本页会自动检测。';
+      toast('已打开 Gemini 浏览器授权。');
+      let attempts = 0;
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const status = await window.rpgrtl.getAccountStatus?.({ provider: 'gemini-cli' });
+          if (status?.authenticated) {
+            accountLoginStatus.value = '已检测到 Gemini 登录态，可以读取模型并开始翻译。';
+            toast('Gemini 账号登录成功。');
+            await fetchAiModels(true);
+            return;
+          }
+        } catch (_) { /* Keep waiting for the CLI-owned OAuth flow. */ }
+        if (attempts < 100) setTimeout(poll, 3000);
+        else accountLoginStatus.value = '仍未检测到 Gemini 登录态。请确认浏览器授权页面已经显示成功。';
+      };
+      setTimeout(poll, 1500);
+    }
+  } catch (error) { toast(`打开账号登录失败：${error.message}`, 'error'); }
 }
 async function loadAiSettings(showToast = true) {
   try {
@@ -1815,22 +2050,23 @@ async function saveAiSettings(showToast = true) {
   if (showToast) toast('AI 设置已保存到本机缓存');
 }
 async function fetchAiModels(silent = false) {
-  if (!aiForm.baseUrl || (aiForm.provider !== 'ollama' && !aiForm.apiKey)) { if (!silent) toast('请先填写接口 URL 和 API Key', 'warning'); return; }
+  const accountBridge = aiForm.provider === 'accountbridge';
+  if (!accountBridge && (!aiForm.baseUrl || (aiForm.provider !== 'ollama' && !aiForm.apiKey))) { if (!silent) toast('当前是 API 接口模式，请先填写接口 URL 和 API Key；若要使用账号订阅，请切换“订阅账号登录（OAuth 桥接）”。', 'warning'); return; }
   busy.models = true;
   try {
-    const data = await api('/ai/models', { body: { provider: aiForm.provider, baseUrl: aiForm.baseUrl, apiKey: aiForm.apiKey } });
+    const data = await api('/ai/models', { body: { provider: accountBridge ? 'accountbridge' : aiForm.provider, baseUrl: aiForm.baseUrl, apiKey: accountBridge ? '' : aiForm.apiKey, model: aiForm.model, localAgentPath: aiForm.localAgentPath, accountProvider: aiForm.accountProvider } });
     aiModels.value = data.models || [];
     if (!aiModels.value.includes(aiForm.model)) aiForm.model = aiModels.value[0] || '';
     snapshotAiProfile();
     await saveAiSettings(false);
     if (!silent) toast(`已获取 ${aiModels.value.length} 个模型`);
-  } catch (error) { if (!silent) toast((aiForm.provider === 'ollama' ? '未检测到 Ollama：' : '获取模型失败：') + error.message, 'error'); } finally { busy.models = false; }
+  } catch (error) { if (!silent) toast((accountBridge ? '读取账号模型失败：' : aiForm.provider === 'ollama' ? '未检测到 Ollama：' : '获取模型失败：') + error.message, 'error'); } finally { busy.models = false; }
 }
 async function testAi() {
   const source = aiTestSource.value.trim();
   if (!source) return toast('请输入测试原文', 'warning');
   if (!aiForm.model) return toast('请先选择模型', 'warning');
-  if (aiForm.provider !== 'ollama' && !aiForm.apiKey) return toast('请先填写 API Key', 'warning');
+  if (!['ollama', 'accountbridge'].includes(aiForm.provider) && !aiForm.apiKey) return toast('请先填写 API Key', 'warning');
   busy.aiTest = true; aiTestResult.value = '';
   try { const data = await api('/ai/translate', { body: { ...aiForm, timeout: clampAiRequestTimeoutSec(), requestTimeoutSec: clampAiRequestTimeoutSec(), texts: [source], targetLang: aiForm.targetLang, from: 'auto', to: 'zh' } }); aiTestResult.value = data.translations?.[0] || ''; if (!aiTestResult.value) toast('接口没有返回译文', 'warning'); else toast('测试翻译成功'); }
   catch (error) { aiTestResult.value = '测试失败：' + error.message; toast(error.message, 'error'); }
@@ -1838,7 +2074,7 @@ async function testAi() {
 }
 async function testAiBatch() {
   if (!aiForm.model) return toast('请先选择模型', 'warning');
-  if (aiForm.provider !== 'ollama' && !aiForm.apiKey) return toast('请先填写 API Key', 'warning');
+  if (!['ollama', 'accountbridge'].includes(aiForm.provider) && !aiForm.apiKey) return toast('请先填写 API Key', 'warning');
   busy.aiTest = true;
   try {
     const samples = ['[mc], nice to see you here.', 'I did not expect you to come back so soon.', 'The hallway is quieter than usual tonight.', 'Can we talk somewhere nobody will hear us?', 'Of course. Follow me to the library.', 'The door is locked from the inside.', 'I found this letter under the old desk.', 'It mentions a promise we made years ago.', 'That cannot be true... can it?', 'Please do not look at me like that.', 'We still have time to fix this.', 'Then tell me everything you know.', 'The rain began before either of us spoke again.', 'I will wait here until you are ready.', 'Do you want to save your game?', 'Yes, save the current progress.', 'No, continue without saving.', 'A new message appears on the screen.', 'Objective updated: find the hidden key.', 'The key should be somewhere near the garden.', 'I hear footsteps behind the door.', 'Do not turn around.', 'Why not?', 'Because someone is standing right behind you.'];
@@ -1928,6 +2164,8 @@ watch(
     aiForm.apiKey,
     aiForm.baseUrl,
     aiForm.model,
+    aiForm.localAgentPath,
+    aiForm.accountProvider,
     aiForm.batchSize,
     aiForm.concurrency,
     aiForm.requestIntervalMs,

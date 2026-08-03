@@ -376,7 +376,7 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
   flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px auto auto auto auto;
+  grid-template-columns: minmax(120px, 180px) 130px auto auto auto auto auto;
   gap: 8px;
   justify-content: end;
   align-items: center;
@@ -385,7 +385,7 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .translation-toolbar .mini-select { width: 100%; }
 
 @media (max-width: 1180px) {
-  .translation-toolbar { grid-template-columns: minmax(140px, 1fr) 120px auto auto auto auto; }
+  .translation-toolbar { grid-template-columns: minmax(110px, 1fr) 120px auto auto auto auto auto; }
 }
 /* Element Plus Tour themed to match the RPGRenPyLocalizer workbench. */
 .el-tour__content {

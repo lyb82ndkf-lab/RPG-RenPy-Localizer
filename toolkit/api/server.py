@@ -7,12 +7,15 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
 import traceback
+import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, is_dataclass
@@ -25,10 +28,40 @@ from toolkit.detectors import detect_project, find_launcher
 from toolkit.models import DataRecord, ProjectInfo, TranslationEntry
 from toolkit.renpy import RenPyService
 from toolkit.rpgmaker import RPGMakerService, load_json
-from toolkit.storage import export_translation_pack, import_translation_pack, save_json, translation_pack_signature
+from toolkit.storage import export_translation_pack, export_translation_snapshot, import_translation_pack, save_json, translation_pack_signature
 from toolkit.workspace import LibraryEntry, Workspace
 
 JsonDict = dict[str, Any]
+
+GOOGLE_GEMINI_CLIENT_ID = os.environ.get("GOOGLE_GEMINI_CLIENT_ID", "")
+GOOGLE_GEMINI_CLIENT_SECRET = os.environ.get("GOOGLE_GEMINI_CLIENT_SECRET", "")
+GOOGLE_GEMINI_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_GEMINI_CODE_ASSIST = "https://cloudcode-pa.googleapis.com"
+GOOGLE_GEMINI_CREDENTIAL_FILE = "google-gemini-cli-oauth.json"
+ANTIGRAVITY_MODELS = [
+    "default",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.6-flash-low",
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b-medium",
+]
+ANTIGRAVITY_MODEL_ALIASES = {
+    "Gemini 3.1 Pro (High)": "gemini-3.1-pro-high",
+    "Gemini 3.1 Pro (Low)": "gemini-3.1-pro-low",
+    "Gemini 3.5 Flash (High)": "gemini-3.5-flash-high",
+    "Gemini 3.5 Flash (Medium)": "gemini-3.5-flash-medium",
+    "Gemini 3.5 Flash (Low)": "gemini-3.5-flash-low",
+    "Claude Sonnet 4.6 (Thinking)": "claude-sonnet-4-6",
+    "Claude Opus 4.6 (Thinking)": "claude-opus-4-6-thinking",
+    "GPT-OSS 120B (Medium)": "gpt-oss-120b-medium",
+}
 
 
 def _plain(value: Any) -> Any:
@@ -123,9 +156,9 @@ class ToolkitApi:
         old_profiles = settings.get("ai_profiles") if isinstance(settings.get("ai_profiles"), dict) else {}
 
         def profile(name: str) -> JsonDict:
-            aliases = {"openai": ("openai", "openai-compatible"), "anthropic": ("anthropic", "anthropic-compatible"), "ollama": ("ollama", "Ollama 本地模型")}[name]
+            aliases = {"openai": ("openai", "openai-compatible"), "anthropic": ("anthropic", "anthropic-compatible"), "ollama": ("ollama", "Ollama 本地模型"), "accountbridge": ("accountbridge", "localagent", "local-agent", "本地 Agent", "订阅账号桥接")}[name]
             saved = next((old_profiles.get(alias) for alias in aliases if isinstance(old_profiles.get(alias), dict)), {})
-            use_legacy = name == provider and legacy_provider not in {"openai", "anthropic", "ollama"}
+            use_legacy = name == provider and legacy_provider not in {"openai", "anthropic", "ollama", "accountbridge", "localagent"}
             source_name = legacy_provider if use_legacy else name
             available = saved.get("models") if isinstance(saved.get("models"), list) else []
             return {
@@ -133,16 +166,18 @@ class ToolkitApi:
                 "baseUrl": str(saved.get("baseUrl") or urls.get(source_name) or self._default_base_url(source_name) or self._default_base_url(name)),
                 "model": str(saved.get("model") or models.get(source_name) or ""),
                 "models": [str(item) for item in available if item],
+                "localAgentPath": str(saved.get("localAgentPath") or raw_ai.get("localAgentPath") or ""),
+                "accountProvider": str(saved.get("accountProvider") or raw_ai.get("accountProvider") or "local-agent-auto"),
             }
 
-        profiles = {name: profile(name) for name in ("openai", "anthropic", "ollama")}
+        profiles = {name: profile(name) for name in ("openai", "anthropic", "ollama", "accountbridge")}
         current = profiles[provider]
         named_configs = settings.get("ai_named_configs") if isinstance(settings.get("ai_named_configs"), dict) else {}
         settings["ai_named_configs"] = named_configs
         settings["ai_profiles"] = profiles
         settings["ai"] = {
             "provider": provider,
-            "apiKey": "" if provider == "ollama" else str(raw_ai.get("apiKey") or current["apiKey"] or settings.get("openai_api_key") or ""),
+            "apiKey": "" if provider in {"ollama", "accountbridge"} else str(raw_ai.get("apiKey") or current["apiKey"] or settings.get("openai_api_key") or ""),
             "baseUrl": str((raw_ai.get("baseUrl") if legacy_provider == provider else "") or current["baseUrl"]),
             "model": str((raw_ai.get("model") if legacy_provider == provider else "") or current["model"]),
             "availableModels": current["models"],
@@ -152,6 +187,8 @@ class ToolkitApi:
             "requestIntervalMs": _clamp_int(_first_present(raw_ai.get("requestIntervalMs"), raw_ai.get("rateLimitMs"), settings.get("ai_request_interval_ms")), 1200, 0, 60000),
             "rateLimitRetries": _clamp_int(_first_present(raw_ai.get("rateLimitRetries"), raw_ai.get("retry429"), settings.get("ai_rate_limit_retries")), 3, 0, 10),
             "requestTimeoutSec": _clamp_int(_first_present(raw_ai.get("requestTimeoutSec"), raw_ai.get("timeout"), settings.get("ai_request_timeout_sec")), 240, 30, 900),
+            "localAgentPath": str(raw_ai.get("localAgentPath") or current.get("localAgentPath") or ""),
+            "accountProvider": str(raw_ai.get("accountProvider") or current.get("accountProvider") or "local-agent-auto"),
         }
         return settings
 
@@ -163,7 +200,7 @@ class ToolkitApi:
         if ai is not None:
             provider = self._normalize_ai_provider(str(ai.get("provider") or "openai"))
             ai["provider"] = provider
-            if provider == "ollama":
+            if provider in {"ollama", "accountbridge"}:
                 ai["apiKey"] = ""
             settings["ai"] = ai
             keys = settings.get("ai_api_keys") if isinstance(settings.get("ai_api_keys"), dict) else {}
@@ -194,7 +231,30 @@ class ToolkitApi:
         return {"ok": True, "settings": settings}
 
     def library_get(self) -> JsonDict:
-        return {"ok": True, "entries": _plain(self.workspace.load_library())}
+        # Game folders are often moved, deleted, or disconnected external
+        # drives.  Prune unusable records during the first library load so a
+        # stale item cannot survive indefinitely in the desktop UI.
+        original = self.workspace.load_library()
+        valid: list[LibraryEntry] = []
+        removed = 0
+        repaired = 0
+        for entry in original:
+            root = Path(entry.path).expanduser()
+            if not root.is_dir():
+                removed += 1
+                continue
+            launcher = Path(entry.launcher_path).expanduser() if entry.launcher_path else None
+            if launcher is None or not launcher.is_file():
+                found = find_launcher(root)
+                if found is None or not found.is_file():
+                    removed += 1
+                    continue
+                entry.launcher_path = str(found)
+                repaired += 1
+            valid.append(entry)
+        if removed or repaired:
+            self.workspace.save_library(valid)
+        return {"ok": True, "entries": _plain(valid), "removed": removed, "repaired": repaired}
 
     def _project_display_name(self, project: ProjectInfo) -> str:
         launcher = project.launcher_path
@@ -265,16 +325,9 @@ class ToolkitApi:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._library_upsert_project(entries, project, now)
         self.workspace.save_library(entries)
-        # Prepare the bundled bridge when the game enters the library so a later
-        # launch does not depend on visiting a separate setup page first.
-        try:
-            if project.engine == "Ren'Py":
-                RenPyService(project).install_live_translation_bridge(False)
-            elif project.engine == "RPG Maker MV/MZ":
-                RPGMakerService(project).install_runtime_bridge()
-        except Exception:
-            # Keep library import usable for non-standard or read-only projects.
-            pass
+        # Adding a game must not modify it.  Clean only artifacts from older
+        # versions of this tool that may have been left in the original tree.
+        self._remove_tool_runtime_artifacts(project)
         return {"ok": True, "entries": _plain(entries)}
 
     def library_add_folder(self, body: JsonDict) -> JsonDict:
@@ -297,13 +350,7 @@ class ToolkitApi:
                 added += 1
             else:
                 updated += 1
-            try:
-                if project.engine == "Ren'Py":
-                    RenPyService(project).install_live_translation_bridge(False)
-                elif project.engine == "RPG Maker MV/MZ":
-                    RPGMakerService(project).install_runtime_bridge()
-            except Exception:
-                pass
+            self._remove_tool_runtime_artifacts(project)
         self.workspace.save_library(entries)
         return {"ok": True, "entries": _plain(entries), "added": added, "updated": updated, "found": len(projects), "scanned": scanned}
 
@@ -432,16 +479,9 @@ class ToolkitApi:
             self.data_records = []
             self.save_payload = None
             self.save_path = None
-        # Prepare the bundled runtime component as soon as a project is selected,
-        # so users do not have to understand or repeat a manual installation step.
-        try:
-            if project.engine == "Ren'Py":
-                RenPyService(project).install_live_translation_bridge(False)
-            elif project.engine == "RPG Maker MV/MZ":
-                RPGMakerService(project).install_runtime_bridge()
-        except Exception:
-            # Projects with a non-standard layout can still be opened for extraction.
-            pass
+        # Project selection is read-only.  Remove only RPGRenPyLocalizer files
+        # left by older releases so launching this folder elsewhere stays stock.
+        self._remove_tool_runtime_artifacts(project)
         return self.project_summary(refresh=False)
 
     def project_summary(self, refresh: bool = False) -> JsonDict:
@@ -483,6 +523,59 @@ class ToolkitApi:
                 summary["rpgMakerExtraError"] = str(exc)
         return summary
 
+    @staticmethod
+    def _remove_tool_runtime_artifacts(project: ProjectInfo) -> int:
+        """Restore an original game tree from this tool's old implicit hooks."""
+        try:
+            if project.engine == "RPG Maker MV/MZ":
+                return RPGMakerService(project).uninstall_runtime_bridge()
+            if project.engine == "Ren'Py":
+                return RenPyService(project).clear_generated_translation_files()
+        except Exception:
+            # A read-only or unusual project remains usable for inspection.
+            pass
+        return 0
+
+    @staticmethod
+    def _runtime_copy_project(project: ProjectInfo, runtime_root: Path, launcher: Path | None) -> ProjectInfo:
+        """Mirror project paths inside an isolated runtime copy."""
+        try:
+            game_dir = runtime_root / project.game_dir.relative_to(project.root)
+        except ValueError:
+            game_dir = runtime_root
+        try:
+            data_dir = runtime_root / project.data_dir.relative_to(project.root) if project.data_dir else None
+        except ValueError:
+            data_dir = game_dir / "data" if (game_dir / "data").is_dir() else None
+        try:
+            scripts_dir = runtime_root / project.scripts_dir.relative_to(project.root) if project.scripts_dir else None
+        except ValueError:
+            scripts_dir = None
+        return ProjectInfo(project.engine, runtime_root, game_dir, launcher_path=launcher, data_dir=data_dir, scripts_dir=scripts_dir)
+
+    @classmethod
+    def _build_renpy_runtime_copy(cls, project: ProjectInfo) -> tuple[ProjectInfo, Path, Path | None]:
+        """Create an isolated Ren'Py tree before adding any bridge or patch."""
+        workspace = project.root / ".rpgrtl_workspace"
+        runtime_root = workspace / "renpy_runtime_game"
+        staging_root = workspace / "renpy_runtime_game.building"
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        workspace.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(project.root, staging_root, ignore=shutil.ignore_patterns(".rpgrtl_workspace", ".rpgrtl_backup"))
+        if runtime_root.exists():
+            shutil.rmtree(runtime_root)
+        shutil.move(str(staging_root), str(runtime_root))
+        launcher: Path | None = None
+        if project.launcher_path and project.launcher_path.exists():
+            try:
+                candidate = runtime_root / project.launcher_path.relative_to(project.root)
+                launcher = candidate if candidate.is_file() else None
+            except ValueError:
+                pass
+        runtime_project = cls._runtime_copy_project(project, runtime_root, launcher)
+        return runtime_project, runtime_root, launcher
+
     def launch_project(self, body: JsonDict) -> JsonDict:
         project = self._project()
         raw_launcher = body.get("launcherPath") or project.launcher_path
@@ -498,6 +591,11 @@ class ToolkitApi:
 
     def ai_models(self, body: JsonDict) -> JsonDict:
         provider = self._normalize_ai_provider(str(body.get("provider") or "openai"))
+        if provider == "accountbridge":
+            account = self._account_bridge_provider(body)
+            models = self._account_bridge_models(account)
+            detected_agents = self._detected_native_agents()
+            return {"models": models, "detected": bool(models), "agents": detected_agents, "message": "模型清单来自本机已登录 Agent；无需把账号密码或 API Key 交给本软件。"}
         api_key = str(body.get("apiKey") or "")
         base_url = str(body.get("baseUrl") or self._default_base_url(provider)).rstrip("/")
         if not base_url:
@@ -526,6 +624,8 @@ class ToolkitApi:
     @staticmethod
     def _normalize_ai_provider(provider: str) -> str:
         lowered = str(provider or "").strip().lower()
+        if "accountbridge" in lowered or "account-bridge" in lowered or "localagent" in lowered or "local-agent" in lowered or "订阅账号" in lowered or "本地agent" in lowered or "本地 agent" in lowered:
+            return "accountbridge"
         if "ollama" in lowered or "本地模型" in lowered:
             return "ollama"
         if "anthropic" in lowered or "claude" in lowered:
@@ -549,7 +649,11 @@ class ToolkitApi:
             entries = [e for e in entries if e.category == category or e.file == category]
         if only_missing:
             entries = [e for e in entries if not e.target]
-        limit = max(1, min(int(query.get("limit") or 500), 5000))
+        # The workbench must operate on the complete project.  The old 5000
+        # item ceiling meant that any later dialogue was silently absent from
+        # both AI translation and the generated RPG Maker runtime copy.
+        load_all = str(query.get("all", "0")).lower() in {"1", "true", "yes"}
+        limit = len(entries) if load_all else max(1, min(int(query.get("limit") or 500), 5000))
         offset = max(0, int(query.get("offset") or 0))
         categories = sorted({e.category or e.file for e in safe_entries if e.category or e.file})
         return {"count": len(entries), "total": len(safe_entries), "categories": categories, "entries": _plain(entries[offset: offset + limit])}
@@ -558,10 +662,15 @@ class ToolkitApi:
         updates = body.get("updates") or []
         if not isinstance(updates, list):
             raise ApiError("updates 必须是数组。")
+        # AI batches are independent work units.  In partial mode retain every
+        # valid result and report only malformed entries, instead of losing a
+        # whole batch because one model response dropped an escape token.
+        allow_partial = bool(body.get("allowPartial"))
         if not self.translation_entries:
             self.translation_entries = self._service().extract_translations()
         index = {e.entry_id: e for e in self._filter_safe_translation_entries(self.translation_entries)}
         changed = 0
+        rejected: list[JsonDict] = []
         for raw in updates:
             if not isinstance(raw, dict):
                 continue
@@ -569,14 +678,142 @@ class ToolkitApi:
             if entry_id in index:
                 target = str(raw.get("target") or "")
                 source = index[entry_id].source
-                self._validate_translation_target(source, target)
+                try:
+                    self._validate_translation_target(source, target)
+                except ApiError as exc:
+                    if not allow_partial:
+                        raise
+                    rejected.append({"entry_id": entry_id, "reason": str(exc)})
+                    continue
                 index[entry_id].target = target
                 changed += 1
         self._persist_translation_cache()
-        return {"ok": True, "changed": changed}
+        snapshot = self._create_translation_snapshot("保存译文") if changed else None
+        live_table = ""
+        live_count = 0
+        if changed and self._project().engine == "RPG Maker MV/MZ":
+            service = RPGMakerService(self._project())
+            table, live_count = service.write_live_translation_table({
+                entry.source: entry.target
+                for entry in self._filter_safe_translation_entries(self.translation_entries)
+                if entry.source.strip() and entry.target.strip()
+            })
+            live_table = str(table)
+            # A currently running bridge receives the same map immediately;
+            # subsequent launches read it directly from the local JSON file.
+            if service.live_bridge_status()["running"]:
+                live_count = service.set_live_translations({
+                    entry.source: entry.target
+                    for entry in self._filter_safe_translation_entries(self.translation_entries)
+                    if entry.source.strip() and entry.target.strip()
+                })
+        return {"ok": True, "changed": changed, "rejected": rejected, "version": snapshot, "translationTable": live_table, "liveApplied": live_count}
 
     def _translation_cache_path(self) -> Path:
         return self._project().root / ".rpgrtl_workspace" / "translation_entries.json"
+
+    def _translation_workspace(self) -> Path:
+        return self._translation_cache_path().parent
+
+    def _translation_version_manifest_path(self) -> Path:
+        return self._translation_workspace() / "translation_versions.json"
+
+    def _translation_versions_dir(self) -> Path:
+        return self._translation_workspace() / "translation_versions"
+
+    @staticmethod
+    def _translation_content_signature(entries: list[TranslationEntry]) -> str:
+        digest = hashlib.sha256()
+        for entry in sorted(entries, key=lambda item: item.entry_id):
+            digest.update(entry.entry_id.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(entry.source.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(entry.target.encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _load_translation_version_manifest(self) -> list[JsonDict]:
+        path = self._translation_version_manifest_path()
+        if not path.exists():
+            return []
+        try:
+            payload = load_json(path)
+            items = payload.get("versions") if isinstance(payload, dict) else []
+            return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _create_translation_snapshot(self, reason: str, force: bool = False) -> JsonDict | None:
+        """Keep immutable, loadable translation revisions inside the project."""
+        entries = self._filter_safe_translation_entries(self.translation_entries)
+        if not entries:
+            return None
+        signature = self._translation_content_signature(entries)
+        versions = self._load_translation_version_manifest()
+        if not force and versions and versions[-1].get("content_signature") == signature:
+            return versions[-1]
+        now = datetime.now()
+        version_id = now.strftime("%Y%m%d-%H%M%S-") + f"{now.microsecond // 1000:03d}"
+        filename = f"{version_id}.json"
+        version_dir = self._translation_versions_dir()
+        version_dir.mkdir(parents=True, exist_ok=True)
+        export_translation_snapshot(version_dir / filename, self._project().engine, entries, translation_pack_signature(self._project().engine, entries))
+        record: JsonDict = {
+            "id": version_id,
+            "label": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": now.isoformat(timespec="seconds"),
+            "reason": reason,
+            "file": filename,
+            "count": sum(1 for entry in entries if entry.target.strip()),
+            "content_signature": signature,
+        }
+        versions.append(record)
+        save_json(self._translation_version_manifest_path(), {"version": 1, "versions": versions[-200:]})
+        return record
+
+    def translations_versions(self) -> JsonDict:
+        if not self.translation_entries:
+            self.translation_entries = self._service().extract_translations()
+            self._restore_translation_cache()
+        workspace = self._translation_workspace()
+        original = workspace / "original_texts.json"
+        versions: list[JsonDict] = [{
+            "id": "original",
+            "label": "原文（不替换）",
+            "created_at": "",
+            "reason": "original",
+            "count": 0,
+            "available": original.exists(),
+        }]
+        for item in reversed(self._load_translation_version_manifest()):
+            filename = str(item.get("file") or "")
+            if filename and (self._translation_versions_dir() / filename).is_file():
+                versions.append({**item, "available": True})
+        return {"ok": True, "versions": versions}
+
+    def _entries_for_translation_version(self, version_id: str, body: JsonDict) -> list[TranslationEntry]:
+        if not version_id or version_id == "current":
+            return self._merged_translation_list(body)
+        if not self.translation_entries:
+            self.translation_entries = self._service().extract_translations()
+            self._restore_translation_cache()
+        if version_id == "original":
+            return [TranslationEntry(entry.entry_id, entry.source, "", entry.file, entry.context, entry.category)
+                    for entry in self._filter_safe_translation_entries(self.translation_entries)]
+        record = next((item for item in self._load_translation_version_manifest() if item.get("id") == version_id), None)
+        if not record:
+            raise ApiError("所选翻译版本不存在。", 404)
+        path = self._translation_versions_dir() / str(record.get("file") or "")
+        if not path.is_file():
+            raise ApiError("所选翻译版本文件已丢失。", 404)
+        imported = import_translation_pack(path)
+        current = {entry.entry_id: entry for entry in self._filter_safe_translation_entries(self.translation_entries)}
+        result: list[TranslationEntry] = []
+        for entry_id, entry in current.items():
+            saved = imported.get(entry_id)
+            result.append(TranslationEntry(entry_id, entry.source, saved.target if saved else "", entry.file, entry.context, entry.category))
+        return result
 
     def _restore_translation_cache(self) -> None:
         path = self._translation_cache_path()
@@ -598,12 +835,15 @@ class ToolkitApi:
         timestamp = time.time()
         entries = _plain(self._filter_safe_translation_entries(self.translation_entries))
         save_json(path, {"version": 1, "updated_at": timestamp, "entries": entries})
-        save_json(path.parent / "original_texts.json", {
-            "version": 1,
-            "updated_at": timestamp,
-            "engine": self._project().engine,
-            "entries": [{"entry_id": item.get("entry_id", ""), "source": item.get("source", ""), "file": item.get("file", ""), "context": item.get("context", ""), "category": item.get("category", "")} for item in entries],
-        })
+        original_path = path.parent / "original_texts.json"
+        # Original text is a restoration baseline, not a moving cache.
+        if not original_path.exists():
+            save_json(original_path, {
+                "version": 1,
+                "updated_at": timestamp,
+                "engine": self._project().engine,
+                "entries": [{"entry_id": item.get("entry_id", ""), "source": item.get("source", ""), "file": item.get("file", ""), "context": item.get("context", ""), "category": item.get("category", "")} for item in entries],
+            })
         save_json(path.parent / "translated_texts.json", {
             "version": 1,
             "updated_at": timestamp,
@@ -626,10 +866,7 @@ class ToolkitApi:
         return [entry for entry in entries if self._is_safe_translation_entry(entry)]
 
     def translations_apply(self, body: JsonDict) -> JsonDict:
-        translations = self._merged_translation_map(body)
-        changed = self._service().apply_translations(translations)
-        self._persist_translation_cache()
-        return {"ok": True, "changed": changed}
+        raise ApiError("为保护原游戏完整性，已禁用永久覆盖原文件。请使用“选择译文启动”，它会生成独立、可删除的运行副本。", 409)
 
     def translations_export(self, body: JsonDict) -> JsonDict:
         raw = body.get("path")
@@ -638,10 +875,17 @@ class ToolkitApi:
         path = Path(str(raw)).expanduser()
         if not self.translation_entries:
             self.translation_entries = self._service().extract_translations()
-        translations = self._merged_translation_list(body)
+            self._restore_translation_cache()
+        # The backend cache is authoritative here.  A renderer can hold an
+        # old complete-table snapshot while asynchronous repair saves finish;
+        # merging that snapshot again would silently erase persisted repairs.
+        translations = self._filter_safe_translation_entries(self.translation_entries)
         engine = self._project().engine
         export_translation_pack(path, engine, translations, translation_pack_signature(engine, translations))
-        return {"ok": True, "path": str(path), "count": len(translations)}
+        self.translation_entries = translations
+        self._persist_translation_cache()
+        snapshot = self._create_translation_snapshot("导出翻译包", force=True)
+        return {"ok": True, "path": str(path), "count": len(translations), "version": snapshot}
 
     def translations_import(self, body: JsonDict) -> JsonDict:
         path = Path(str(body.get("path") or "")).expanduser()
@@ -653,56 +897,71 @@ class ToolkitApi:
         index = {e.entry_id: e for e in self._filter_safe_translation_entries(self.translation_entries)}
         matched = 0
         for entry_id, imported_entry in imported.items():
-            if entry_id in index:
+            if imported_entry.entry_id and entry_id in index:
                 self._validate_translation_target(index[entry_id].source, imported_entry.target)
                 index[entry_id].target = imported_entry.target
                 matched += 1
+                continue
+            # Public source->target packs apply to every matching occurrence
+            # (the same UI/choice line can appear in multiple map files).
+            for entry in index.values():
+                if entry.source == imported_entry.source:
+                    self._validate_translation_target(entry.source, imported_entry.target)
+                    entry.target = imported_entry.target
+                    matched += 1
         self._persist_translation_cache()
-        return {"ok": True, "matched": matched, "imported": len(imported)}
+        snapshot = self._create_translation_snapshot("导入翻译包") if matched else None
+        return {"ok": True, "matched": matched, "imported": len(imported), "version": snapshot}
 
     def translations_runtime(self, body: JsonDict) -> JsonDict:
         project = self._project()
-        translations = self._merged_translation_map(body)
-        if str(body.get("mode") or "translated") == "original":
-            original_map = {entry.target: entry.source for entry in translations.values() if entry.target.strip()}
-            translations = {
-                key: TranslationEntry(entry.entry_id, entry.source, entry.source, entry.file, entry.context, entry.category)
-                for key, entry in translations.items()
-            }
-            translations.update({
-                f"reverse:{key}": TranslationEntry(f"reverse:{key}", key, value, "", "", "")
-                for key, value in original_map.items()
-            })
+        version_id = str(body.get("versionId") or ("original" if str(body.get("mode") or "translated") == "original" else "current"))
+        selected_entries = self._entries_for_translation_version(version_id, body)
+        translations = {entry.entry_id: entry for entry in selected_entries}
         if project.engine == "RPG Maker MV/MZ":
             service = RPGMakerService(project)
-            # The workbench replacement buttons must also work while the game
-            # is already running, even when the user did not open Live first.
-            # Starting without clear_events preserves the current queue and
-            # lets the game's polling bridge connect on its next heartbeat.
-            service.install_runtime_bridge()
-            service.start_live_bridge_server(clear_events=False)
-            if hasattr(service, "set_live_translations"):
-                live_count = service.set_live_translations({entry.source: entry.target for entry in translations.values() if entry.source.strip() and entry.target.strip()})
-            else:
-                live_count = 0
-            path, launcher, changed = service.build_runtime_copy(translations)
-            return {"ok": True, "path": str(path), "launcher": str(launcher) if launcher else "", "changed": changed, "liveApplied": live_count}
+            bridge, table, launcher, table_count = service.install_in_place_runtime(translations)
+            service.start_live_bridge_server(clear_events=not bool(body.get("hotSwitch")))
+            live_count = service.set_live_translations({
+                entry.source: entry.target
+                for entry in translations.values()
+                if entry.source.strip() and entry.target.strip()
+            })
+            return {
+                "ok": True,
+                "mode": "in-place",
+                "hotSwitched": bool(body.get("hotSwitch")),
+                "path": str(project.root),
+                "launcher": str(launcher) if launcher else "",
+                "bridge": str(bridge),
+                "translationTable": str(table),
+                "changed": 0,
+                "liveApplied": live_count or table_count,
+                "versionId": version_id,
+            }
         if project.engine == "Ren'Py":
-            service = RenPyService(project)
+            runtime_project, runtime_root, launcher = self._build_renpy_runtime_copy(project)
+            service = RenPyService(runtime_project)
             service.install_live_translation_bridge(False)
             for entry in translations.values():
                 if entry.source.strip() and entry.target.strip():
                     service.merge_live_translations({entry.source: entry.target}, kind="mode_switch")
             path, changed = service.build_runtime_translation_patch(translations)
-            return {"ok": True, "path": str(path), "changed": changed}
+            return {"ok": True, "path": str(path), "runtimeRoot": str(runtime_root), "launcher": str(launcher) if launcher else "", "changed": changed}
         raise ApiError("当前引擎不支持运行时翻译补丁。")
 
     def rpgmaker_install_bridge(self) -> JsonDict:
         project = self._project()
         if project.engine != "RPG Maker MV/MZ":
             raise ApiError("当前项目不是 RPG Maker MV/MZ。")
-        path = RPGMakerService(project).install_runtime_bridge()
-        return {"ok": True, "path": str(path)}
+        service = RPGMakerService(project)
+        bridge = service.install_runtime_bridge()
+        table, count = service.write_live_translation_table({
+            entry.source: entry.target
+            for entry in self._filter_safe_translation_entries(self.translation_entries)
+            if entry.source.strip() and entry.target.strip()
+        })
+        return {"ok": True, "mode": "in-place", "bridge": str(bridge), "translationTable": str(table), "liveApplied": count}
 
     def renpy_install_extractor(self, body: JsonDict) -> JsonDict:
         project = self._project()
@@ -903,22 +1162,9 @@ class ToolkitApi:
         if self.translation_entries and self.project:
             self._persist_translation_cache()
         if isinstance(service, RenPyService):
-            service.install_live_translation_bridge(bool(body.get("clearEvents", False)))
-            if self.translation_entries:
-                translated = {entry.source: entry.target for entry in self.translation_entries if entry.source.strip() and entry.target.strip()}
-                if translated:
-                    service.merge_live_translations(translated, kind="loaded")
-            if body.get("autoTranslate", True):
-                self._start_live_worker(service)
+            raise ApiError("为保护原游戏完整性，Ren'Py 实时桥接仅会随翻译后的独立运行副本启动。")
         elif hasattr(service, "start_live_bridge_server"):
-            RPGMakerService(service.project).install_runtime_bridge()
-            # A new RPGMaker session must not inherit another game's capture queue.
-            service.start_live_bridge_server(bool(body.get("clearEvents", True)))
-            if self.translation_entries and hasattr(service, "set_live_translations"):
-                service.set_live_translations({entry.source: entry.target for entry in self.translation_entries if entry.source.strip() and entry.target.strip()})
-                service.seed_live_translation_queue(self.translation_entries)
-            if body.get("autoTranslate", True):
-                self._start_live_worker(service)
+            raise ApiError("RPG Maker 实时桥接仅在“选择译文启动”创建的独立运行副本中可用，原游戏不会被安装插件。")
         return self.live_status()
 
     def live_stop(self) -> JsonDict:
@@ -1089,6 +1335,8 @@ class ToolkitApi:
             "apiKey": str(ai.get("apiKey") or ""),
             "baseUrl": str(ai.get("baseUrl") or ""),
             "model": str(ai.get("model") or ""),
+            "localAgentPath": str(ai.get("localAgentPath") or ""),
+            "accountProvider": str(ai.get("accountProvider") or "local-agent-auto"),
             "targetLang": str(ai.get("targetLang") or "简体中文"),
             "batchSize": max(1, min(int(ai.get("batchSize") or 20), 200)),
             "concurrency": max(1, min(int(ai.get("concurrency") or ai.get("threads") or 1), 8)),
@@ -1217,7 +1465,7 @@ class ToolkitApi:
                     self.live_worker_stats["state"] = "waiting"
                 stop_event.wait(0.25)
                 continue
-            if not config["baseUrl"] or not config["model"] or (config["provider"] != "ollama" and not config["apiKey"]):
+            if not config["model"] or (config["provider"] not in {"ollama", "accountbridge"} and (not config["baseUrl"] or not config["apiKey"])):
                 service.requeue_live_translation_candidates(candidates)
                 with self.lock:
                     self.live_worker_stats.update({"state": "configuration_required", "lastError": "请先在 AI 设置中填写接口信息并选择模型。"})
@@ -1355,14 +1603,54 @@ class ToolkitApi:
     def ai_translate(self, body: JsonDict) -> JsonDict:
         entries = self._normalize_ai_entries(body.get("entries") or [])
         if entries:
+            # Avoid paying for the same label/dialogue again when it appears
+            # in multiple files. Cache keys include the target language.
+            target_lang = str(body.get("targetLang") or "简体中文").strip() or "简体中文"
+            cache = self.workspace.load_project_translation_memory(self.project.root) if self.project else self.workspace.load_translation_memory()
+            unique: dict[str, JsonDict] = {}
+            resolved: dict[str, str] = {}
+            for entry in entries:
+                source = str(entry["source"])
+                if self._is_auto_confirmable_text(source):
+                    # A deliberate no-op is still a completed entry.  Do not
+                    # store it in translation memory, where it could mask a
+                    # meaningful use of the same punctuation in another game.
+                    resolved[source] = source
+                    continue
+                cached = str(cache.get(f"api-v1::{target_lang}::{source}") or "").strip()
+                if cached and cached != source.strip():
+                    resolved[source] = cached
+                elif source not in unique:
+                    unique[source] = entry
             provider = str(body.get("provider") or "OpenAI")
-            if provider == "\u767e\u5ea6\u7ffb\u8bd1":
-                translations = self._translate_baidu([entry["source"] for entry in entries], body)
-                return {"ok": True, "translations": [{"entry_id": entry["entry_id"], "target": translations[index] if index < len(translations) else ""} for index, entry in enumerate(entries)]}
-            if provider in {"Google \u514d\u8d39", "MyMemory", "LibreTranslate"}:
-                translations = self._translate_public_mt([entry["source"] for entry in entries], body)
-                return {"ok": True, "translations": [{"entry_id": entry["entry_id"], "target": translations[index] if index < len(translations) else ""} for index, entry in enumerate(entries)]}
-            return {"ok": True, "translations": self._translate_entries_openai_compatible(entries, body)}
+            request_entries = list(unique.values())
+            if self._normalize_ai_provider(provider) == "accountbridge":
+                returned = self._translate_entries_account_bridge(request_entries, body) if request_entries else []
+            elif provider == "\u767e\u5ea6\u7ffb\u8bd1":
+                values = self._translate_baidu([entry["source"] for entry in request_entries], body)
+                returned = [{"entry_id": entry["entry_id"], "target": values[index] if index < len(values) else ""} for index, entry in enumerate(request_entries)]
+            elif provider in {"Google \u514d\u8d39", "MyMemory", "LibreTranslate"}:
+                values = self._translate_public_mt([entry["source"] for entry in request_entries], body)
+                returned = [{"entry_id": entry["entry_id"], "target": values[index] if index < len(values) else ""} for index, entry in enumerate(request_entries)]
+            else:
+                returned = self._translate_entries_openai_compatible(request_entries, body) if request_entries else []
+            returned_by_id = {str(item.get("entry_id") or ""): str(item.get("target") or "").strip() for item in returned}
+            for entry in request_entries:
+                value = returned_by_id.get(str(entry["entry_id"]), "")
+                source = str(entry["source"])
+                if value and value != source.strip():
+                    resolved[source] = value
+                    cache[f"api-v1::{target_lang}::{source}"] = value
+            if self.project:
+                self.workspace.save_project_translation_memory(self.project.root, cache)
+            else:
+                self.workspace.save_translation_memory(cache)
+            return {
+                "ok": True,
+                "translations": [{"entry_id": entry["entry_id"], "target": resolved.get(str(entry["source"]), "")} for entry in entries],
+                "requested": len(request_entries),
+                "cacheHits": len(entries) - len(request_entries),
+            }
 
         texts = body.get("texts") or []
         if isinstance(texts, str):
@@ -1371,7 +1659,11 @@ class ToolkitApi:
         if not texts:
             return {"translations": []}
         provider = str(body.get("provider") or "OpenAI")
-        if provider == "\u767e\u5ea6\u7ffb\u8bd1":
+        if self._normalize_ai_provider(provider) == "accountbridge":
+            entries = [{"entry_id": str(index), "source": text} for index, text in enumerate(texts)]
+            mapping = {item["entry_id"]: item["target"] for item in self._translate_entries_account_bridge(entries, body)}
+            translations = [mapping.get(str(index), "") for index in range(len(texts))]
+        elif provider == "\u767e\u5ea6\u7ffb\u8bd1":
             translations = self._translate_baidu(texts, body)
         elif provider in {"Google \u514d\u8d39", "MyMemory", "LibreTranslate"}:
             translations = self._translate_public_mt(texts, body)
@@ -1449,6 +1741,18 @@ class ToolkitApi:
             })
         return entries
 
+    @staticmethod
+    def _is_auto_confirmable_text(value: object) -> bool:
+        """True for numbers/separators/control-only text, never for dialogue."""
+        text = str(value or "")
+        text = re.sub(r"\\(?:[A-Za-z]+\[[^\]]*\]|[A-Za-z]+|.)", "", text)
+        text = re.sub(r"\[[^\]]+\]|\{[^}]+\}", "", text).strip()
+        if not text:
+            return True
+        # Keep this conservative: any Unicode letter, including CJK/Japanese,
+        # remains eligible for normal translation.
+        return not any(char.isalpha() for char in text)
+
     def _translate_entries_openai_compatible(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
         provider = self._normalize_ai_provider(str(body.get("provider") or "openai"))
         api_key = str(body.get("apiKey") or "")
@@ -1464,20 +1768,20 @@ class ToolkitApi:
             {
                 "entry_id": entry["entry_id"],
                 "source": entry["source"],
-                "category": entry.get("category", ""),
-                "file": entry.get("file", ""),
                 "context": entry.get("context", ""),
             }
             for entry in entries
         ]
+        source_files = sorted({str(entry.get("file") or "") for entry in entries if str(entry.get("file") or "")})
         prompt = (
             "你是专业游戏本地化译者。请把输入 JSON 中每个 source 从"
             f"{source_lang}翻译成{target_lang}，尤其必须输出简体中文译文。"
             "保持 RPG Maker/Ren'Py 控制符、变量、占位符、颜色/名称标签、转义符和换行不变。"
+            "同一请求来自同一个来源文件，entries 已按游戏顺序排列；请参考相邻条目和 context，保持角色语气、术语和选项风格一致。"
             "不要改 entry_id，不要合并或删除条目。除非 source 已经是目标语言、纯数字、纯符号或不可翻译控制符，否则不要原样照抄 source。"
             "只返回严格 JSON 对象，格式为 {\"translations\": {\"entry_id\": \"译文\"}}，不要 Markdown，不要解释。"
         )
-        user_payload = json.dumps({"entries": compact_entries}, ensure_ascii=False)
+        user_payload = json.dumps({"source_files": source_files, "entries": compact_entries}, ensure_ascii=False)
         if provider == "anthropic":
             url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
             payload = {
@@ -1524,8 +1828,732 @@ class ToolkitApi:
         mapping = self._parse_translation_map(content, [entry["entry_id"] for entry in entries])
         return [{"entry_id": entry["entry_id"], "target": mapping.get(entry["entry_id"], "")} for entry in entries]
 
+    def _translate_entries_account_bridge(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        """Call an OAuth-account provider through the local agent bridge.
+
+        Account credentials never enter this application: the bridge owns its
+        OAuth token store and receives only a provider id, model, and prompt.
+        """
+        account_provider = self._account_bridge_provider(body)
+        if account_provider == "local-agent-auto":
+            return self._translate_entries_local_agent_auto(entries, body)
+        if account_provider == "gemini-cli":
+            return self._translate_entries_gemini_cli(entries, body)
+        if account_provider == "antigravity-cli":
+            return self._translate_entries_antigravity_cli(entries, body)
+        if account_provider in {"anthropic", "openai-codex", "opencode"}:
+            return self._translate_entries_with_native_agent(account_provider, entries, body)
+        raw_path = str(body.get("localAgentPath") or "").strip()
+        if not raw_path:
+            raise ApiError("该账号类型需要本地桥接脚本路径。若要自动使用已登录 CLI，请选择“本机 Agent 自动”。")
+        root = Path(raw_path).expanduser()
+        script = root / "pi-test.ps1" if root.is_dir() else root
+        if not script.is_file():
+            raise ApiError("未找到订阅账号桥接程序。请在 AI 设置中填写本地 Agent 目录。")
+        model = str(body.get("model") or "").strip()
+        if not model:
+            raise ApiError("订阅账号桥接需要选择模型。请先登录账号，再获取模型列表。")
+        prompt = (
+            "你是专业游戏本地化译者。把下面 JSON entries 的 source 翻译成"
+            f"{str(body.get('targetLang') or '简体中文')}。保留控制符、变量、标签和换行。"
+            "只返回严格 JSON：{\"translations\": {\"entry_id\": \"译文\"}}，不要解释。\n"
+            + json.dumps({"entries": [{"entry_id": item["entry_id"], "source": item["source"]} for item in entries]}, ensure_ascii=False)
+        )
+        command = [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+            "--print", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files",
+            "--provider", account_provider, "--model", model, prompt,
+        ]
+        try:
+            completed = subprocess.run(command, cwd=str(root if root.is_dir() else script.parent), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self._ai_timeout(body))
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError("订阅账号请求超时。请减小单批数量或提高超时秒数。", 504) from exc
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "订阅账号桥接执行失败").strip()
+            raise ApiError(f"订阅账号桥接执行失败：{message[-500:]}", 502)
+        mapping = self._parse_translation_map(completed.stdout, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _bridge_translation_prompt(self, entries: list[JsonDict], body: JsonDict) -> str:
+        return (
+            "你是专业游戏本地化译者。把下面 JSON entries 的 source 翻译成"
+            f"{str(body.get('targetLang') or '简体中文')}。保留控制符、变量、标签和换行。"
+            "只返回严格 JSON：{\"translations\": {\"entry_id\": \"译文\"}}，不要解释。\n"
+            + json.dumps({"entries": [{"entry_id": item["entry_id"], "source": item["source"]} for item in entries]}, ensure_ascii=False)
+        )
+
+    def _translate_entries_gemini_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        content = self._call_google_gemini_oauth(entries, body)
+        mapping = self._parse_translation_map(content, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _translate_entries_local_agent_auto(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        selected_model = str(body.get("model") or "").strip()
+        if ":" in selected_model:
+            prefix, model = selected_model.split(":", 1)
+            provider = self._account_bridge_provider({"accountProvider": prefix})
+            scoped = dict(body)
+            scoped["model"] = model
+            return self._translate_entries_with_native_agent(provider, entries, scoped)
+        for provider in ("antigravity-cli", "anthropic", "openai-codex", "opencode"):
+            if self._native_agent_available(provider):
+                return self._translate_entries_with_native_agent(provider, entries, body)
+        raise ApiError("没有检测到可用的本机 Agent CLI。请先安装并登录 agy、claude、codex 或 opencode。")
+
+    def _translate_entries_with_native_agent(self, provider: str, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        if provider == "antigravity-cli":
+            return self._translate_entries_antigravity_cli(entries, body)
+        if provider == "anthropic":
+            return self._translate_entries_claude_cli(entries, body)
+        if provider == "openai-codex":
+            return self._translate_entries_codex_cli(entries, body)
+        if provider == "opencode":
+            return self._translate_entries_opencode_cli(entries, body)
+        raise ApiError(f"暂不支持该本机 Agent：{provider}")
+
+    def _google_gemini_credential_path(self) -> Path:
+        return self.workspace.config_dir / GOOGLE_GEMINI_CREDENTIAL_FILE
+
+    def _load_google_gemini_credential(self) -> JsonDict:
+        path = self._google_gemini_credential_path()
+        if not path.exists():
+            raise ApiError("还没有登录 Gemini 账号。请在 AI 设置中点击“登录账号”，完成浏览器授权。", 401)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ApiError("Gemini 登录凭据读取失败，请重新登录账号。", 401) from exc
+        if not str(data.get("refresh") or "").strip():
+            raise ApiError("Gemini 登录凭据缺少 refresh token，请重新登录账号。", 401)
+        return data
+
+    def _save_google_gemini_credential(self, data: JsonDict) -> None:
+        path = self._google_gemini_credential_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _refresh_google_gemini_credential(self, credential: JsonDict) -> JsonDict:
+        form = urllib.parse.urlencode({
+            "client_id": GOOGLE_GEMINI_CLIENT_ID,
+            "client_secret": GOOGLE_GEMINI_CLIENT_SECRET,
+            "refresh_token": str(credential.get("refresh") or ""),
+            "grant_type": "refresh_token",
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            GOOGLE_GEMINI_TOKEN_URL,
+            data=form,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            raise ApiError(f"Gemini refresh token 被 Google 拒绝，请重新登录账号：{exc}", 401) from exc
+        credential["access"] = str(payload.get("access_token") or "")
+        if payload.get("refresh_token"):
+            credential["refresh"] = str(payload["refresh_token"])
+        credential["expires"] = int(time.time() * 1000) + int(payload.get("expires_in") or 3600) * 1000 - 5 * 60 * 1000
+        credential["updatedAt"] = int(time.time() * 1000)
+        credential.pop("refreshError", None)
+        self._save_google_gemini_credential(credential)
+        return credential
+
+    def _try_refresh_google_gemini_credential(self, credential: JsonDict, require: bool = False) -> JsonDict:
+        try:
+            return self._refresh_google_gemini_credential(credential)
+        except ApiError as exc:
+            credential["refreshError"] = str(exc)
+            credential["refreshErrorAt"] = int(time.time() * 1000)
+            self._save_google_gemini_credential(credential)
+            if require or not str(credential.get("access") or "").strip():
+                raise
+            return credential
+
+    def _fresh_google_gemini_credential(self) -> JsonDict:
+        credential = self._load_google_gemini_credential()
+        if int(credential.get("expires") or 0) <= int(time.time() * 1000) + 60_000:
+            credential = self._try_refresh_google_gemini_credential(credential)
+        if not str(credential.get("access") or "").strip():
+            credential = self._try_refresh_google_gemini_credential(credential, require=True)
+        if not str(credential.get("projectId") or "").strip():
+            try:
+                credential["projectId"] = self._discover_google_gemini_project(str(credential.get("access") or ""))
+            except ApiError as exc:
+                credential["projectDiscoveryError"] = str(exc)
+                credential["projectId"] = ""
+            self._save_google_gemini_credential(credential)
+        return credential
+
+    @staticmethod
+    def _gemini_cli_headers(model: str, access_token: str) -> JsonDict:
+        return {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "User-Agent": f"GeminiCLI/0.49.0/{model} (win32; x64; terminal)",
+            "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
+        }
+
+    @staticmethod
+    def _extract_google_project_id(payload: JsonDict) -> str:
+        direct = payload.get("cloudaicompanionProject")
+        if isinstance(direct, str):
+            return direct
+        if isinstance(direct, dict) and isinstance(direct.get("id"), str):
+            return str(direct["id"])
+        response = payload.get("response")
+        if isinstance(response, dict):
+            nested = response.get("cloudaicompanionProject")
+            if isinstance(nested, str):
+                return nested
+            if isinstance(nested, dict) and isinstance(nested.get("id"), str):
+                return str(nested["id"])
+        return ""
+
+    def _google_code_assist_json(self, path: str, access_token: str, payload: JsonDict | None = None, method: str = "POST") -> JsonDict:
+        data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{GOOGLE_GEMINI_CODE_ASSIST}{path}",
+            data=data,
+            headers=self._gemini_cli_headers("gemini-2.5-flash", access_token),
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ApiError(f"Gemini Cloud Code Assist 请求失败 HTTP {exc.code}: {detail[-500:]}", 502) from exc
+        return json.loads(raw or "{}")
+
+    def _poll_google_operation(self, operation_name: str, access_token: str) -> JsonDict:
+        last: JsonDict = {}
+        for attempt in range(24):
+            if attempt > 0:
+                time.sleep(5)
+            last = self._google_code_assist_json(f"/v1internal/{operation_name}", access_token, None, "GET")
+            if last.get("done"):
+                return last
+        return last
+
+    def _discover_google_gemini_project(self, access_token: str) -> str:
+        env_project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT_ID") or ""
+        metadata: JsonDict = {
+            "ideType": "IDE_UNSPECIFIED",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        }
+        if env_project_id:
+            metadata["duetProject"] = env_project_id
+        load = self._google_code_assist_json(
+            "/v1internal:loadCodeAssist",
+            access_token,
+            {
+                **({"cloudaicompanionProject": env_project_id} if env_project_id else {}),
+                "metadata": metadata,
+            },
+        )
+        project_id = self._extract_google_project_id(load)
+        if project_id:
+            return project_id
+        if load.get("currentTier") and env_project_id:
+            return env_project_id
+        allowed = load.get("allowedTiers") if isinstance(load.get("allowedTiers"), list) else []
+        tier = load.get("currentTier") if isinstance(load.get("currentTier"), dict) else next((item for item in allowed if isinstance(item, dict) and item.get("isDefault")), None)
+        if not tier and allowed:
+            tier = next((item for item in allowed if isinstance(item, dict)), None)
+        tier_id = str((tier or {}).get("id") or "free-tier")
+        onboard = self._google_code_assist_json(
+            "/v1internal:onboardUser",
+            access_token,
+            {
+                "tierId": tier_id,
+                **({"cloudaicompanionProject": env_project_id} if tier_id != "free-tier" and env_project_id else {}),
+                "metadata": metadata,
+            },
+        )
+        project_id = self._extract_google_project_id(onboard)
+        if project_id:
+            return project_id
+        operation_name = str(onboard.get("name") or "")
+        if operation_name and not onboard.get("done"):
+            operation = self._poll_google_operation(operation_name, access_token)
+            project_id = self._extract_google_project_id(operation)
+            if project_id:
+                return project_id
+        if env_project_id:
+            return env_project_id
+        raise ApiError("Gemini 授权已完成，但 Cloud Code Assist 没有返回可用 projectId。请稍后重新登录，或换用个人 Google/Gemini 账号。", 401)
+
+    def _call_google_gemini_oauth(self, entries: list[JsonDict], body: JsonDict) -> str:
+        credential = self._fresh_google_gemini_credential()
+        model = str(body.get("model") or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+        prompt = self._bridge_translation_prompt(entries, body)
+        if not str(credential.get("projectId") or "").strip():
+            return self._call_google_generative_language_oauth(prompt, model, credential, body)
+        payload = {
+            "project": str(credential.get("projectId") or ""),
+            "model": model,
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "maxOutputTokens": int(body.get("maxTokens") or 8192),
+                },
+            },
+        }
+        request = urllib.request.Request(
+            f"{GOOGLE_GEMINI_CODE_ASSIST}/v1internal:streamGenerateContent?alt=sse",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=self._gemini_cli_headers(model, str(credential.get("access") or "")),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._ai_timeout(body)) as response:
+                text = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {401, 403}:
+                try:
+                    refreshed = self._refresh_google_gemini_credential(credential)
+                except ApiError as refresh_exc:
+                    raise ApiError(f"Gemini 账号 token 已失效，刷新也失败。请重新点击登录账号：{refresh_exc}", 401) from refresh_exc
+                retry = urllib.request.Request(
+                    f"{GOOGLE_GEMINI_CODE_ASSIST}/v1internal:streamGenerateContent?alt=sse",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers=self._gemini_cli_headers(model, str(refreshed.get("access") or "")),
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(retry, timeout=self._ai_timeout(body)) as response:
+                        text = response.read().decode("utf-8", errors="replace")
+                except urllib.error.HTTPError as retry_exc:
+                    retry_detail = retry_exc.read().decode("utf-8", errors="replace")
+                    if retry_exc.code in {400, 403, 404}:
+                        return self._call_google_generative_language_oauth(prompt, model, refreshed, body)
+                    raise ApiError(f"Gemini 账号请求失败 HTTP {retry_exc.code}: {retry_detail[-500:]}", 502) from retry_exc
+            else:
+                if exc.code in {400, 403, 404}:
+                    return self._call_google_generative_language_oauth(prompt, model, credential, body)
+                raise ApiError(f"Gemini 账号请求失败 HTTP {exc.code}: {detail[-500:]}", 502) from exc
+        except TimeoutError as exc:
+            raise ApiError("Gemini 账号请求超时。请减小单批数量或提高超时秒数。", 504) from exc
+        return self._extract_google_sse_text(text)
+
+    def _call_google_generative_language_oauth(self, prompt: str, model: str, credential: JsonDict, body: JsonDict) -> str:
+        access_token = str(credential.get("access") or "")
+        if not access_token:
+            credential = self._try_refresh_google_gemini_credential(credential, require=True)
+            access_token = str(credential.get("access") or "")
+        model_id = model if model.startswith("models/") else f"models/{model}"
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": int(body.get("maxTokens") or 8192),
+            },
+        }
+        request = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/{model_id}:generateContent",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._ai_timeout(body)) as response:
+                raw = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {401, 403}:
+                try:
+                    refreshed = self._refresh_google_gemini_credential(credential)
+                except ApiError as refresh_exc:
+                    raise ApiError(f"Gemini 账号 token 已失效，刷新也失败。请重新点击登录账号：{refresh_exc}", 401) from refresh_exc
+                retry = urllib.request.Request(
+                    f"https://generativelanguage.googleapis.com/v1beta/{model_id}:generateContent",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {str(refreshed.get('access') or '')}",
+                        "Content-Type": "application/json",
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(retry, timeout=self._ai_timeout(body)) as response:
+                        raw = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+                except urllib.error.HTTPError as retry_exc:
+                    retry_detail = retry_exc.read().decode("utf-8", errors="replace")
+                    raise ApiError(f"Gemini OAuth 兼容模式请求失败 HTTP {retry_exc.code}: {retry_detail[-500:]}", 502) from retry_exc
+            else:
+                raise ApiError(f"Gemini OAuth 兼容模式请求失败 HTTP {exc.code}: {detail[-500:]}", 502) from exc
+        parts: list[str] = []
+        for candidate in raw.get("candidates") or []:
+            content = candidate.get("content") if isinstance(candidate, dict) else None
+            for part in (content.get("parts") if isinstance(content, dict) else None) or []:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+        return "".join(parts).strip()
+
+    @staticmethod
+    def _extract_google_sse_text(raw: str) -> str:
+        chunks: list[str] = []
+        for line in raw.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            response = payload.get("response") if isinstance(payload, dict) else None
+            candidates = response.get("candidates") if isinstance(response, dict) else payload.get("candidates") if isinstance(payload, dict) else None
+            if not isinstance(candidates, list):
+                continue
+            for candidate in candidates:
+                content = candidate.get("content") if isinstance(candidate, dict) else None
+                parts = content.get("parts") if isinstance(content, dict) else None
+                if not isinstance(parts, list):
+                    continue
+                for part in parts:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        chunks.append(part["text"])
+        return "".join(chunks).strip()
+
+    def _translate_entries_antigravity_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        # agy 1.1.x print mode requires the prompt as the argument of -p /
+        # --print.  Older Open Design versions used `agy -p -`, but agy 1.1.x
+        # treats that literal dash as the prompt, so the model replies to "-"
+        # instead of the translation request.
+        model = str(body.get("model") or "default").strip() or "default"
+        model = ANTIGRAVITY_MODEL_ALIASES.get(model, model)
+        if model != "default":
+            self._write_antigravity_model_selection(model)
+        log_path = Path(tempfile.gettempdir()) / f"rpgrtl-agy-{os.getpid()}-{int(time.time() * 1000)}.log"
+        prompt = self._bridge_translation_prompt(entries, body)
+        command = [self._native_agent_bin("antigravity-cli"), "--log-file", str(log_path), "--print-timeout", f"{max(1, int(self._ai_timeout(body)))}s"]
+        if model != "default":
+            command.extend(["--model", model])
+        command.extend(["-p", prompt])
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self._ai_timeout(body) + 10)
+        except FileNotFoundError as exc:
+            raise ApiError("未检测到 Antigravity CLI（agy）。请安装并登录 agy 后重试。") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError("Antigravity 账号请求超时。请减小单批数量或提高超时秒数。", 504) from exc
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or self._read_optional_text(log_path) or "Antigravity CLI 执行失败").strip()
+            raise ApiError(f"Antigravity CLI 执行失败：{message[-500:]}", 502)
+        output = self._native_agent_response_text(completed.stdout).strip()
+        if not output:
+            detail = self._read_optional_text(log_path)
+            if self._looks_like_antigravity_auth_error(detail):
+                raise ApiError("Antigravity 未登录或登录态过期。请打开终端运行 agy 完成登录后再试。", 401)
+            raise ApiError(f"Antigravity 没有返回内容。{detail[-300:] if detail else ''}".strip(), 502)
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _translate_entries_claude_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        command = [self._native_agent_bin("anthropic"), "-p", "--input-format", "text", "--output-format", "text"]
+        model = str(body.get("model") or "").strip()
+        if model and model != "default":
+            command.extend(["--model", model])
+        command.extend(["--permission-mode", "bypassPermissions"])
+        output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "Claude Code")
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _translate_entries_codex_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        command = [self._native_agent_bin("openai-codex"), "exec", "--skip-git-repo-check", "--sandbox", "danger-full-access"]
+        model = str(body.get("model") or "").strip()
+        if model and model != "default":
+            command.extend(["--model", model])
+        output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "Codex CLI")
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _translate_entries_opencode_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
+        command = [self._native_agent_bin("opencode"), "run", "--format", "json"]
+        model = str(body.get("model") or "").strip()
+        if model and model != "default":
+            command.extend(["-m", model])
+        output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "OpenCode")
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
+
+    def _run_native_agent_command(self, command: list[str], prompt: str, name: str) -> str:
+        try:
+            completed = subprocess.run(command, input=prompt, cwd=str(self.project_root), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+        except FileNotFoundError as exc:
+            raise ApiError(f"未检测到 {name}。请先安装并在终端登录后重试。") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError(f"{name} 请求超时。请减小单批数量或提高超时秒数。", 504) from exc
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or f"{name} 执行失败").strip()
+            raise ApiError(f"{name} 执行失败：{message[-500:]}", 502)
+        output = self._native_agent_response_text(completed.stdout or "").strip()
+        if not output:
+            message = (completed.stderr or f"{name} 没有返回内容").strip()
+            raise ApiError(message[-500:], 502)
+        return output
+
+    @classmethod
+    def _native_agent_response_text(cls, output: str) -> str:
+        text = cls._strip_ansi(str(output or "")).strip()
+        if not text:
+            return ""
+        embedded = cls._json_object_around_key(text, "translations")
+        if embedded:
+            return embedded
+        try:
+            parsed = json.loads(text)
+            extracted = cls._extract_text_from_agent_json(parsed)
+            if extracted:
+                embedded = cls._json_object_around_key(extracted, "translations")
+                return embedded or extracted
+        except Exception:
+            pass
+        line_texts: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                continue
+            extracted = cls._extract_text_from_agent_json(parsed)
+            if extracted:
+                line_texts.append(extracted)
+        if line_texts:
+            joined = "\n".join(line_texts).strip()
+            embedded = cls._json_object_around_key(joined, "translations")
+            return embedded or joined
+        return text
+
+    @staticmethod
+    def _strip_ansi(value: str) -> str:
+        return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value or "")
+
+    @classmethod
+    def _extract_text_from_agent_json(cls, value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts = [cls._extract_text_from_agent_json(item) for item in value]
+            return "\n".join(part for part in parts if part).strip()
+        if not isinstance(value, dict):
+            return ""
+        for key in ("response", "text", "content", "output", "message", "delta", "result"):
+            if key in value:
+                extracted = cls._extract_text_from_agent_json(value[key])
+                if extracted:
+                    return extracted
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            extracted = cls._extract_text_from_agent_json(parts)
+            if extracted:
+                return extracted
+        choices = value.get("choices")
+        if isinstance(choices, list):
+            extracted = cls._extract_text_from_agent_json(choices)
+            if extracted:
+                return extracted
+        return ""
+
+    @staticmethod
+    def _json_object_around_key(text: str, key: str) -> str:
+        marker = f'"{key}"'
+        pos = text.find(marker)
+        if pos < 0:
+            return ""
+        start = text.rfind("{", 0, pos)
+        if start < 0:
+            return ""
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1].strip()
+        return ""
+
+    @staticmethod
+    def _read_optional_text(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _looks_like_antigravity_auth_error(value: str) -> bool:
+        return bool(re.search(r"not logged|oauth|accounts\.google|sign.?in|unauthori[sz]ed|credential|keyring", value or "", re.IGNORECASE))
+
+    @staticmethod
+    def _write_antigravity_model_selection(model: str) -> None:
+        settings_path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        data: JsonDict = {}
+        if settings_path.exists():
+            try:
+                parsed = json.loads(settings_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    data = parsed
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        data["model"] = model
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _native_agent_candidates(provider: str) -> list[str]:
+        local_app = os.environ.get("LOCALAPPDATA") or ""
+        roaming = os.environ.get("APPDATA") or ""
+        return {
+            "antigravity-cli": [
+                "agy",
+                str(Path(local_app) / "agy" / "bin" / "agy.exe") if local_app else "",
+            ],
+            "anthropic": ["claude", str(Path(roaming) / "npm" / "claude.cmd") if roaming else "", str(Path(roaming) / "npm" / "claude.ps1") if roaming else ""],
+            "openai-codex": ["codex"],
+            "opencode": ["opencode-cli", "opencode", str(Path(roaming) / "npm" / "opencode-cli.cmd") if roaming else "", str(Path(roaming) / "npm" / "opencode.cmd") if roaming else ""],
+        }.get(provider, [])
+
+    @classmethod
+    def _native_agent_bin(cls, provider: str) -> str:
+        for candidate in cls._native_agent_candidates(provider):
+            if not candidate:
+                continue
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+            path = Path(candidate)
+            if path.is_file():
+                return str(path)
+        return cls._native_agent_candidates(provider)[0] if cls._native_agent_candidates(provider) else provider
+
+    @classmethod
+    def _native_agent_available(cls, provider: str) -> bool:
+        return bool(shutil.which(cls._native_agent_bin(provider)) or Path(cls._native_agent_bin(provider)).is_file())
+
+    @staticmethod
+    def _bridge_output_text(output: str) -> str:
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            return output
+        if isinstance(parsed, dict):
+            for key in ("response", "text", "content", "output"):
+                if isinstance(parsed.get(key), str):
+                    return str(parsed[key])
+        return output
+
+    @staticmethod
+    def _account_bridge_provider(body: JsonDict) -> str:
+        raw = str(body.get("accountProvider") or "local-agent-auto").strip().lower()
+        aliases = {
+            "auto": "local-agent-auto",
+            "local": "local-agent-auto",
+            "native": "local-agent-auto",
+            "local-agent": "local-agent-auto",
+            "native-agent": "local-agent-auto",
+            "本机agent": "local-agent-auto",
+            "本机 agent": "local-agent-auto",
+            "chatgpt": "openai-codex",
+            "chatgpt-plus": "openai-codex",
+            "openai": "openai-codex",
+            "claude": "anthropic",
+            "copilot": "github-copilot",
+            "github": "github-copilot",
+            "kimi": "kimi-coding",
+            "grok": "xai",
+            "gemini": "gemini-cli",
+            "google": "gemini-cli",
+            "antigravity": "antigravity-cli",
+            "agy": "antigravity-cli",
+            "opencode-cli": "opencode",
+        }
+        provider = aliases.get(raw, raw)
+        if provider not in {"local-agent-auto", "openai-codex", "anthropic", "github-copilot", "kimi-coding", "xai", "gemini-cli", "antigravity-cli", "opencode"}:
+            raise ApiError("该订阅账号当前没有可用的 OAuth 桥接。请选择已安装并已登录的 Agent CLI。")
+        return provider
+
+    @staticmethod
+    def _account_bridge_models(provider: str) -> list[str]:
+        # These are provider-native model ids understood by the local OAuth
+        # bridge.  The selected account decides which of them is actually
+        # available; an unsupported model returns a readable bridge error.
+        native_auto = [
+            *[f"antigravity-cli:{model}" for model in ANTIGRAVITY_MODELS],
+            "anthropic:default",
+            "anthropic:sonnet",
+            "anthropic:opus",
+            "openai-codex:default",
+            "openai-codex:gpt-5.5",
+            "openai-codex:gpt-5.4",
+            "openai-codex:gpt-5.4-mini",
+            "opencode:default",
+        ]
+        return {
+            "local-agent-auto": native_auto,
+            "openai-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
+            "anthropic": ["claude-sonnet-4.6", "claude-haiku-4.5", "claude-opus-4.6"],
+            "github-copilot": ["gpt-5.4", "claude-sonnet-4.6", "gemini-3-flash-preview"],
+            "kimi-coding": ["kimi-k2.5", "kimi-k2.5-thinking"],
+            "xai": ["grok-4.1-fast-non-reasoning", "grok-4.1-fast-reasoning"],
+            "gemini-cli": [
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-pro-preview",
+                "gemini-3.1-flash-lite",
+                "gemini-3-flash-preview",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+            ],
+            "antigravity-cli": ANTIGRAVITY_MODELS,
+            "opencode": ["default", "anthropic/claude-sonnet-4-5", "openai/gpt-5", "google/gemini-2.5-pro"],
+        }.get(provider, [])
+
+    @classmethod
+    def _detected_native_agents(cls) -> list[JsonDict]:
+        labels = {
+            "antigravity-cli": "Antigravity",
+            "anthropic": "Claude Code",
+            "openai-codex": "Codex CLI",
+            "opencode": "OpenCode",
+        }
+        agents: list[JsonDict] = []
+        for provider, label in labels.items():
+            binary = cls._native_agent_bin(provider)
+            available = cls._native_agent_available(provider)
+            agents.append({"provider": provider, "name": label, "available": available, "path": binary if available else ""})
+        return agents
+
     def _translate_openai_compatible(self, texts: list[str], body: JsonDict) -> list[str]:
         provider = self._normalize_ai_provider(str(body.get("provider") or "openai"))
+        if provider == "accountbridge":
+            entries = [{"entry_id": str(index), "source": text} for index, text in enumerate(texts)]
+            mapping = {item["entry_id"]: item["target"] for item in self._translate_entries_account_bridge(entries, body)}
+            return [mapping.get(str(index), "") for index in range(len(texts))]
         api_key = str(body.get("apiKey") or "")
         model = str(body.get("model") or self._default_model(provider))
         base_url = str(body.get("baseUrl") or self._default_base_url(provider)).rstrip("/")
@@ -1694,9 +2722,13 @@ class ToolkitApi:
         raise ValueError("empty content")
 
     def _parse_translation_map(self, content: str, entry_ids: list[str]) -> dict[str, str]:
+        normalized = self._native_agent_response_text(content)
         try:
-            parsed = self._json_from_model_content(content)
+            parsed = self._json_from_model_content(normalized)
         except Exception:
+            fallback = normalized.strip()
+            if len(entry_ids) == 1 and fallback:
+                return {entry_ids[0]: fallback}
             return {}
         values: dict[str, str] = {}
         raw_translations = parsed.get("translations") if isinstance(parsed, dict) else parsed
@@ -1704,6 +2736,11 @@ class ToolkitApi:
             for entry_id in entry_ids:
                 if entry_id in raw_translations:
                     values[entry_id] = str(raw_translations.get(entry_id) or "")
+            if not values and len(entry_ids) == 1:
+                for key in ("text", "translation", "target", "result", "content", "response", "output"):
+                    if key in raw_translations and isinstance(raw_translations[key], (str, int, float)):
+                        values[entry_ids[0]] = str(raw_translations[key])
+                        break
         elif isinstance(raw_translations, list):
             expected = set(entry_ids)
             for index, item in enumerate(raw_translations[:len(entry_ids)]):
@@ -1715,6 +2752,13 @@ class ToolkitApi:
                     values[entry_id] = str(item.get("target") or item.get("translation") or item.get("text") or "")
                 else:
                     values[entry_id] = str(item or "")
+        elif isinstance(raw_translations, (str, int, float)) and len(entry_ids) == 1:
+            values[entry_ids[0]] = str(raw_translations)
+        if not values and isinstance(parsed, dict) and len(entry_ids) == 1:
+            for key in ("text", "translation", "target", "result", "content", "response", "output"):
+                if key in parsed and isinstance(parsed[key], (str, int, float)):
+                    values[entry_ids[0]] = str(parsed[key])
+                    break
         return values
 
     def _parse_translation_array(self, content: str, expected: int) -> list[str]:
@@ -1748,6 +2792,7 @@ class ToolkitApi:
         return {
             "openai": "gpt-4o-mini",
             "anthropic": "claude-3-5-haiku-latest",
+            "accountbridge": "",
             "ollama": "",
             "OpenAI": "gpt-4o-mini",
             "DeepSeek": "deepseek-chat",
@@ -1762,6 +2807,7 @@ class ToolkitApi:
         return {
             "openai": "https://api.openai.com/v1",
             "anthropic": "https://api.anthropic.com",
+            "accountbridge": "",
             "ollama": "http://127.0.0.1:11434",
             "OpenAI": "https://api.openai.com/v1",
             "DeepSeek": "https://api.deepseek.com/v1",
@@ -1844,6 +2890,7 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "GET" and path == "/project/summary": return api.project_summary()
     if method == "POST" and path == "/project/launch": return api.launch_project(body)
     if method == "GET" and path == "/translations": return api.translations(query)
+    if method == "GET" and path == "/translations/versions": return api.translations_versions()
     if method == "POST" and path == "/translations/save-targets": return api.translations_save_targets(body)
     if method == "POST" and path == "/translations/apply": return api.translations_apply(body)
     if method == "POST" and path == "/translations/export": return api.translations_export(body)

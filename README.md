@@ -2,7 +2,7 @@
 
 面向 Windows 单机游戏的 RPG Maker MV/MZ 与 Ren'Py 本地化、实时翻译和数据辅助工具，支持 PC 桌面端与 Android 移动端双端运行。
 
-当前版本：**3.0.0（PC / Android）**
+当前版本：**3.1.0（PC / Android）**
 
 - 下载版本：[GitHub Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)
 - 查看更新：[GitHub Tags](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/tags)
@@ -10,7 +10,7 @@
 
 > 本工具面向本地单机游戏的翻译、调试与个人存档管理。修改游戏文件或存档前请保留备份，并遵守游戏许可和当地法律。
 
-## 3.0.0 版本更新
+## 3.1.0 版本更新
 
 3.0.0 将 PC 端已经验证的 Ren'Py 实时翻译调度策略同步到 Android，并把两端发布版本统一为 **3.0.0**。本次重点不是改变用户的 AI 配置，而是让单批数量、并发数和请求间隔真正按已保存的设置工作。
 

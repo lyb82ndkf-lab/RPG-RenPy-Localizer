@@ -32,6 +32,24 @@ def translation_pack_signature(engine: str, entries: list[TranslationEntry]) -> 
 
 
 def export_translation_pack(path: Path, engine: str, entries: list[TranslationEntry], signature: str | None = None) -> None:
+    """Export the portable, human-editable translation format.
+
+    IDs/files/categories are implementation details and make a translation
+    pack needlessly huge.  A user pack is deliberately just ``source: target``.
+    Internal revision snapshots use :func:`export_translation_snapshot`.
+    """
+    del engine, signature
+    payload: dict[str, str] = {}
+    for entry in entries:
+        source = str(entry.source or "")
+        target = str(entry.target or "")
+        if source.strip() and target.strip():
+            payload[source] = target
+    save_json(path, payload)
+
+
+def export_translation_snapshot(path: Path, engine: str, entries: list[TranslationEntry], signature: str | None = None) -> None:
+    """Write the rich private format used for exact per-entry version restore."""
     payload = {
         "engine": engine,
         "signature": signature or translation_pack_signature(engine, entries),
@@ -58,7 +76,10 @@ def load_translation_pack_payload(path: Path) -> dict[str, Any]:
 def import_translation_pack(path: Path) -> dict[str, TranslationEntry]:
     payload = load_translation_pack_payload(path)
     entries: dict[str, TranslationEntry] = {}
-    for raw in payload.get("entries", []):
+    # Legacy/internal snapshots retain IDs and are still accepted.
+    for raw in payload.get("entries", []) if isinstance(payload.get("entries"), list) else []:
+        if not isinstance(raw, dict) or "id" not in raw:
+            continue
         entry = TranslationEntry(
             entry_id=raw["id"],
             source=raw.get("source", ""),
@@ -68,4 +89,11 @@ def import_translation_pack(path: Path) -> dict[str, TranslationEntry]:
             category=raw.get("category", ""),
         )
         entries[entry.entry_id] = entry
+    if entries:
+        return entries
+    # Public packs are intentionally a plain {"original": "translation"}
+    # mapping.  Entry IDs are resolved against the currently loaded project.
+    for source, target in payload.items():
+        if isinstance(target, str) and str(source).strip():
+            entries[str(source)] = TranslationEntry(entry_id="", source=str(source), target=target)
     return entries

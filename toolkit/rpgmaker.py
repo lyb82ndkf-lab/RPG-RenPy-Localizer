@@ -22,6 +22,17 @@ from .storage import load_json, save_json
 # Real-time translation server state (tool side)
 # ---------------------------------------------------------------------------
 RPGRM_LIVE_BRIDGE_PORT = 32181  # tool-side HTTP server port
+RUNTIME_CJK_FONT_BASENAME = "RPGRenPyLocalizerCJK"
+RUNTIME_CJK_FONT_FAMILY = "RPGRenPyLocalizer CJK"
+SYSTEM_CJK_FONT_CANDIDATES = (
+    Path("C:/Windows/Fonts/msyh.ttc"),
+    Path("C:/Windows/Fonts/msyh.ttf"),
+    Path("C:/Windows/Fonts/simhei.ttf"),
+    Path("C:/Windows/Fonts/simsun.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf"),
+)
 
 _RPGRM_LIVE_SERVER_STATE: dict[str, Any] = {
     "translations": {},         # source -> target
@@ -266,6 +277,23 @@ TRANSLATION_DATABASE_FILES = {
 
 SAFE_TRANSLATION_CATEGORIES = {"database", "dialogue"}
 
+# RPG Maker's JSON files can contain plugin metadata and arbitrary custom
+# payloads.  A recursive "name"/"description" scan is therefore unsafe: a
+# plugin configuration identifier is often named exactly like a visible field.
+# Only these fields on the engine's documented top-level database records are
+# player-facing database strings.
+DATABASE_TEXT_FIELDS: dict[str, frozenset[str]] = {
+    "Actors.json": frozenset({"name", "nickname", "profile"}),
+    "Armors.json": frozenset({"name", "description"}),
+    "Classes.json": frozenset({"name"}),
+    "Enemies.json": frozenset({"name"}),
+    "Items.json": frozenset({"name", "description"}),
+    "MapInfos.json": frozenset({"name"}),
+    "Skills.json": frozenset({"name", "description", "message1", "message2"}),
+    "States.json": frozenset({"name", "message1", "message2", "message3", "message4"}),
+    "Weapons.json": frozenset({"name", "description"}),
+}
+
 def _is_safe_translation_file(file_name: str) -> bool:
     return file_name in TRANSLATION_DATABASE_FILES or file_name == "CommonEvents.json" or (file_name.startswith("Map") and file_name.endswith(".json"))
 
@@ -301,6 +329,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   if (typeof require !== "function") return;
 
   const http = require("http");
+  const fs = require("fs");
+  const path = require("path");
   const PORT = 32179;
   const HOST = "127.0.0.1";
   const bridge = window.RPGRenPyBridge = window.RPGRenPyBridge || {};
@@ -309,6 +339,11 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.root = process.cwd ? process.cwd() : "";
   bridge.translationEnabled = false;
   bridge.translations = bridge.translations || {};
+  // A language switch must always start from the game's original string.
+  // Keep the first observed value per loaded JSON object instead of chaining
+  // "old translation -> new translation", which made original/uninstall
+  // impossible and caused translations to get stuck after a hot switch.
+  bridge.originalTextValues = bridge.originalTextValues || new WeakMap();
   bridge.locks = bridge.locks || {};
   bridge.options = bridge.options || {
     gameSpeed: 1,
@@ -332,6 +367,37 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.translationCount = 0;     // count of translations received
   bridge.lastPullSeq = -1;         // skip full database walks when nothing changed
   bridge._pollTimer = null;
+
+  // The normal launch path is deliberately independent from the desktop
+  // application's HTTP server.  Load the small translation table directly
+  // from disk so an MV/MZ game starts translated even when the tool is closed.
+  // `__dirname` covers both unpacked games and NW.js www/ deployments.
+  function loadLocalTranslationTable() {
+    var configured = "";
+    try {
+      if (typeof PluginManager !== "undefined" && PluginManager.parameters) {
+        configured = String(PluginManager.parameters("RPGRenPyBridge").translationFile || "");
+      }
+    } catch (_e) {}
+    var roots = [bridge.root, path.resolve(__dirname, "../.."), path.resolve(__dirname, "../../..")];
+    var candidates = configured ? [configured] : [];
+    for (var i = 0; i < roots.length; i++) candidates.push(path.join(roots[i], ".rpgrtl_workspace", "live_translation.json"));
+    for (var j = 0; j < candidates.length; j++) {
+      try {
+        if (!candidates[j] || !fs.existsSync(candidates[j])) continue;
+        var payload = JSON.parse(fs.readFileSync(candidates[j], "utf8"));
+        var table = payload && typeof payload.translations === "object" ? payload.translations : payload;
+        if (!table || typeof table !== "object" || Array.isArray(table)) continue;
+        bridge.translations = Object.assign({}, table);
+        bridge.translationCount = Object.keys(bridge.translations).length;
+        bridge.translationEnabled = bridge.translationCount > 0;
+        bridge.translationFile = candidates[j];
+        return bridge.translationCount;
+      } catch (e) { bridge.lastError = "Unable to load live translation table: " + String(e); }
+    }
+    return 0;
+  }
+  loadLocalTranslationTable();
 
   function clamp(value, min, max, fallback) {
     const number = Number(value);
@@ -360,6 +426,17 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       });
     });
   }
+
+  const RPGRenPyCjkFontFamily = "RPGRenPyLocalizer CJK";
+  function cjkFontFace() {
+    return RPGRenPyCjkFontFamily + ", Microsoft YaHei, SimHei, Noto Sans CJK SC, Noto Sans SC, sans-serif";
+  }
+  function installCjkFont() {
+    // Do not copy or request a bundled font. NW.js/Chromium resolves the
+    // following system fallbacks directly, avoiding a multi-megabyte runtime
+    // artifact and preventing missing-font loading stalls in MV/MZ.
+  }
+  installCjkFont();
 
   function reportSeen(text, displayed, event) {
     if (!text || typeof text !== "string") return;
@@ -419,11 +496,20 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (!bridge.translationEnabled || !bridge.translations) return 0;
     let changed = 0;
     const visited = new Set();
+    const originalValue = (container, key) => {
+      let values = bridge.originalTextValues.get(container);
+      if (!values) {
+        values = {};
+        bridge.originalTextValues.set(container, values);
+      }
+      if (!Object.prototype.hasOwnProperty.call(values, key)) values[key] = container[key];
+      return values[key];
+    };
     const applyString = (container, key) => {
       if (!container || typeof container[key] !== "string") return;
-      const original = container[key];
+      const original = originalValue(container, key);
       const translated = translate(original);
-      if (translated !== original) {
+      if (container[key] !== translated) {
         container[key] = translated;
         changed++;
       }
@@ -742,8 +828,33 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   const _bitmapInitialize = Bitmap.prototype.initialize;
   Bitmap.prototype.initialize = function(width, height) {
     _bitmapInitialize.call(this, width, height);
+    this.fontFace = cjkFontFace();
     if (bridge.options.fontSize > 0) this.fontSize = bridge.options.fontSize;
   };
+
+  if (typeof Window_Base !== "undefined") {
+    if (Window_Base.prototype.standardFontFace) {
+      const _standardFontFace = Window_Base.prototype.standardFontFace;
+      Window_Base.prototype.standardFontFace = function() {
+        const original = _standardFontFace.call(this);
+        return cjkFontFace() + (original ? ", " + original : "");
+      };
+    }
+    if (Window_Base.prototype.resetFontSettings) {
+      const _resetFontSettings = Window_Base.prototype.resetFontSettings;
+      Window_Base.prototype.resetFontSettings = function() {
+        _resetFontSettings.call(this);
+        if (this.contents) this.contents.fontFace = cjkFontFace();
+      };
+    }
+  }
+  if (typeof Game_System !== "undefined" && Game_System.prototype.mainFontFace) {
+    const _mainFontFace = Game_System.prototype.mainFontFace;
+    Game_System.prototype.mainFontFace = function() {
+      const original = _mainFontFace.call(this);
+      return cjkFontFace() + (original ? ", " + original : "");
+    };
+  }
 
   const _convert = Window_Base.prototype.convertEscapeCharacters;
   function isSafeTextWindow(windowObject) {
@@ -1146,6 +1257,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.server.listen(PORT, HOST, () => {
     bridge.started = true;
     bridge.lastError = "";
+    const applied = applyTranslationsToLoadedData();
+    refreshVisibleText(applied > 0);
     startBackgroundPolling();
   });
 })();
@@ -1336,43 +1449,33 @@ class RPGMakerService:
         )
         return patch_root, updated
 
-    def build_runtime_copy(self, translations: dict[str, TranslationEntry]) -> tuple[Path, Path | None, int]:
-        patch_root, updated = self.build_translation_patch(translations)
-        runtime_root = self.project.root / ".rpgrtl_workspace" / "runtime_game"
-        if runtime_root.exists():
-            shutil.rmtree(runtime_root)
-        runtime_root.mkdir(parents=True, exist_ok=True)
-        self._copy_tree_contents(self.project.root, runtime_root)
-        if patch_root.exists():
-            self._copy_tree_contents(patch_root, runtime_root)
-        launcher: Path | None = None
-        if self.project.launcher_path and self.project.launcher_path.exists():
-            try:
-                launcher = runtime_root / self.project.launcher_path.relative_to(self.project.root)
-            except ValueError:
-                launcher = runtime_root / self.project.launcher_path.name
-        if not launcher or not launcher.exists():
-            launcher = find_launcher(runtime_root, self.project.launcher_path.name if self.project.launcher_path else None)
-        readme = runtime_root / "README_RPGRenPyLocalizer.txt"
-        readme.write_text(
-            "This is a temporary translated runtime copy generated by RPGRenPyLocalizer.\n"
-            "The original game folder was not overwritten.\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        return runtime_root, launcher if launcher and launcher.exists() else None, updated
+    def live_translation_path(self) -> Path:
+        return self.project.root / ".rpgrtl_workspace" / "live_translation.json"
 
-    def _copy_tree_contents(self, source: Path, target: Path) -> None:
-        for item in source.iterdir():
-            if item.name in {"README.txt", ".rpgrtl_workspace"}:
-                continue
-            destination = target / item.name
-            if item.is_dir():
-                destination.mkdir(parents=True, exist_ok=True)
-                self._copy_tree_contents(item, destination)
-            else:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, destination)
+    def install_in_place_runtime(self, translations: dict[str, TranslationEntry]) -> tuple[Path, Path, Path | None, int]:
+        """Install only the tiny MV/MZ bridge and its JSON table in the game.
+
+        No game data, images, movies, audio, or executable is copied.  The
+        bridge translates in memory and the original data directory remains
+        byte-for-byte untouched.
+        """
+        legacy_runtime = self.project.root / ".rpgrtl_workspace" / "runtime_game"
+        if legacy_runtime.is_dir():
+            shutil.rmtree(legacy_runtime)
+        table, count = self.write_live_translation_table({
+            entry.source: entry.target
+            for entry in self._filter_safe_translation_map(translations).values()
+            if entry.source.strip() and entry.target.strip()
+        })
+        bridge = self.install_runtime_bridge()
+        launcher = self.project.launcher_path if self.project.launcher_path and self.project.launcher_path.is_file() else find_launcher(self.project.root)
+        return bridge, table, launcher, count
+
+    def _find_system_cjk_font(self) -> Path | None:
+        for candidate in SYSTEM_CJK_FONT_CANDIDATES:
+            if candidate.is_file():
+                return candidate
+        return None
 
     def update_record(self, record: DataRecord, new_value: str) -> None:
         self._backup_tree()
@@ -1397,12 +1500,42 @@ class RPGMakerService:
         bridge_path = plugins_dir / f"{RUNTIME_BRIDGE_NAME}.js"
         bridge_path.write_text(RUNTIME_BRIDGE_SOURCE, encoding="utf-8", newline="\n")
         plugins_js = runtime_root / "js" / "plugins.js"
-        self._enable_plugin(plugins_js, RUNTIME_BRIDGE_NAME)
+        self._enable_plugin(plugins_js, RUNTIME_BRIDGE_NAME, {"translationFile": str(self.live_translation_path())})
         return bridge_path
 
-    def uninstall_runtime_bridge(self) -> None:
-        plugins_js = self.project.game_dir / "js" / "plugins.js"
-        self._disable_plugin(plugins_js, RUNTIME_BRIDGE_NAME)
+    def uninstall_runtime_bridge(self) -> int:
+        """Remove only files and configuration entries owned by this tool.
+
+        This is intentionally idempotent: opening a game in the workbench must
+        never leave a plugin or a missing-font reference behind in its original
+        directory.
+        """
+        removed = 0
+        runtime_root = self.project.game_dir
+        plugins_js = runtime_root / "js" / "plugins.js"
+        if plugins_js.is_file():
+            plugins = self._load_plugins_js(plugins_js)
+            filtered = [plugin for plugin in plugins if plugin.get("name") != RUNTIME_BRIDGE_NAME]
+            if len(filtered) != len(plugins):
+                self._save_plugins_js(plugins_js, filtered)
+                removed += len(plugins) - len(filtered)
+        bridge_path = runtime_root / "js" / "plugins" / f"{RUNTIME_BRIDGE_NAME}.js"
+        try:
+            if bridge_path.is_file():
+                bridge_path.unlink()
+                removed += 1
+        except OSError:
+            pass
+        # These names are exclusively generated by RPGRenPyLocalizer's bridge.
+        for suffix in (".ttf", ".ttc", ".otf"):
+            font_path = runtime_root / "fonts" / f"{RUNTIME_CJK_FONT_BASENAME}{suffix}"
+            try:
+                if font_path.is_file():
+                    font_path.unlink()
+                    removed += 1
+            except OSError:
+                pass
+        return removed
 
     # --- Real-time translation server methods ---
 
@@ -1502,41 +1635,46 @@ class RPGMakerService:
             if normalized != source and normalized != stripped:
                 _RPGRM_LIVE_SERVER_STATE["translations"][normalized] = target
             _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
+            table = dict(_RPGRM_LIVE_SERVER_STATE["translations"])
+        self.write_live_translation_table(table)
         self.append_live_debug_event(kind, source, source, target, True)
 
-    def set_live_translations(self, translations: dict[str, str]) -> int:
-        """Replace the tool-side dictionary used by the running RPG Maker bridge."""
-        normalized = {}
+    @staticmethod
+    def _normalized_live_translations(translations: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
         for source, target in translations.items():
             source_text = str(source or "").strip()
             target_text = str(target or "").strip()
-            if source_text and target_text:
+            if source_text and target_text and source_text != target_text:
                 normalized[source_text] = target_text
-                normalized[re.sub(r"\s+", " ", source_text)] = target_text
+        return normalized
+
+    def set_live_translations(self, translations: dict[str, str]) -> int:
+        """Replace the tool-side dictionary used by the running RPG Maker bridge."""
+        raw = self._normalized_live_translations(translations)
+        normalized = dict(raw)
+        for source_text, target_text in raw.items():
+            normalized[re.sub(r"\s+", " ", source_text)] = target_text
         with _RPGRM_LIVE_SERVER_LOCK:
             _RPGRM_LIVE_SERVER_STATE["translations"] = normalized
             _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
+        self.write_live_translation_table(raw)
         return len(normalized)
 
     def notify_game_refresh(self) -> None:
         with _RPGRM_LIVE_SERVER_LOCK:
             _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
 
-    def write_live_translation_table(self, translations: dict[str, str]) -> tuple[str, int]:
-        """Write translations to disk only. Server state is managed by merge_live_translation."""
-        workspace = self.project.root / ".rpgrtl_workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        path = workspace / "rpgmaker_live_translation.json"
-        # Merge with existing server state for the disk file (don't lose anything)
-        with _RPGRM_LIVE_SERVER_LOCK:
-            existing = dict(_RPGRM_LIVE_SERVER_STATE["translations"])
-        for source, target in translations.items():
-            if source == target or not target.strip():
-                continue
-            existing[source] = target
-        payload = {"version": 1, "updated_at": time.time(), "translations": dict(sorted(existing.items()))}
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-        return str(path), len(existing)
+    def write_live_translation_table(self, translations: dict[str, str]) -> tuple[Path, int]:
+        """Atomically replace the small disk table consumed by the JS bridge."""
+        path = self.live_translation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table = self._normalized_live_translations(translations)
+        payload = {"version": 1, "updated_at": time.time(), "translations": dict(sorted(table.items()))}
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        temporary.replace(path)
+        return path, len(table)
 
     def live_bridge_status(self) -> dict:
         with _RPGRM_LIVE_SERVER_LOCK:
@@ -1552,14 +1690,15 @@ class RPGMakerService:
                 "queue_count": len(_RPGRM_LIVE_SERVER_STATE["pre_translate_queue"]),
             }
 
-    def _enable_plugin(self, plugins_js: Path, plugin_name: str) -> None:
+    def _enable_plugin(self, plugins_js: Path, plugin_name: str, parameters: dict[str, str] | None = None) -> None:
         plugins = self._load_plugins_js(plugins_js)
         for plugin in plugins:
             if plugin.get("name") == plugin_name:
                 plugin["status"] = True
+                plugin["parameters"] = parameters or {}
                 break
         else:
-            plugins.append({"name": plugin_name, "status": True, "description": "Local runtime bridge", "parameters": {}})
+            plugins.append({"name": plugin_name, "status": True, "description": "Local runtime bridge", "parameters": parameters or {}})
         self._save_plugins_js(plugins_js, plugins)
 
     def _disable_plugin(self, plugins_js: Path, plugin_name: str) -> None:
@@ -1987,42 +2126,79 @@ class RPGMakerService:
         return records
 
     def _extract_from_json(self, file_name: str, data: Any) -> list[TranslationEntry]:
-        entries: list[TranslationEntry] = []
-
-        def visit(node: Any, path: list[str | int]) -> None:
-            if isinstance(node, dict):
-                if "code" in node and "parameters" in node:
-                    entries.extend(self._extract_event_command(file_name, node, path))
-                for key, value in node.items():
-                    if key in {
-                        "name",
-                        "description",
-                        "profile",
-                        "nickname",
-                        "message1",
-                        "message2",
-                        "message3",
-                        "message4",
-                        "displayName",
-                        "gameTitle",
-                        "currencyUnit",
-                    } and isinstance(value, str) and value.strip():
-                        entries.append(
-                            TranslationEntry(
-                                entry_id=self._make_entry_id(file_name, path + [key]),
-                                source=value,
-                                file=file_name,
-                                context=" / ".join(map(str, path + [key])),
-                                category=self._translation_category(file_name, key),
-                            )
-                        )
-                    visit(value, path + [key])
-            elif isinstance(node, list):
-                for index, item in enumerate(node):
-                    visit(item, path + [index])
-
-        visit(data, [])
+        entries = self._extract_standard_database_fields(file_name, data)
+        entries.extend(self._extract_standard_event_commands(file_name, data))
         return self._deduplicate(entries)
+
+    def _extract_standard_database_fields(self, file_name: str, data: Any) -> list[TranslationEntry]:
+        if file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict):
+            display_name = data.get("displayName")
+            if isinstance(display_name, str) and display_name.strip():
+                return [TranslationEntry(
+                    entry_id=self._make_entry_id(file_name, ["displayName"]),
+                    source=display_name,
+                    file=file_name,
+                    context="displayName",
+                    category="database",
+                )]
+        fields = DATABASE_TEXT_FIELDS.get(file_name)
+        if not fields or not isinstance(data, list):
+            return []
+        entries: list[TranslationEntry] = []
+        for record_index, record in enumerate(data):
+            if not isinstance(record, dict):
+                continue
+            for key in fields:
+                value = record.get(key)
+                if isinstance(value, str) and value.strip():
+                    entries.append(
+                        TranslationEntry(
+                            entry_id=self._make_entry_id(file_name, [record_index, key]),
+                            source=value,
+                            file=file_name,
+                            context=f"{record_index} / {key}",
+                            category="database",
+                        )
+                    )
+        return entries
+
+    def _extract_standard_event_commands(self, file_name: str, data: Any) -> list[TranslationEntry]:
+        entries: list[TranslationEntry] = []
+        for command, path in self._iter_standard_event_commands(file_name, data):
+            entries.extend(self._extract_event_command(file_name, command, path))
+        return entries
+
+    @staticmethod
+    def _iter_standard_event_commands(file_name: str, data: Any):
+        """Yield only engine-defined event lists, never plugin/custom payloads."""
+        if file_name == "CommonEvents.json" and isinstance(data, list):
+            for event_index, event in enumerate(data):
+                if not isinstance(event, dict):
+                    continue
+                commands = event.get("list")
+                if isinstance(commands, list):
+                    for command_index, command in enumerate(commands):
+                        if isinstance(command, dict):
+                            yield command, [event_index, "list", command_index]
+            return
+        if not (file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict)):
+            return
+        events = data.get("events")
+        if not isinstance(events, list):
+            return
+        for event_index, event in enumerate(events):
+            if not isinstance(event, dict):
+                continue
+            pages = event.get("pages")
+            if not isinstance(pages, list):
+                continue
+            for page_index, page in enumerate(pages):
+                commands = page.get("list") if isinstance(page, dict) else None
+                if not isinstance(commands, list):
+                    continue
+                for command_index, command in enumerate(commands):
+                    if isinstance(command, dict):
+                        yield command, ["events", event_index, "pages", page_index, "list", command_index]
 
     def _extract_event_command(
         self, file_name: str, command: dict[str, Any], path: list[str | int]
@@ -2094,55 +2270,49 @@ class RPGMakerService:
             )
 
     @staticmethod
-    def _translation_source_index(translations: dict[str, TranslationEntry]) -> dict[str, str]:
+    def _translation_source_index(translations: dict[str, TranslationEntry]) -> dict[tuple[str, str], str]:
         return {
-            entry.source: entry.target
+            (entry.category, entry.source): entry.target
             for entry in translations.values()
             if entry.source and entry.target.strip() and entry.category in SAFE_TRANSLATION_CATEGORIES
         }
 
     def _apply_to_json(
-        self, file_name: str, data: Any, translations: dict[str, TranslationEntry], source_index: dict[str, str] | None = None
+        self, file_name: str, data: Any, translations: dict[str, TranslationEntry], source_index: dict[tuple[str, str], str] | None = None
     ) -> int:
         changed = 0
         source_index = source_index or self._translation_source_index(translations)
 
-        def resolve(entry_id: str, original: str) -> str:
+        def resolve(entry_id: str, original: str, category: str) -> str:
             entry = translations.get(entry_id)
             if entry and entry.target.strip() and self._is_safe_translation_entry(entry):
                 return entry.target
-            return source_index.get(original, original)
+            return source_index.get((category, original), original)
 
-        def visit(node: Any, path: list[str | int]) -> None:
-            nonlocal changed
-            if isinstance(node, dict):
-                if "code" in node and "parameters" in node:
-                    changed += self._apply_event_command(file_name, node, path, resolve)
-                for key, value in node.items():
-                    if key in {
-                        "name",
-                        "description",
-                        "profile",
-                        "nickname",
-                        "message1",
-                        "message2",
-                        "message3",
-                        "message4",
-                        "displayName",
-                        "gameTitle",
-                        "currencyUnit",
-                    } and isinstance(value, str):
-                        entry_id = self._make_entry_id(file_name, path + [key])
-                        translated = resolve(entry_id, value)
-                        if translated != value:
-                            node[key] = translated
-                            changed += 1
-                    visit(value, path + [key])
-            elif isinstance(node, list):
-                for index, item in enumerate(node):
-                    visit(item, path + [index])
-
-        visit(data, [])
+        fields = DATABASE_TEXT_FIELDS.get(file_name, frozenset())
+        if file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict):
+            original = data.get("displayName")
+            if isinstance(original, str):
+                entry_id = self._make_entry_id(file_name, ["displayName"])
+                translated = resolve(entry_id, original, "database")
+                if translated != original:
+                    data["displayName"] = translated
+                    changed += 1
+        elif fields and isinstance(data, list):
+            for record_index, record in enumerate(data):
+                if not isinstance(record, dict):
+                    continue
+                for key in fields:
+                    original = record.get(key)
+                    if not isinstance(original, str):
+                        continue
+                    entry_id = self._make_entry_id(file_name, [record_index, key])
+                    translated = resolve(entry_id, original, "database")
+                    if translated != original:
+                        record[key] = translated
+                        changed += 1
+        for command, path in self._iter_standard_event_commands(file_name, data):
+            changed += self._apply_event_command(file_name, command, path, resolve)
         return changed
 
     def _apply_event_command(
@@ -2160,13 +2330,13 @@ class RPGMakerService:
         changed = 0
         if code in {401, 405} and params and isinstance(params[0], str):
             entry_id = self._make_entry_id(file_name, path + ["parameters", 0])
-            new_text = resolve(entry_id, params[0])
+            new_text = resolve(entry_id, params[0], "dialogue")
             if new_text != params[0]:
                 params[0] = new_text
                 changed += 1
         elif code == 101 and len(params) > 4 and isinstance(params[4], str):
             entry_id = self._make_entry_id(file_name, path + ["parameters", 4])
-            new_text = resolve(entry_id, params[4])
+            new_text = resolve(entry_id, params[4], "dialogue")
             if new_text != params[4]:
                 params[4] = new_text
                 changed += 1
@@ -2174,13 +2344,13 @@ class RPGMakerService:
             for index, option in enumerate(params[0]):
                 if isinstance(option, str):
                     entry_id = self._make_entry_id(file_name, path + ["parameters", 0, index])
-                    new_text = resolve(entry_id, option)
+                    new_text = resolve(entry_id, option, "dialogue")
                     if new_text != option:
                         params[0][index] = new_text
                         changed += 1
         elif code == 402 and len(params) > 1 and isinstance(params[1], str):
             entry_id = self._make_entry_id(file_name, path + ["parameters", 1])
-            new_text = resolve(entry_id, params[1])
+            new_text = resolve(entry_id, params[1], "dialogue")
             if new_text != params[1]:
                 params[1] = new_text
                 changed += 1

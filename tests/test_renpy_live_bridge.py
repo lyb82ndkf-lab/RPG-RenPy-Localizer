@@ -64,6 +64,23 @@ class RenPyLiveBridgeTests(unittest.TestCase):
         self.assertNotIn("{/font}", sanitized)
         self.assertEqual(sanitized, "行了行了 ……好吧。")
 
+    def test_live_bridge_installs_project_local_cjk_font_override(self) -> None:
+        fake_font = self.root / "fake-cjk.ttf"
+        fake_font.write_bytes(b"fake font")
+        self.service._find_system_cjk_font = lambda: fake_font  # type: ignore[method-assign]
+
+        self.service.install_live_translation_bridge()
+
+        override = self.service.scripts_dir / "zz_rpgrtl_font_override.rpy"
+        installed = self.service.scripts_dir / "fonts" / "RPGRenPyLocalizerCJK.ttf"
+        self.assertEqual(installed.read_bytes(), b"fake font")
+        override_text = override.read_text(encoding="utf-8")
+        self.assertIn("fonts/RPGRenPyLocalizerCJK.ttf", override_text)
+        self.assertIn("say_dialogue", override_text)
+        self.service.clear_generated_translation_files()
+        self.assertFalse(override.exists())
+        self.assertFalse(installed.exists())
+
     def test_http_hook_capture_translate_refresh_round_trip(self) -> None:
         def post(endpoint: str, payload: dict) -> dict:
             request = urllib.request.Request(

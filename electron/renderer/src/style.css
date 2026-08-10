@@ -462,6 +462,20 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .profile-actions .el-button { margin: 0 !important; }
 .el-select-dropdown__item small { float: right; color: var(--muted); margin-left: 14px; }
 
+.agent-grid {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+.agent-panel { min-width: 0; background: rgba(255,255,255,.02) !important; }
+.agent-panel .el-card__body { display: grid; gap: 10px; }
+.agent-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.agent-plan-output textarea { font-family: ui-monospace, Consolas, monospace; }
+.agent-text-panel { margin-top: 12px; }
+.agent-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 980px) { .agent-grid { grid-template-columns: 1fr; } }
+
 .ai-field-grid {
   display: grid;
   gap: 9px;

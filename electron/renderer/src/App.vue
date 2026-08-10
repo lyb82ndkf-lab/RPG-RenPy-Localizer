@@ -243,6 +243,56 @@
         </el-card>
       </section>
 
+      <section v-else-if="currentView === 'agent'" class="view-shell feature-shell">
+        <el-card shadow="never" class="section-card full-card">
+          <template #header>
+            <div class="card-head">
+              <strong>Unknown Game Agent</strong>
+              <div class="card-head-right">
+                <el-button size="small" :loading="busy.agent" @click="loadAgentInspect">重新扫描</el-button>
+                <el-button size="small" type="primary" :loading="busy.agent" @click="runAgentPlan(true)">让 AI 分析</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert v-if="agentInspect" type="info" :closable="false" show-icon>
+            <template #title>检测到 {{ agentInspect.engine }}；原游戏目录只读，运行时会使用可删除的隔离副本。</template>
+            <div class="agent-meta">文件 {{ agentInspect.fileCount || 0 }} 个 · 信号 {{ (agentInspect.signals || []).length }} 条 · 可提取文本 {{ agentTextCount }} 条</div>
+          </el-alert>
+          <div class="agent-grid">
+            <el-card shadow="never" class="agent-panel">
+              <template #header><strong>引擎信号</strong></template>
+              <el-empty v-if="!(agentInspect?.signals || []).length" description="点击重新扫描" />
+              <el-timeline v-else>
+                <el-timeline-item v-for="signal in agentInspect.signals" :key="signal">{{ signal }}</el-timeline-item>
+              </el-timeline>
+              <el-button type="primary" plain :loading="busy.agent" @click="extractAgentText">提取候选文本</el-button>
+            </el-card>
+            <el-card shadow="never" class="agent-panel">
+              <template #header><strong>Agent 计划</strong></template>
+              <el-descriptions v-if="agentPlan" :column="1" border>
+                <el-descriptions-item v-for="(value, key) in agentPlan" :key="key" :label="key">{{ value }}</el-descriptions-item>
+              </el-descriptions>
+              <el-empty v-else description="点击“让 AI 分析”生成计划" />
+              <el-input v-if="agentAiPlan" v-model="agentAiPlan" type="textarea" :rows="6" class="agent-plan-output" />
+            </el-card>
+          </div>
+          <el-card shadow="never" class="agent-panel agent-text-panel">
+            <template #header>
+              <div class="card-head"><strong>候选文本</strong><span>只在隔离副本中应用</span></div>
+            </template>
+            <el-table :data="translations.slice(0, 200)" height="360" empty-text="尚未提取文本">
+              <el-table-column prop="file" label="文件" min-width="220" show-overflow-tooltip />
+              <el-table-column prop="source" label="原文" min-width="360" show-overflow-tooltip />
+              <el-table-column prop="target" label="译文" min-width="300" show-overflow-tooltip />
+            </el-table>
+            <div class="agent-actions">
+              <el-button type="warning" plain :disabled="!translations.length" @click="currentView = 'translations'">去翻译工作台</el-button>
+              <el-button type="primary" :loading="busy.agent" :disabled="!translations.length" @click="launchAgentRuntime">生成并启动隔离副本</el-button>
+            </div>
+          </el-card>
+        </el-card>
+      </section>
+
       <section v-else-if="currentView === 'data'" class="view-shell feature-shell" data-tour="data-editor">
         <el-card shadow="never" class="section-card full-card">
           <template #header>
@@ -780,6 +830,7 @@ import logoUrl from './assets/app-logo.png';
 const navItems = [
   { key: 'library', label: '游戏库', icon: Reading },
   { key: 'translations', label: '翻译', icon: Notebook },
+  { key: 'agent', label: '未知游戏 Agent', icon: MagicStick },
   { key: 'data', label: '数据修改', icon: EditPen },
   { key: 'saves', label: '存档', icon: Coin },
   { key: 'maps', label: '地图', icon: MapLocation },
@@ -792,6 +843,7 @@ const navItems = [
 const viewMetaMap = {
   library: { eyebrow: 'Library', title: '游戏库', subtitle: '在这一页完成添加、筛选、启动和移除游戏。' },
   translations: { eyebrow: 'Translation', title: '翻译工作台', subtitle: 'AI 批译、查看详情，以及导入导出翻译包。' },
+  agent: { eyebrow: 'Agent', title: '未知游戏 Agent', subtitle: '自动识别 Unity、Unreal、Godot、Electron 等引擎，扫描文本并生成可回滚的隔离运行副本。' },
   data: { eyebrow: 'Data', title: '数据修改', subtitle: '角色、物品、技能、敌人等数据库字段直接编辑。' },
   saves: { eyebrow: 'Save', title: '存档修改', subtitle: '直接读取存档槽并修改金钱、物品和角色等级。开关与变量请在数据修改页实时操作。' },
   maps: { eyebrow: 'Map', title: '地图查看', subtitle: '查看地图、事件和基础布局。' },
@@ -810,7 +862,7 @@ const entries = ref([]);
 const librarySearch = ref('');
 const selectedPath = ref('');
 const loadedProjectPath = ref('');
-const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, models: false, aiTest: false, update: false });
+const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, models: false, aiTest: false, agent: false, update: false });
 const viewLoading = ref(false);
 const gameStatus = ref({ running: false, activePath: '', games: [] });
 let gameStatusTimer = null;
@@ -830,6 +882,9 @@ const translationMeta = ref('');
 const translationDialogVisible = ref(false);
 const translationProgress = reactive({ active: false, title: 'AI 批译进度', message: '等待开始', current: 0, total: 0, success: 0, failed: 0 });
 const translationStopRequested = ref(false);
+const agentInspect = ref(null);
+const agentPlan = ref(null);
+const agentAiPlan = ref('');
 
 const dataRecords = ref([]);
 const dataSearch = ref('');
@@ -990,11 +1045,14 @@ const selectedEntry = computed(() => entries.value.find((entry) => entry.path ==
 const gameRunning = computed(() => Boolean(gameStatus.value.running));
 const isRenPySelected = computed(() => selectedEntry.value?.engine === "Ren'Py");
 const isRpgMakerSelected = computed(() => selectedEntry.value?.engine === 'RPG Maker MV/MZ');
+const isUnknownSelected = computed(() => Boolean(selectedEntry.value) && !isRenPySelected.value && !isRpgMakerSelected.value);
+const agentTextCount = computed(() => translations.value.length);
 const pageLoading = computed(() => {
   if (viewLoading.value || busy.reload) return true;
   return ({
     library: busy.refresh,
     translations: false,
+    agent: busy.agent,
     data: false,
     saves: false,
     maps: false,
@@ -1007,6 +1065,8 @@ const pageLoading = computed(() => {
 const visibleNavItems = computed(() => navItems.filter((item) => {
   if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(item.key)) return false;
   if (isRpgMakerSelected.value && item.key === 'live') return false;
+  if (!isUnknownSelected.value && item.key === 'agent') return false;
+  if (isUnknownSelected.value && ['data', 'saves', 'maps', 'runtime', 'live'].includes(item.key)) return false;
   return true;
 }));
 const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => needsTranslationRepair(item)).length);
@@ -1209,6 +1269,48 @@ async function loadTranslationVersions() {
   if (!isRpgMakerSelected.value || !selectedEntry.value) { translationVersions.value = []; return; }
   const data = await api('/translations/versions');
   translationVersions.value = (data.versions || []).filter((item) => item.id !== 'original');
+}
+async function loadAgentInspect() {
+  if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    agentInspect.value = await api('/agent/inspect');
+  } finally { busy.agent = false; }
+}
+async function runAgentPlan(runAi = false) {
+  if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/agent/plan', { body: { runAi, ai: { ...aiForm } } });
+    agentPlan.value = data.plan || null;
+    agentAiPlan.value = data.aiPlan || data.aiError || '';
+    if (data.aiError) toast(`AI 分析失败：${data.aiError}`, 'warning');
+  } finally { busy.agent = false; }
+}
+async function extractAgentText() {
+  if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/agent/extract', { body: {} });
+    translations.value = data.entries || [];
+    selectedTranslationId.value = translations.value[0]?.entry_id || '';
+    toast(`已提取 ${data.count || 0} 条候选文本`);
+  } finally { busy.agent = false; }
+}
+async function launchAgentRuntime() {
+  if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/agent/runtime', { body: { entries: translations.value } });
+    if (!data.launcher) {
+      toast('已生成隔离副本，但没有找到启动文件，请打开副本目录手动验证', 'warning');
+      if (data.runtimeRoot) await window.rpgrtl.openPath(data.runtimeRoot);
+      return;
+    }
+    const launch = await api('/project/launch', { body: { launcherPath: data.launcher } });
+    toast(`隔离副本已启动，修改文件 ${data.changed || 0} 个，PID ${launch.pid}`);
+    await loadGameStatus();
+  } finally { busy.agent = false; }
 }
 async function buildRpgMakerRuntimeAndLaunch(versionId = 'current', hotSwitch = false) {
   const body = { versionId, hotSwitch };
@@ -1688,6 +1790,11 @@ async function startTranslation() {
       toast('RPGMaker 翻译完成，已生成运行时副本并启动游戏。');
       return;
     }
+    if (isUnknownSelected.value) {
+      await launchAgentRuntime();
+      toast('未知引擎翻译完成，已生成可回滚的隔离运行副本。');
+      return;
+    }
     await buildRenpyRuntimeAndLaunch();
     toast('RenPy 翻译完成，已生成独立运行副本并启动；原游戏保持原文。');
   } catch (error) {
@@ -2119,6 +2226,7 @@ async function loadViewData(view, refresh = false) {
   const key = `${selectedPath.value}:${view}`;
   if (!refresh && loadedViewKeys.has(key)) return;
   if (view === 'translations') await loadTranslations(refresh);
+  else if (view === 'agent') { if (refresh || !agentInspect.value) await loadAgentInspect(); }
   else if (view === 'data') await loadData(refresh);
   else if (view === 'saves') await loadSaveSlots();
   else if (view === 'maps') await loadMaps();
@@ -2143,7 +2251,7 @@ watch(selectedPath, async () => {
   loadedViewKeys.clear();
   clearProjectScopedState();
   try {
-    if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(currentView.value)) currentView.value = 'translations';
+    if ((isRenPySelected.value || isUnknownSelected.value) && ['saves', 'maps', 'runtime', 'live'].includes(currentView.value)) currentView.value = isUnknownSelected.value ? 'agent' : 'translations';
     if (isRpgMakerSelected.value && currentView.value === 'live') currentView.value = 'translations';
     if (currentView.value !== 'library' && selectedEntry.value) await loadViewData(currentView.value);
   } finally {

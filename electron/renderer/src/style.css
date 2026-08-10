@@ -471,6 +471,10 @@ h1 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
 .agent-panel { min-width: 0; background: rgba(255,255,255,.02) !important; }
 .agent-panel .el-card__body { display: grid; gap: 10px; }
 .agent-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.agent-progress-card { margin-top: 12px; background: rgba(255,255,255,.025) !important; }
+.agent-progress-card .el-card__body { display: grid; gap: 8px; }
+.agent-progress-head { display: flex; justify-content: space-between; align-items: center; color: var(--text); }
+.agent-progress-meta, .agent-progress-message { color: var(--muted); font-size: 12px; line-height: 1.5; word-break: break-all; }
 .agent-plan-output textarea { font-family: ui-monospace, Consolas, monospace; }
 .agent-text-panel { margin-top: 12px; }
 .agent-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }

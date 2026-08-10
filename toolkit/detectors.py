@@ -50,6 +50,28 @@ def detect_project(path: str | Path) -> ProjectInfo:
             data_dir=rpg_www_data,
         )
 
+    # RPG Maker 2000/2003 (the pre-RGSS binary format) does not have a
+    # project file or JSON data directory.  Its reliable on-disk signals are
+    # RPG_RT.exe/RPG_RT.ini plus the LDB/LMT/LMU database/map files.  Detect it
+    # before the generic fallback so the Agent can choose a binary extractor
+    # instead of scanning unrelated text files.
+    legacy_rpg = (
+        (root / "RPG_RT.exe").is_file()
+        or (root / "RPG_RT.ini").is_file()
+        or bool(list(root.glob("*.ldb")))
+        or bool(list(root.glob("*.lmt")))
+        or bool(list(root.glob("*.lmu")))
+    )
+    if legacy_rpg:
+        legacy_launcher = selected_launcher or (root / "RPG_RT.exe" if (root / "RPG_RT.exe").is_file() else launcher)
+        return ProjectInfo(
+            engine="RPG Maker 2000/2003",
+            root=root,
+            game_dir=root,
+            launcher_path=legacy_launcher,
+            data_dir=root,
+        )
+
     if renpy_game.is_dir() and (any(renpy_game.rglob("*.rpy")) or any(renpy_game.rglob("*.rpyc")) or any(renpy_game.rglob("*.rpa"))):
         return ProjectInfo(
             engine="Ren'Py",
@@ -119,6 +141,11 @@ def detect_engine(root: str | Path) -> str:
         return "Godot"
     if "wolfdatalock.json" in names or any(name.endswith(".wolfx") for name in names) or "mtool_game.exe" in names or any("data/basicdata" in p and p.endswith(".dat") for p in relative_paths):
         return "Wolf RPG Editor"
+    if (
+        {"rpg_rt.exe", "rpg_rt.ini"} & names
+        or any(name.endswith(('.ldb', '.lmt', '.lmu')) for name in names)
+    ):
+        return "RPG Maker 2000/2003"
     if "electron.exe" in names or "resources/app.asar" in relative_paths:
         return "Electron/Web"
     if any(name.endswith(".exe") for name in names):

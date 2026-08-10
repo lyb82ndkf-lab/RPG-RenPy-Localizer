@@ -67,6 +67,22 @@ class UnknownGameServiceTests(unittest.TestCase):
             self.assertFalse(any(item.file.lower().endswith(".txt") for item in entries))
             self.assertFalse(any(item.file.lower() == "game.ini" for item in entries))
 
+    def test_legacy_rpgmaker_2000_is_detected_without_txt_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "RPG_RT.exe").write_bytes(b"MZ")
+            (root / "RPG_RT.ini").write_text("GameTitle=fixture", encoding="utf-8")
+            (root / "Map001.lmu").write_bytes(b"\x00\x00Japanese message\x00")
+            (root / "README.txt").write_text("documentation", encoding="utf-8")
+            project = detect_project(root)
+            self.assertEqual(project.engine, "RPG Maker 2000/2003")
+            service = UnknownGameService(project)
+            plan = service.plan()
+            self.assertEqual(plan["engine"], "RPG Maker 2000/2003")
+            self.assertIn(".lmu", " ".join(plan["extraction_plan"]))
+            entries = service.extract_translations()
+            self.assertFalse(any(item.file.lower().endswith(".txt") for item in entries))
+
 
 if __name__ == "__main__":
     unittest.main()

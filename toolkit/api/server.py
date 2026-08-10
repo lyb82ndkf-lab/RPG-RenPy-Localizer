@@ -18,6 +18,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -134,6 +135,10 @@ class ToolkitApi:
         self.live_worker_stats: JsonDict = {"running": False, "state": "stopped", "translated": 0, "failures": 0, "lastError": "", "lastSource": "", "startedAt": 0.0}
         self.live_debug_events: list[JsonDict] = []
         self.live_debug_seq = 0
+        # Unknown-game extraction is intentionally asynchronous.  Binary Wolf
+        # resources can contain thousands of records and must never block the
+        # HTTP worker (or the Electron renderer) while they are decoded.
+        self.agent_extract_jobs: dict[str, JsonDict] = {}
         self.lock = threading.RLock()
 
     def health(self) -> JsonDict:
@@ -986,18 +991,22 @@ class ToolkitApi:
         if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
             raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
         service = UnknownGameService(project)
-        entries = service.extract_translations()[:20]
+        # A plan only needs a tiny sample.  Avoid scanning/decoding the entire
+        # game just to render the plan panel.
+        entries = service.extract_translations(limit=20)[:20]
         prompt = service.agent_prompt(entries)
+        detected_plan = service.plan()
         result: JsonDict = {
             "ok": True,
             "engine": service.project.engine,
+            "confidence": detected_plan.get("confidence", 0.0),
+            "extraction_plan": detected_plan.get("extraction_plan", []),
+            "translation_scope": detected_plan.get("translation_scope", []),
+            "runtime_plan": detected_plan.get("runtime_plan", []),
+            "risks": detected_plan.get("risks", []),
+            "required_tools": detected_plan.get("required_tools", []),
             "prompt": prompt,
-            "plan": {
-                "阶段 1": "只读扫描引擎文件和可本地化资源",
-                "阶段 2": "按文件/资源格式提取候选文本并去重",
-                "阶段 3": "使用当前 AI 配置生成翻译，保留占位符和控制符",
-                "阶段 4": "写入 .rpgrtl_workspace 隔离副本并启动验证",
-            },
+            "plan": detected_plan,
             "sampleCount": len(entries),
             "requiresConfirmation": True,
         }
@@ -1023,6 +1032,107 @@ class ToolkitApi:
         self.translation_entries = entries
         self._restore_translation_cache()
         return {"ok": True, "count": len(entries), "entries": _plain(entries), "engine": service.project.engine}
+
+    def agent_extract_start(self, body: JsonDict) -> JsonDict:
+        """Start an unknown-game extraction job and return immediately."""
+        project = self._project()
+        if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
+            raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
+        project_root = str(project.root.resolve())
+        with self.lock:
+            for job in self.agent_extract_jobs.values():
+                if job.get("status") in {"queued", "running"} and job.get("projectRoot") == project_root:
+                    return {k: v for k, v in job.items() if k != "entries"}
+            job_id = uuid.uuid4().hex
+            job: JsonDict = {
+                "jobId": job_id,
+                "status": "queued",
+                "phase": "准备扫描",
+                "progress": 0,
+                "processedFiles": 0,
+                "totalFiles": 0,
+                "entryCount": 0,
+                "currentFile": "",
+                "message": "正在准备只读提取任务",
+                "error": "",
+                "projectRoot": project_root,
+                "engine": project.engine,
+                "entries": [],
+            }
+            self.agent_extract_jobs[job_id] = job
+            # Keep the job table bounded; completed snapshots are only needed
+            # long enough for the renderer to receive the final payload.
+            for old_id in list(self.agent_extract_jobs)[:-8]:
+                if self.agent_extract_jobs[old_id].get("status") not in {"queued", "running"}:
+                    self.agent_extract_jobs.pop(old_id, None)
+        thread = threading.Thread(target=self._run_agent_extract_job, args=(job_id, project), daemon=True, name="unknown-extract")
+        thread.start()
+        return {k: v for k, v in job.items() if k != "entries"}
+
+    def _run_agent_extract_job(self, job_id: str, project: ProjectInfo) -> None:
+        def update(snapshot: JsonDict) -> None:
+            processed = int(snapshot.get("processedFiles") or 0)
+            total = int(snapshot.get("totalFiles") or 0)
+            progress = 5 if total <= 0 else min(99, max(5, int(processed * 94 / total)))
+            with self.lock:
+                job = self.agent_extract_jobs.get(job_id)
+                if not job:
+                    return
+                job.update({
+                    "status": "running",
+                    "phase": str(snapshot.get("phase") or "解码资源"),
+                    "progress": progress,
+                    "processedFiles": processed,
+                    "totalFiles": total,
+                    "entryCount": int(snapshot.get("entryCount") or 0),
+                    "currentFile": str(snapshot.get("currentFile") or ""),
+                    "message": "正在从游戏资源提取可见文本",
+                })
+        try:
+            service = UnknownGameService(project)
+            with self.lock:
+                if job_id in self.agent_extract_jobs:
+                    self.agent_extract_jobs[job_id]["status"] = "running"
+                    self.agent_extract_jobs[job_id]["phase"] = "扫描资源"
+                    self.agent_extract_jobs[job_id]["message"] = "只读扫描中，原游戏目录不会被修改"
+            entries = service.extract_translations(progress_callback=update)
+            # Do not let a late worker overwrite a newly selected project.
+            current_project = self.project
+            if current_project and str(current_project.root.resolve()) == str(project.root.resolve()):
+                with self.lock:
+                    self.translation_entries = entries
+                    self._restore_translation_cache()
+            with self.lock:
+                job = self.agent_extract_jobs.get(job_id)
+                if job:
+                    job.update({
+                        "status": "done",
+                        "phase": "提取完成",
+                        "progress": 100,
+                        "processedFiles": job.get("totalFiles", 0),
+                        "entryCount": len(entries),
+                        "currentFile": "",
+                        "message": f"已提取 {len(entries)} 条候选文本，可进入翻译工作台",
+                        "entries": _plain(entries),
+                    })
+        except Exception as exc:
+            with self.lock:
+                job = self.agent_extract_jobs.get(job_id)
+                if job:
+                    job.update({"status": "error", "phase": "提取失败", "error": str(exc), "message": "请查看错误信息后重试"})
+
+    def agent_extract_progress(self, query: JsonDict) -> JsonDict:
+        job_id = str(query.get("jobId") or "")
+        if not job_id:
+            raise ApiError("缺少提取任务 ID。")
+        with self.lock:
+            job = self.agent_extract_jobs.get(job_id)
+            if not job:
+                raise ApiError("提取任务不存在或已过期。", 404)
+            snapshot = dict(job)
+            if snapshot.get("status") != "done":
+                snapshot.pop("entries", None)
+            return snapshot
 
     def agent_runtime(self, body: JsonDict) -> JsonDict:
         project = self._project()
@@ -2985,6 +3095,8 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "GET" and path == "/agent/inspect": return api.agent_inspect()
     if method == "GET" and path == "/agent/tools": return api.agent_tools()
     if method == "POST" and path == "/agent/plan": return api.agent_plan(body)
+    if method == "POST" and path == "/agent/extract/start": return api.agent_extract_start(body)
+    if method == "GET" and path == "/agent/extract/progress": return api.agent_extract_progress(query)
     if method == "POST" and path == "/agent/extract": return api.agent_extract(body)
     if method == "POST" and path == "/agent/runtime": return api.agent_runtime(body)
     if method == "POST" and path == "/rpgmaker/install-bridge": return api.rpgmaker_install_bridge()

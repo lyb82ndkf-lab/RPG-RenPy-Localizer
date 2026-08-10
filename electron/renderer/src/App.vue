@@ -258,6 +258,19 @@
             <template #title>检测到 {{ agentInspect.engine }}；原游戏目录只读，运行时会使用可删除的隔离副本。</template>
             <div class="agent-meta">文件 {{ agentInspect.fileCount || 0 }} 个 · 信号 {{ (agentInspect.signals || []).length }} 条 · 可提取文本 {{ agentTextCount }} 条</div>
           </el-alert>
+          <el-card v-if="agentExtractProgress.active || agentExtractProgress.status === 'done' || agentExtractProgress.status === 'error'" shadow="never" class="agent-progress-card">
+            <div class="agent-progress-head">
+              <strong>{{ agentExtractProgress.phase }}</strong>
+              <span>{{ agentExtractProgress.progress }}%</span>
+            </div>
+            <el-progress :percentage="agentExtractProgress.progress" :status="agentExtractProgress.status === 'error' ? 'exception' : (agentExtractProgress.status === 'done' ? 'success' : undefined)" :stroke-width="10" />
+            <div class="agent-progress-meta">
+              已处理 {{ agentExtractProgress.processedFiles || 0 }}/{{ agentExtractProgress.totalFiles || 0 }} 个资源 · 候选文本 {{ agentExtractProgress.entryCount || 0 }} 条
+              <span v-if="agentExtractProgress.currentFile"> · {{ agentExtractProgress.currentFile }}</span>
+            </div>
+            <div v-if="agentExtractProgress.message" class="agent-progress-message">{{ agentExtractProgress.message }}</div>
+            <el-alert v-if="agentExtractProgress.error" type="error" :closable="false" :title="agentExtractProgress.error" />
+          </el-card>
           <div class="agent-grid">
             <el-card shadow="never" class="agent-panel">
               <template #header><strong>引擎信号</strong></template>
@@ -885,6 +898,7 @@ const translationStopRequested = ref(false);
 const agentInspect = ref(null);
 const agentPlan = ref(null);
 const agentAiPlan = ref('');
+const agentExtractProgress = reactive({ active: false, status: 'idle', jobId: '', phase: '未开始', progress: 0, processedFiles: 0, totalFiles: 0, entryCount: 0, currentFile: '', message: '', error: '' });
 
 const dataRecords = ref([]);
 const dataSearch = ref('');
@@ -1229,6 +1243,7 @@ function clearProjectScopedState() {
   hoveredTile.value = null;
   runtimeState.value = null;
   runtimeConnected.value = false;
+  Object.assign(agentExtractProgress, { active: false, status: 'idle', jobId: '', phase: '未开始', progress: 0, processedFiles: 0, totalFiles: 0, entryCount: 0, currentFile: '', message: '', error: '' });
   liveStatus.value = { running: false, connected: false, queue_count: 0, worker: { running: false, state: 'stopped', translated: 0, failures: 0, lastError: '' }, recentEvents: [] };
 }
 function onLibraryRowClick(row) { if (gameRunning.value && row.path !== gameStatus.value.activePath) return toast('游戏运行中，暂时不能切换其他游戏', 'warning'); selectedPath.value = row.path; }
@@ -1290,11 +1305,31 @@ async function runAgentPlan(runAi = false) {
 async function extractAgentText() {
   if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
   busy.agent = true;
+  Object.assign(agentExtractProgress, { active: true, status: 'queued', jobId: '', phase: '\u51c6\u5907\u626b\u63cf', progress: 0, processedFiles: 0, totalFiles: 0, entryCount: 0, currentFile: '', message: '\u6b63\u5728\u542f\u52a8\u53ea\u8bfb\u63d0\u53d6\u4efb\u52a1', error: '' });
   try {
-    const data = await api('/agent/extract', { body: {} });
-    translations.value = data.entries || [];
-    selectedTranslationId.value = translations.value[0]?.entry_id || '';
-    toast(`已提取 ${data.count || 0} 条候选文本`);
+    const started = await api('/agent/extract/start', { body: {} });
+    Object.assign(agentExtractProgress, started, { active: true, jobId: started.jobId || '' });
+    if (!agentExtractProgress.jobId) throw new Error('\u672a\u8fd4\u56de\u63d0\u53d6\u4efb\u52a1 ID');
+    let finished = false;
+    while (!finished) {
+      const snapshot = await api(`/agent/extract/progress?jobId=${encodeURIComponent(agentExtractProgress.jobId)}`);
+      Object.assign(agentExtractProgress, snapshot, { active: snapshot.status !== 'done' && snapshot.status !== 'error' });
+      if (snapshot.status === 'done') {
+        translations.value = snapshot.entries || [];
+        selectedTranslationId.value = translations.value[0]?.entry_id || '';
+        toast(`\u5df2\u63d0\u53d6 ${snapshot.entryCount || translations.value.length || 0} \u6761\u5019\u9009\u6587\u672c`);
+        finished = true;
+      } else if (snapshot.status === 'error') {
+        throw new Error(snapshot.error || '\u672a\u77e5\u6e38\u620f\u6587\u672c\u63d0\u53d6\u5931\u8d25');
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 320));
+      }
+    }
+  } catch (error) {
+    agentExtractProgress.status = 'error';
+    agentExtractProgress.active = false;
+    agentExtractProgress.error = error.message;
+    toast(error.message, 'error');
   } finally { busy.agent = false; }
 }
 async function launchAgentRuntime() {

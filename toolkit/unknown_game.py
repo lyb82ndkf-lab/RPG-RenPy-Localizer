@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import struct
+import time
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +131,24 @@ def _looks_like_wolf_text(value: str) -> bool:
     return True
 
 
+def _clean_wolf_text(value: str) -> str:
+    """Remove command-byte residue without changing player-facing markup."""
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", str(value or "")).strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"([!?！？。])\.+$", r"\1", text)
+    # In protected/newer MPS files a one-byte command argument can be adjacent
+    # to a UTF-8 message.  A trailing digit/letter after CJK punctuation is
+    # metadata, not dialogue.  Keep short names such as ``女仆1`` untouched.
+    if len(text) >= 4 and re.search(r"[\u3040-\u30ff\u3400-\u9fff][0-9A-Za-z]$", text):
+        if not re.search(r"(?:第|No\.?|v|V)\s*[0-9A-Za-z]+$", text):
+            text = text[:-1].rstrip()
+    elif len(text) >= 8 and re.search(r"[^\s]\d$", text) and not re.search(r"\s\d$", text):
+        # Numeric command arguments are often appended to ASCII messages; a
+        # spaced number ("Level 5") remains valid game text.
+        text = text[:-1].rstrip()
+    return text
+
+
 def _decode_bytes(raw: bytes) -> str:
     for encoding in ("utf-8-sig", "utf-16", "cp932", "gb18030", "latin-1"):
         try:
@@ -180,6 +199,12 @@ class UnknownGameService:
                 signals.append(f"Godot 项目文件：{rel}")
             elif lower.endswith("resources/app.asar"):
                 signals.append(f"Electron 包：{rel}")
+            if self.project.engine == "Wolf RPG Editor" and path.suffix.lower() == ".mps":
+                signals.append(f"Wolf event resource: {rel}")
+            elif self.project.engine == "Wolf RPG Editor" and lower.endswith("wolfdatalock.json"):
+                signals.append(f"Wolf data lock: {rel}")
+            elif self.project.engine == "RPG Maker 2000/2003" and path.suffix.lower() in LEGACY_RPG_EXTENSIONS:
+                signals.append(f"RPG Maker 2000/2003 binary resource: {rel}")
             if len(files) < 300:
                 files.append({"path": rel, "size": size, "extension": path.suffix.lower()})
         return {
@@ -195,6 +220,62 @@ class UnknownGameService:
             "tools": self.tool_manifest(),
         }
 
+    def plan(self) -> dict[str, Any]:
+        """Return a deterministic, confirmation-gated localization plan."""
+        engine = self.project.engine
+        if engine == "Wolf RPG Editor":
+            return {
+                "engine": engine,
+                "confidence": 0.99,
+                "extraction_plan": [
+                    "仅扫描 Data/MapData/*.mps 的事件消息、角色名和选项",
+                    "按 Wolf 二进制字段边界解码 UTF-8/CP932；丢弃 dump、存档、许可证和 Game.ini",
+                    "保留文件相对路径与事件上下文，去重后输出候选文本",
+                    "解析失败的加密/变体资源只记录为待人工确认，不把任意 .txt 当作游戏文本",
+                ],
+                "translation_scope": [
+                    "地图事件 Message、Choices、角色名和确认为玩家可见的公共事件文本",
+                    "不翻译路径、配置键值、字体许可证、说明文档和调试日志",
+                ],
+                "runtime_plan": [
+                    "先生成 .rpgrtl_workspace 下的隔离副本",
+                    "当前只对可安全重写的文本资源应用译文；原目录保持不变",
+                    "Wolf 二进制回写需确认文件版本并通过副本启动验证后再启用",
+                ],
+                "risks": [
+                    "该目录存在 wolfDataLock.json、.wolfx 和 .mps，文件信号属于 Wolf RPG Editor，不是 RPG Maker 2000/2003/XP/VX/Ace",
+                    "MTool/加密或新版本 MPS 可能让通用解析器无法得到完整事件树，片段会标记为低置信度",
+                    "未经确认不执行 Hook，也不修改原游戏目录",
+                ],
+                "required_tools": [
+                    "内置只读扫描器",
+                    "可选 wolfrpg-map-parser/WolfTrans 兼容解析器（仅用于隔离副本）",
+                ],
+            }
+        if engine == "RPG Maker 2000/2003":
+            return {
+                "engine": engine,
+                "confidence": 0.98,
+                "extraction_plan": [
+                    "扫描 RPG_RT.exe/RPG_RT.ini、*.ldb、*.lmt、*.lmu",
+                    "优先从地图/公共事件二进制记录解码日文文本，按文件与偏移建立稳定 ID",
+                    "过滤启动配置、资源路径和非文本字节，并保留原始编码信息",
+                ],
+                "translation_scope": ["地图事件消息、选项、角色/物品名称和公共事件文本"],
+                "runtime_plan": ["写入 .rpgrtl_workspace 隔离副本；原目录只读；通过副本 RPG_RT.exe 启动"],
+                "risks": ["LDB/LMU 可能使用压缩或自定义编码，解析失败项需人工确认"],
+                "required_tools": ["内置二进制字符串扫描器", "可选 RPG Maker 2000/2003 数据解析器"],
+            }
+        return {
+            "engine": engine,
+            "confidence": 0.65 if engine != "Unknown" else 0.35,
+            "extraction_plan": ["按已识别资源格式扫描文本字段和二进制字符串", "过滤路径、许可证、配置和日志，再按文件去重"],
+            "translation_scope": ["只处理确认属于玩家可见文本的资源字段"],
+            "runtime_plan": ["仅在 .rpgrtl_workspace 生成隔离副本，原目录不写入；确认后才启动副本"],
+            "risks": ["未知格式可能出现误检或漏检，需提供资源格式/引擎版本后再扩展解析器"],
+            "required_tools": ["内置只读扫描器", "按引擎选择的专用资源解析器"],
+        }
+
     @staticmethod
     def tool_manifest() -> list[dict[str, Any]]:
         """MCP-style, read-only tools exposed to an AI planner."""
@@ -207,7 +288,10 @@ class UnknownGameService:
 
     def capabilities(self) -> dict[str, Any]:
         engine = self.project.engine
-        candidates = ["AssetRipper", "AssetStudio", "UnrealPak", "FModel", "u4pak", "asar", "7z"]
+        candidates = [
+            "AssetRipper", "AssetStudio", "UnrealPak", "FModel", "u4pak", "asar", "7z",
+            "wolftrans", "wolfrpg-map-parser",
+        ]
         installed = [name for name in candidates if shutil.which(name) or shutil.which(name.lower())]
         return {
             "staticExtraction": True,
@@ -218,11 +302,20 @@ class UnknownGameService:
                 "Unreal Engine 4/5": ["UnrealPak", "locres 导出器", "FModel（只读分析）"],
                 "Godot": ["PCK 解包器", "文本资源扫描"],
                 "Electron/Web": ["asar 解包器", "开发者工具文本扫描"],
+                "Wolf RPG Editor": ["wolfrpg-map-parser/WolfTrans（只读解析）", "CP932/UTF-8 字段扫描"],
+                "RPG Maker 2000/2003": ["LDB/LMU 二进制解析器", "CP932 字符串扫描"],
             }.get(engine, ["strings/资源扫描", "按需配置进程 Hook 适配器"]),
             "installedTools": installed,
         }
 
-    def extract_translations(self) -> list[TranslationEntry]:
+    def extract_translations(self, limit: int = 30000, progress_callback: Any = None) -> list[TranslationEntry]:
+        """Extract candidate dialogue without blocking the UI caller.
+
+        ``progress_callback`` receives small operational snapshots.  It is
+        deliberately a callback rather than a generator so existing API
+        callers remain compatible while the Agent endpoint can run this work
+        on a background thread.
+        """
         entries: list[TranslationEntry] = []
         seen: set[tuple[str, str]] = set()
         paths = list(self._iter_files(limit=16000))
@@ -240,8 +333,30 @@ class UnknownGameService:
                     return (3, rel)
                 return (2, rel)
             paths.sort(key=wolf_priority)
-        for path in paths:
+        total_paths = len(paths)
+        last_report = 0.0
+        def report(processed: int, phase: str, current: str = "") -> None:
+            nonlocal last_report
+            now = time.monotonic()
+            if phase != "完成" and processed < total_paths and processed not in {0, total_paths} and now - last_report < 0.08:
+                return
+            last_report = now
+            if callable(progress_callback):
+                try:
+                    progress_callback({
+                        "phase": phase,
+                        "processedFiles": processed,
+                        "totalFiles": total_paths,
+                        "entryCount": len(entries),
+                        "currentFile": current,
+                    })
+                except Exception:
+                    pass
+        report(0, "扫描文件")
+        for processed, path in enumerate(paths, 1):
             suffix = path.suffix.lower()
+            rel = str(path.relative_to(self.project.root)).replace("\\", "/")
+            report(processed, "解码资源", rel)
             try:
                 size = path.stat().st_size
             except OSError:
@@ -262,7 +377,6 @@ class UnknownGameService:
                 text = self._wolf_binary_strings(raw)
             else:
                 text = self._binary_strings(raw)
-            rel = str(path.relative_to(self.project.root)).replace("\\", "/")
             for line_no, line in enumerate(text.splitlines(), 1):
                 candidates = [line.strip()]
                 # JSON/JS/resource files often keep one or more values on a line.
@@ -282,8 +396,10 @@ class UnknownGameService:
                         context=f"第 {line_no} 行",
                         category="unknown",
                     ))
-                    if len(entries) >= 30000:
+                    if len(entries) >= max(1, min(int(limit or 30000), 30000)):
+                        report(processed, "完成", rel)
                         return entries
+        report(total_paths, "完成")
         return entries
 
     def _is_candidate_resource(self, path: Path, suffix: str) -> bool:
@@ -314,27 +430,45 @@ class UnknownGameService:
         the actual game messages while dropping editor metadata and asset paths.
         """
         chunks: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str) -> None:
+            cleaned = _clean_wolf_text(value)
+            if cleaned not in seen and _looks_like_wolf_text(cleaned):
+                seen.add(cleaned)
+                chunks.append(cleaned)
+
         # Most Wolf text fields use a little-endian byte length followed by a
         # Shift-JIS/UTF-8 string and a NUL terminator. Prefer those records: a
         # complete field preserves the sentence and avoids command-byte noise.
-        for offset in range(0, max(0, len(raw) - 8)):
-            length = struct.unpack_from("<I", raw, offset)[0]
-            if length < 2 or length > 8192:
-                continue
-            end = offset + 4 + length
-            if end > len(raw) or raw[end - 1] != 0:
-                continue
-            payload = raw[offset + 4:end - 1]
-            for encoding in ("utf-8", "cp932"):
-                try:
-                    value = payload.decode(encoding).strip()
-                except (LookupError, UnicodeDecodeError):
+        # The bounded scan is useful for small map resources.  Running it on
+        # multi-megabyte CommonEvent/DataBase blobs makes extraction quadratic
+        # in Python and was the main cause of the long "unknown game" wait.
+        if len(raw) <= 1024 * 1024:
+            for offset in range(0, max(0, len(raw) - 8)):
+                length = struct.unpack_from("<I", raw, offset)[0]
+                if length < 2 or length > 8192:
                     continue
-                value = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", value).strip()
-                if _looks_like_wolf_text(value):
-                    chunks.append(value)
-                    break
-        for segment in WOLF_BINARY_SEPARATOR.split(raw):
+                end = offset + 4 + length
+                if end > len(raw) or raw[end - 1] != 0:
+                    continue
+                payload = raw[offset + 4:end - 1]
+                for encoding in ("utf-8", "cp932"):
+                    try:
+                        value = payload.decode(encoding).strip()
+                    except (LookupError, UnicodeDecodeError):
+                        continue
+                    before = len(chunks)
+                    add(value)
+                    if len(chunks) > before:
+                        break
+
+        # UTF-8 messages may be separated from command bytes by values above
+        # 0x1f, so also scan NUL-delimited fields and valid CJK runs.  The
+        # quality gate below prevents arbitrary licence/path fragments from
+        # entering the queue.
+        segments = WOLF_BINARY_SEPARATOR.split(raw)
+        for segment in segments:
             if len(segment) < 3:
                 continue
             for encoding in ("utf-8", "cp932"):
@@ -342,10 +476,11 @@ class UnknownGameService:
                     value = segment.decode(encoding).strip()
                 except (LookupError, UnicodeDecodeError):
                     continue
-                value = re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", value).strip()
-                if _looks_like_wolf_text(value):
-                    chunks.append(value)
+                before = len(chunks)
+                add(value)
+                if len(chunks) > before:
                     break
+
         return "\n".join(dict.fromkeys(chunks))
 
     @staticmethod

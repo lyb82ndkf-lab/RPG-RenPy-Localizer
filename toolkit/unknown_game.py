@@ -26,13 +26,18 @@ TEXT_EXTENSIONS = {
     ".xml", ".html", ".htm", ".po", ".pot", ".ini", ".cfg", ".yaml", ".yml",
     ".rpy", ".asset", ".translation", ".resx", ".strings",
 }
-BINARY_EXTENSIONS = {".assets", ".bundle", ".resource", ".bytes", ".bin", ".pak", ".pck", ".locres", ".dat", ".mps"}
+BINARY_EXTENSIONS = {
+    ".assets", ".bundle", ".resource", ".bytes", ".bin", ".pak", ".pck",
+    ".locres", ".dat", ".mps", ".ldb", ".lmt", ".lmu", ".rxdata",
+    ".rvdata", ".rvdata2",
+}
 IGNORED_DIRS = {".git", ".rpgrtl_workspace", ".rpgrtl_backup", "node_modules", "__pycache__"}
 PATH_LIKE = re.compile(r"^(?:[a-z]:[\\/]|https?://|file://|[./\\]|[A-Za-z0-9_ -]+\.(?:dll|exe|png|jpg|json|js|css|ttf|otf))", re.I)
 PRINTABLE = re.compile(r"[\x20-\x7e\u00a0-\uffff]{3,}")
 WOLF_BINARY_SEPARATOR = re.compile(rb"[\x00-\x1f\x7f]+")
 EXCLUDED_TEXT_NAMES = {"game.ini", "license.txt", "license_ofl.txt", "readme.txt", "readme.md", "notice.txt", "changelog.txt", "others.txt"}
 EXCLUDED_TEXT_DIRS = {"license", "licenses", "readme", "docs", "documentation", "manual"}
+LEGACY_RPG_EXTENSIONS = {".ldb", ".lmt", ".lmu"}
 ENGLISH_HINT_WORDS = {
     "a", "about", "after", "again", "all", "am", "an", "and", "any", "are", "as", "at", "away",
     "back", "be", "because", "been", "before", "being", "but", "by", "can", "come", "could", "did",

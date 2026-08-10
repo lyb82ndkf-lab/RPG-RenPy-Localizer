@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 from .models import ProjectInfo
 
@@ -82,10 +83,47 @@ def detect_project(path: str | Path) -> ProjectInfo:
             launcher_path=launcher,
         )
 
-    raise ValueError(
-        "未识别到受支持项目。当前优先支持 RPG Maker MV/MZ 与 Ren'Py，"
-        "并可识别 RPG Maker XP/VX/VX Ace 的项目目录用于游戏库与启动。"
-    )
+    # Unknown games remain importable for the read-only Agent workbench.
+    return ProjectInfo(engine=detect_engine(root), root=root, game_dir=root, launcher_path=launcher)
+
+def detect_engine(root: str | Path) -> str:
+    """Identify common non-Ren'Py/non-RPG Maker runtimes from file signals."""
+    root = Path(root)
+    if root.is_file():
+        root = root.parent
+    names: set[str] = set()
+    relative_paths: set[str] = set()
+    count = 0
+    try:
+        for current, dirnames, filenames in os.walk(root):
+            depth = len(Path(current).relative_to(root).parts)
+            if depth > 4:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [name for name in dirnames if name not in {".git", ".rpgrtl_workspace", ".rpgrtl_backup", "node_modules"}]
+            for filename in filenames:
+                names.add(filename.lower())
+                relative_paths.add(str((Path(current) / filename).relative_to(root)).replace("\\", "/").lower())
+                count += 1
+                if count >= 8000:
+                    break
+            if count >= 8000:
+                break
+    except OSError:
+        pass
+    if "unityplayer.dll" in names or any("_data/managed/unityengine" in p or "_data/globalgamemanagers" in p for p in relative_paths):
+        return "Unity"
+    if {"unrealengine.exe", "ue4game.exe", "ue5game.exe"} & names or any(name.endswith((".pak", ".locres")) for name in names) or any("engine/binaries" in p for p in relative_paths):
+        return "Unreal Engine 4/5"
+    if "project.godot" in names or any(name.endswith(".pck") for name in names):
+        return "Godot"
+    if "wolfdatalock.json" in names or any(name.endswith(".wolfx") for name in names) or "mtool_game.exe" in names or any("data/basicdata" in p and p.endswith(".dat") for p in relative_paths):
+        return "Wolf RPG Editor"
+    if "electron.exe" in names or "resources/app.asar" in relative_paths:
+        return "Electron/Web"
+    if any(name.endswith(".exe") for name in names):
+        return "Generic Windows Game"
+    return "Unknown"
 
 
 def find_launcher(root: str | Path, preferred_name: str | None = None) -> Path | None:

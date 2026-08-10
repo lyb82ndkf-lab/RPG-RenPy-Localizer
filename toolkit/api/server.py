@@ -28,6 +28,7 @@ from toolkit.detectors import detect_project, find_launcher
 from toolkit.models import DataRecord, ProjectInfo, TranslationEntry
 from toolkit.renpy import RenPyService
 from toolkit.rpgmaker import RPGMakerService, load_json
+from toolkit.unknown_game import UnknownGameService
 from toolkit.storage import export_translation_pack, export_translation_snapshot, import_translation_pack, save_json, translation_pack_signature
 from toolkit.workspace import LibraryEntry, Workspace
 
@@ -368,7 +369,10 @@ class ToolkitApi:
         }
 
         def remember(project: ProjectInfo) -> None:
-            if project.engine not in {"RPG Maker MV/MZ", "Ren'Py"}:
+            # Folder scans only auto-add projects with a concrete engine
+            # signature; a bare executable is too easy to mistake for a
+            # helper tool. Users can still import that executable directly.
+            if project.engine in {"Generic Windows Game", "Unknown"}:
                 return
             if not project.launcher_path:
                 return
@@ -386,7 +390,7 @@ class ToolkitApi:
                 project = detect_project(current_path)
             except Exception:
                 project = None
-            if project:
+            if project and project.launcher_path:
                 remember(project)
                 dirnames[:] = []
                 continue
@@ -496,6 +500,7 @@ class ToolkitApi:
             "supportsRpgMaker": project.engine.startswith("RPG Maker"),
             "supportsRenpy": project.engine == "Ren'Py",
             "supportsFullEditing": project.engine == "RPG Maker MV/MZ",
+            "supportsAgent": project.engine not in {"RPG Maker MV/MZ", "Ren'Py"},
         }
         service = self._service()
         if not refresh:
@@ -856,6 +861,8 @@ class ToolkitApi:
             return {"database", "dialogue"}
         if project.engine == "Ren'Py":
             return {"dialogue", "choice"}
+        if isinstance(self._service(), UnknownGameService):
+            return {"unknown"}
         return set()
 
     def _is_safe_translation_entry(self, entry: TranslationEntry) -> bool:
@@ -948,7 +955,86 @@ class ToolkitApi:
                     service.merge_live_translations({entry.source: entry.target}, kind="mode_switch")
             path, changed = service.build_runtime_translation_patch(translations)
             return {"ok": True, "path": str(path), "runtimeRoot": str(runtime_root), "launcher": str(launcher) if launcher else "", "changed": changed}
+        if isinstance(service, UnknownGameService):
+            runtime_root, launcher, changed = service.build_runtime_copy(translations, version_id=version_id)
+            return {
+                "ok": True,
+                "mode": "isolated-copy",
+                "path": str(runtime_root),
+                "runtimeRoot": str(runtime_root),
+                "launcher": str(launcher) if launcher else "",
+                "changed": changed,
+                "reversible": True,
+                "originalUntouched": True,
+                "versionId": version_id,
+            }
         raise ApiError("当前引擎不支持运行时翻译补丁。")
+
+    def agent_inspect(self) -> JsonDict:
+        project = self._project()
+        if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
+            raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
+        return UnknownGameService(project).inspect()
+
+    def agent_tools(self) -> JsonDict:
+        project = self._project()
+        service = UnknownGameService(project)
+        return {"ok": True, "engine": service.project.engine, "tools": service.tool_manifest()}
+
+    def agent_plan(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
+            raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
+        service = UnknownGameService(project)
+        entries = service.extract_translations()[:20]
+        prompt = service.agent_prompt(entries)
+        result: JsonDict = {
+            "ok": True,
+            "engine": service.project.engine,
+            "prompt": prompt,
+            "plan": {
+                "阶段 1": "只读扫描引擎文件和可本地化资源",
+                "阶段 2": "按文件/资源格式提取候选文本并去重",
+                "阶段 3": "使用当前 AI 配置生成翻译，保留占位符和控制符",
+                "阶段 4": "写入 .rpgrtl_workspace 隔离副本并启动验证",
+            },
+            "sampleCount": len(entries),
+            "requiresConfirmation": True,
+        }
+        if body.get("runAi"):
+            ai_settings = self.settings_get().get("ai", {})
+            ai_body = dict(body.get("ai") if isinstance(body.get("ai"), dict) else {})
+            for key in ("provider", "model", "baseUrl", "apiKey"):
+                ai_body.setdefault(key, ai_settings.get(key, ""))
+            ai_body["texts"] = [prompt]
+            try:
+                response = self.ai_translate(ai_body)
+                result["aiPlan"] = response.get("translations", [""])[0] if isinstance(response, dict) else ""
+            except Exception as exc:
+                result["aiError"] = str(exc)
+        return result
+
+    def agent_extract(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
+            raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
+        service = UnknownGameService(project)
+        entries = service.extract_translations()
+        self.translation_entries = entries
+        self._restore_translation_cache()
+        return {"ok": True, "count": len(entries), "entries": _plain(entries), "engine": service.project.engine}
+
+    def agent_runtime(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        if project.engine in {"RPG Maker MV/MZ", "Ren'Py"}:
+            raise ApiError("当前是已支持引擎，请使用对应的翻译工作台。", 409)
+        service = UnknownGameService(project)
+        if not self.translation_entries:
+            self.translation_entries = service.extract_translations()
+            self._restore_translation_cache()
+        selected = self._entries_for_translation_version(str(body.get("versionId") or "current"), body)
+        root, launcher, changed = service.build_runtime_copy({item.entry_id: item for item in selected}, str(body.get("versionId") or "current"))
+        return {"ok": True, "runtimeRoot": str(root), "path": str(root), "launcher": str(launcher) if launcher else "", "changed": changed, "reversible": True, "originalUntouched": True}
 
     def rpgmaker_install_bridge(self) -> JsonDict:
         project = self._project()
@@ -1701,13 +1787,13 @@ class ToolkitApi:
             raise ApiError("尚未载入项目。", 409)
         return self.project
 
-    def _service(self) -> RPGMakerService | RenPyService:
+    def _service(self) -> RPGMakerService | RenPyService | UnknownGameService:
         project = self._project()
         if project.engine == "RPG Maker MV/MZ":
             return RPGMakerService(project)
         if project.engine == "Ren'Py":
             return RenPyService(project)
-        raise ApiError(f"暂不支持该引擎：{project.engine}")
+        return UnknownGameService(project)
 
     def _save_preview(self, payload: JsonDict) -> JsonDict:
         party = payload.get("party", {}) if isinstance(payload, dict) else {}
@@ -2896,6 +2982,11 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/translations/export": return api.translations_export(body)
     if method == "POST" and path == "/translations/import": return api.translations_import(body)
     if method == "POST" and path == "/translations/runtime": return api.translations_runtime(body)
+    if method == "GET" and path == "/agent/inspect": return api.agent_inspect()
+    if method == "GET" and path == "/agent/tools": return api.agent_tools()
+    if method == "POST" and path == "/agent/plan": return api.agent_plan(body)
+    if method == "POST" and path == "/agent/extract": return api.agent_extract(body)
+    if method == "POST" and path == "/agent/runtime": return api.agent_runtime(body)
     if method == "POST" and path == "/rpgmaker/install-bridge": return api.rpgmaker_install_bridge()
     if method == "POST" and path == "/renpy/install-extractor": return api.renpy_install_extractor(body)
     if method == "POST" and path == "/renpy/install-live-bridge": return api.renpy_install_live_bridge(body)

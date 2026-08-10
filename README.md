@@ -31,6 +31,13 @@
 - **实时嵌入与选项安全性**：翻译结果写入运行时缓存并通知游戏刷新；菜单不再改写原始选项数据，显示层负责中文字体包装与替换。
 - **统一版本发布**：Android `versionName` 为 `3.0.0`，`versionCode` 为 `300000`，可用于覆盖此前同签名的旧调试包。
 
+### 未知游戏 Agent（PC）
+
+- 游戏库现在可以导入带有明确文件信号的 Unity、Unreal Engine 4/5、Godot 和 Electron/Web 游戏；单独选择未知 `.exe` 也会标记为 Generic Windows Game。
+- Agent 工作台提供只读引擎扫描、资源信号、候选文本提取、AI 分析计划和工具清单。
+- 可将已保存译文生成到 `.rpgrtl_workspace/unknown_runtime_game` 隔离副本，再启动副本验证；原游戏目录不会写入，副本可直接删除回滚。
+- Unity、Unreal、Godot 的专用资源解析器和进程 Hook 通过工具清单预留适配点，后续按具体游戏启用，不对未知进程盲目注入。
+
 ## 2.3.0 / 4.0 历史版本更新
 
 2.3.0 是在 2.2.2 Electron 重置版基础上的一次**翻译链路、AI 配置、RPG Maker 安全写回与 Android App 可用性**集中修复版本。PC 端版本号为 **2.3.0**，Android 端版本号为 **4.0**。

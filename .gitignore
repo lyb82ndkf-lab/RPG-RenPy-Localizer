@@ -77,3 +77,6 @@ android_app/shell/gradle.properties
 
 # ========== 本地大文件目录 ==========
 winlator-main/
+
+# Temporary upstream source inspection clones
+.references/

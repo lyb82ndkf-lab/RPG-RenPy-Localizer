@@ -139,7 +139,13 @@ def detect_engine(root: str | Path) -> str:
         return "Unreal Engine 4/5"
     if "project.godot" in names or any(name.endswith(".pck") for name in names):
         return "Godot"
-    if "wolfdatalock.json" in names or any(name.endswith(".wolfx") for name in names) or "mtool_game.exe" in names or any("data/basicdata" in p and p.endswith(".dat") for p in relative_paths):
+    if (
+        "wolfdatalock.json" in names
+        or any(name.endswith(".wolfx") for name in names)
+        or "mtool_game.exe" in names
+        or any("data/basicdata" in p and p.endswith(".dat") for p in relative_paths)
+        or any(p.startswith("data/mapdata/") and p.endswith(".mps") for p in relative_paths)
+    ):
         return "Wolf RPG Editor"
     if (
         {"rpg_rt.exe", "rpg_rt.ini"} & names
@@ -148,6 +154,15 @@ def detect_engine(root: str | Path) -> str:
         return "RPG Maker 2000/2003"
     if "electron.exe" in names or "resources/app.asar" in relative_paths:
         return "Electron/Web"
+    # Common visual-novel runtime signals.  Kirikiri/KAG uses XP3 archives
+    # and .ks/.tjs scenarios; NScripter/ONScripter uses nscript.dat or .sar.
+    # This deliberately stays after the more specific engines above.
+    if (
+        {"krkr.exe", "krkrz.exe", "tvpwin.exe", "onscripter.exe", "onscripter-en.exe", "nscript.dat"} & names
+        or any(name.endswith((".xp3", ".sar")) for name in names)
+        or any(path.endswith((".ks", ".tjs", ".spt", ".mes")) for path in relative_paths)
+    ):
+        return "Visual Novel / Galgame"
     if any(name.endswith(".exe") for name in names):
         return "Generic Windows Game"
     return "Unknown"

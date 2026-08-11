@@ -68,3 +68,7 @@ npm run portable
 - 游戏识别与翻译提取扩展至 Wolf RPG Editor、Unity 本地化表、UE4/UE5 archive JSON 与 Galgame / Visual Novel 脚本。
 - 左侧导航包含 CE 修改器：选进程、首次搜索、值变化后继续筛选、选中地址并写入新值。
 - 当前打包版本号为 `3.2.0`，产物输出到 `release-electron/`。
+
+## 3.2.1 翻译预检
+
+对多引擎翻译工作台，在启动隔离副本前执行“翻译预检”：统计覆盖率、标记缺失的译文及提示未经结构化定位的文本条目。

@@ -85,6 +85,30 @@ class UnknownGameServiceTests(unittest.TestCase):
             self.assertEqual(payload[0]["pre_zh"], json_entry.target)
             self.assertEqual(payload[0]["message"], json_entry.source)
 
+    def test_galtransl_keeps_repeated_source_rows_as_separate_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "krkr.exe").write_bytes(b"MZ")
+            dialog = root / "script_jp" / "repeated.json"
+            dialog.parent.mkdir(parents=True)
+            dialog.write_text(json.dumps([
+                {"name": "Alice", "message": "Thank you."},
+                {"name": "Bob", "message": "Thank you."},
+            ]), encoding="utf-8")
+            service = UnknownGameService(detect_project(root))
+            entries = [item for item in service.extract_translations() if item.source == "Thank you."]
+            self.assertEqual(len(entries), 2)
+            self.assertNotEqual(entries[0].entry_id, entries[1].entry_id)
+            self.assertIn("speaker=Alice", entries[0].context)
+            self.assertIn("speaker=Bob", entries[1].context)
+            entries[0].target = "???"
+            entries[1].target = "???"
+            runtime, _launcher, changed = service.build_runtime_copy({item.entry_id: item for item in entries})
+            self.assertEqual(changed, 1)
+            payload = json.loads((runtime / "script_jp" / "repeated.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload[0]["pre_zh"], "???")
+            self.assertEqual(payload[1]["pre_zh"], "???")
+
     def test_unreal_ue4_ue5_archive_extracts_and_writes_translation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

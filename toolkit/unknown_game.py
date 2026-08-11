@@ -1089,69 +1089,69 @@ class UnknownGameService:
                 "engine": engine,
                 "confidence": 0.86,
                 "extraction_plan": [
-                    "?? Kirikiri/KAG?XP3?.ks?.tjs??NScripter/ONScripter?nscript.dat?SAR??????????",
-                    "???? GalTransl ??? name/message?pre_jp/post_jp JSON ????",
-                    "???????????????????????????",
+                    "检测 Kirikiri/KAG、XP3、.ks/.tjs 与 NScripter/ONScripter、nscript.dat/SAR 特征",
+                    "优先解析 GalTransl 兼容的 name/message、pre_jp/post_jp JSON 剧本",
+                    "仅将对白、选项和可见 UI 文本加入翻译队列",
                 ],
                 "translation_scope": [
-                    "GalTransl JSON ? message/pre_jp ??????? pre_zh?proofread_zh ? message_cn ????",
-                    "???????????????????????????????",
+                    "GalTransl JSON 的 message/pre_jp 等源字段写入 pre_zh/proofread_zh 或 message_cn 目标字段",
+                    "编辑所有重复出现的对白条目，保留行号与说话人上下文",
                 ],
                 "runtime_plan": [
-                    "?? .rpgrtl_workspace ????? GalTransl ?? JSON ??",
-                    "???????? XP3/SAR/??????????????????????",
+                    "在 .rpgrtl_workspace 中生成包含 GalTransl 兼容 JSON 的隔离副本",
+                    "已打包的 XP3/SAR/脚本资源需先导出为可编辑文本再写回",
                 ],
                 "risks": [
-                    "?? XP3/SAR ?????????????????????????",
-                    "Shift-JIS ???????????????????????",
+                    "加密或封装的 XP3/SAR 不适合直接替换字节",
+                    "Shift-JIS 脚本需保持原始编码与控制标记",
                 ],
-                "required_tools": ["?? GalTransl JSON ???", "?? KirikiriTools / VNTextPatch / Textractor ????"],
+                "required_tools": ["内置 GalTransl JSON 适配器", "可选 KirikiriTools / VNTextPatch / Textractor 资源导出器"],
             }
         if engine == "Unreal Engine 4/5":
             return {
                 "engine": engine,
                 "confidence": 0.91,
                 "extraction_plan": [
-                    "?? Content/Localization ?? UE4/UE5 .archive ????",
-                    "? Namespace/Subnamespaces/Children ?? Source/Translation ???",
-                    "?? .locres?.pak?.utoc/.ucas ????????????????????????",
+                    "扫描 Content/Localization 中的 UE4/UE5 .archive 文件",
+                    "遍历 Namespace/Subnamespaces/Children 中的 Source/Translation 记录",
+                    "将 .locres、.pak、.utoc/.ucas 视为需先导出的封装资源",
                 ],
                 "translation_scope": [
-                    "?????? Translation ??????????",
-                    "?? Namespace?Key?Path?Source ??????????????????",
+                    "仅写入已包含 Translation 目标字段的可识别条目",
+                    "保留 Namespace、Key、Path 与 Source 作为稳定写回定位",
                 ],
                 "runtime_plan": [
-                    "? .rpgrtl_workspace ???????? .archive ????",
-                    "UE4/UE5 ??????? Gather/Compile ???? .locres????????",
+                    "在 .rpgrtl_workspace 中写入已翻译的 .archive 隔离副本",
+                    "UE4/UE5 发布版需使用对应的 Gather/Compile 流程将其编译为 .locres",
                 ],
                 "risks": [
-                    "?????????? .locres ? PAK?????? UnrealPak/FModel/??????????",
-                    "????????? PAK ??? cooked Asset/Blueprint ??",
+                    "只有打包的 .locres 或 PAK 时，需先使用 UnrealPak/FModel 导出可编辑资源",
+                    "翻译后仍需根据游戏的 PAK 加载顺序进行隔离副本启动验证",
                 ],
-                "required_tools": ["?? UE4/UE5 Archive ???", "?? UnrealPak/FModel ????"],
+                "required_tools": ["内置 UE4/UE5 Archive 适配器", "可选 UnrealPak/FModel 资源分析器"],
             }
         if engine == "Unity":
             return {
                 "engine": engine,
                 "confidence": 0.91,
                 "extraction_plan": [
-                    "?? *_Data/StreamingAssets?Resources ? Localization/StringTable/Polyglot ?",
-                    "???? Unity Localization ? English/zh-Hans ??Polyglot BEGIN?END ???? JSON ??",
-                    "??????????????????????????????",
+                    "扫描 *_Data/StreamingAssets、Resources 下的 Localization/StringTable/Polyglot 资源",
+                    "解析 Unity Localization 的 English/zh-Hans 表、Polyglot BEGIN/END 表与区域 JSON 表",
+                    "仅将有中文目标格的已定位记录输出为翻译条目",
                 ],
                 "translation_scope": [
-                    "????????????????????",
-                    "?? Key?????????????????? AssetBundle?????????",
+                    "保留每个 Key 与目标语言列，避免修改资源引用或 Addressables 配置",
+                    "资源打包在 AssetBundle 时，先导出为可编辑的本地化表",
                 ],
                 "runtime_plan": [
-                    "? .rpgrtl_workspace ???????? zh-Hans / Simplified_Chinese ?????",
-                    "???????????????????",
+                    "在 .rpgrtl_workspace 中生成含 zh-Hans / Simplified_Chinese 目标值的隔离副本",
+                    "写回后运行副本，验证文本加载和字体显示",
                 ],
                 "risks": [
-                    "???? CSV/TSV/JSON ? Addressables ? AssetBundle ??????????????",
-                    "?????????????????????? Unity ??????????",
+                    "CSV/TSV/JSON 之外的 Addressables 或 AssetBundle 需先导出",
+                    "字体不含中文字形时需在 Unity 资源中追加字体回退",
                 ],
-                "required_tools": ["?? Unity Localization / Polyglot ????", "?? AssetRipper/AssetStudio ????"],
+                "required_tools": ["内置 Unity Localization / Polyglot 适配器", "可选 AssetRipper/AssetStudio 资源分析器"],
             }
         return {
             "engine": engine,
@@ -1247,9 +1247,13 @@ class UnknownGameService:
                 if handled:
                     unity_handled_files.add(rel)
                 for entry in table_entries:
-                    if (entry.file, entry.source) in seen:
+                    # A keyed table may intentionally contain the same English
+                    # source under multiple keys.  Keep every target location so
+                    # context-sensitive translations can be edited separately.
+                    marker = (entry.file, entry.entry_id)
+                    if marker in seen:
                         continue
-                    seen.add((entry.file, entry.source))
+                    seen.add(marker)
                     entries.append(entry)
                     if len(entries) >= max_entries:
                         return entries
@@ -1270,9 +1274,12 @@ class UnknownGameService:
                 if handled:
                     unreal_handled_files.add(rel)
                 for entry in archive_entries:
-                    if (entry.file, entry.source) in seen:
+                    # UE archive keys can share source text while needing
+                    # different wording in menu, subtitle, and UI contexts.
+                    marker = (entry.file, entry.entry_id)
+                    if marker in seen:
                         continue
-                    seen.add((entry.file, entry.source))
+                    seen.add(marker)
                     entries.append(entry)
                     if len(entries) >= max_entries:
                         return entries
@@ -1293,9 +1300,13 @@ class UnknownGameService:
                 if handled:
                     galtransl_handled_files.add(rel)
                 for entry in json_entries:
-                    if (entry.file, entry.source) in seen:
+                    # Do not collapse repeated visual-novel lines.  Their row
+                    # and speaker context are write-back locations and may need
+                    # different Chinese phrasing.
+                    marker = (entry.file, entry.entry_id)
+                    if marker in seen:
                         continue
-                    seen.add((entry.file, entry.source))
+                    seen.add(marker)
                     entries.append(entry)
                     if len(entries) >= max_entries:
                         return entries

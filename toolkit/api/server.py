@@ -27,6 +27,7 @@ from typing import Any
 
 from toolkit.detectors import detect_project, find_launcher
 from toolkit.models import DataRecord, ProjectInfo, TranslationEntry
+from toolkit.memory_editor import LocalMemoryScanner, MemoryScanError, MemoryScanSession
 from toolkit.renpy import RenPyService
 from toolkit.rpgmaker import RPGMakerService, load_json
 from toolkit.unknown_game import UnknownGameService
@@ -139,6 +140,11 @@ class ToolkitApi:
         # resources can contain thousands of records and must never block the
         # HTTP worker (or the Electron renderer) while they are decoded.
         self.agent_extract_jobs: dict[str, JsonDict] = {}
+        # Memory-editor sessions are intentionally short-lived and scoped to a
+        # selected local game process.  They hold only addresses returned by a
+        # prior search, never a general-purpose process handle.
+        self.memory_scanner = LocalMemoryScanner()
+        self.memory_sessions: dict[str, MemoryScanSession] = {}
         self.lock = threading.RLock()
 
     def health(self) -> JsonDict:
@@ -866,6 +872,21 @@ class ToolkitApi:
             return {"database", "dialogue"}
         if project.engine == "Ren'Py":
             return {"dialogue", "choice"}
+        if project.engine == "Wolf RPG Editor":
+            # Only entries emitted from the structured MPS Message/Choices
+            # parser carry a verified length-field location and are writable
+            # in an isolated Wolf runtime copy.
+            return {"wolf_dialogue"}
+        if project.engine == "Unity":
+            # Unity string tables keep a verified source/target cell location;
+            # prefer them over generic binary-string candidates.
+            return {"unity_localization", "unknown"}
+        if project.engine == "Unreal Engine 4/5":
+            # Only archive entries contain a verified Source/Translation pair
+            # that can be changed in the isolated UE4/UE5 project copy.
+            return {"unreal_localization"}
+        if project.engine == "Visual Novel / Galgame":
+            return {"galgame_dialogue"}
         if isinstance(self._service(), UnknownGameService):
             return {"unknown"}
         return set()
@@ -1145,6 +1166,86 @@ class ToolkitApi:
         selected = self._entries_for_translation_version(str(body.get("versionId") or "current"), body)
         root, launcher, changed = service.build_runtime_copy({item.entry_id: item for item in selected}, str(body.get("versionId") or "current"))
         return {"ok": True, "runtimeRoot": str(root), "path": str(root), "launcher": str(launcher) if launcher else "", "changed": changed, "reversible": True, "originalUntouched": True}
+
+    def _memory_processes(self) -> list[JsonDict]:
+        project = self._project()
+        running = self.game_status().get("games") or []
+        known_pids = [int(item.get("pid") or 0) for item in running if str(item.get("path") or "") == str(project.root)]
+        try:
+            return self.memory_scanner.list_project_processes(project.root, project.launcher_path, known_pids)
+        except MemoryScanError as exc:
+            raise ApiError(str(exc)) from exc
+
+    @staticmethod
+    def _memory_session_payload(session: MemoryScanSession) -> JsonDict:
+        return {"ok": True, **session.payload()}
+
+    def memory_processes(self) -> JsonDict:
+        rows = self._memory_processes()
+        return {
+            "processes": rows,
+            "preferredPid": next((int(row["pid"]) for row in rows if row.get("launchedByTool")), int(rows[0]["pid"]) if rows else None),
+        }
+
+    def memory_scan_start(self, body: JsonDict) -> JsonDict:
+        try:
+            pid = int(body.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        process = next((row for row in self._memory_processes() if int(row.get("pid") or 0) == pid), None)
+        if not process:
+            raise ApiError("请选择当前已载入游戏目录中的运行进程。")
+        value_type = str(body.get("valueType") or "int32")
+        session_id = uuid.uuid4().hex
+        try:
+            session = self.memory_scanner.start_scan(session_id, pid, str(process.get("name") or f"PID {pid}"), body.get("value"), value_type)
+        except MemoryScanError as exc:
+            raise ApiError(str(exc)) from exc
+        with self.lock:
+            self.memory_sessions[session_id] = session
+            # A result set can be large.  Keep only the most recent sessions
+            # from this local workbench instance.
+            for old_id in list(self.memory_sessions)[:-5]:
+                self.memory_sessions.pop(old_id, None)
+        return self._memory_session_payload(session)
+
+    def _memory_session(self, body: JsonDict) -> MemoryScanSession:
+        session_id = str(body.get("sessionId") or "")
+        with self.lock:
+            session = self.memory_sessions.get(session_id)
+        if not session:
+            raise ApiError("搜索会话已失效，请重新进行首次搜索。", 404)
+        return session
+
+    def memory_scan_refine(self, body: JsonDict) -> JsonDict:
+        session = self._memory_session(body)
+        try:
+            self.memory_scanner.refine_scan(session, body.get("value"))
+        except MemoryScanError as exc:
+            raise ApiError(str(exc)) from exc
+        return self._memory_session_payload(session)
+
+    def memory_write(self, body: JsonDict) -> JsonDict:
+        session = self._memory_session(body)
+        raw_address = str(body.get("address") or "").strip()
+        try:
+            address = int(raw_address, 0)
+        except ValueError as exc:
+            raise ApiError("内存地址格式无效。") from exc
+        try:
+            verified = self.memory_scanner.write_value(session, address, body.get("value"))
+        except MemoryScanError as exc:
+            raise ApiError(str(exc)) from exc
+        return {"ok": True, "address": f"0x{address:016X}", "value": verified, "pid": session.pid}
+
+    def memory_clear(self, body: JsonDict) -> JsonDict:
+        session_id = str(body.get("sessionId") or "")
+        with self.lock:
+            if session_id:
+                self.memory_sessions.pop(session_id, None)
+            else:
+                self.memory_sessions.clear()
+        return {"ok": True}
 
     def rpgmaker_install_bridge(self) -> JsonDict:
         project = self._project()
@@ -3099,6 +3200,11 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "GET" and path == "/agent/extract/progress": return api.agent_extract_progress(query)
     if method == "POST" and path == "/agent/extract": return api.agent_extract(body)
     if method == "POST" and path == "/agent/runtime": return api.agent_runtime(body)
+    if method == "GET" and path == "/memory/processes": return api.memory_processes()
+    if method == "POST" and path == "/memory/scan/start": return api.memory_scan_start(body)
+    if method == "POST" and path == "/memory/scan/refine": return api.memory_scan_refine(body)
+    if method == "POST" and path == "/memory/write": return api.memory_write(body)
+    if method == "POST" and path == "/memory/clear": return api.memory_clear(body)
     if method == "POST" and path == "/rpgmaker/install-bridge": return api.rpgmaker_install_bridge()
     if method == "POST" and path == "/renpy/install-extractor": return api.renpy_install_extractor(body)
     if method == "POST" and path == "/renpy/install-live-bridge": return api.renpy_install_live_bridge(body)

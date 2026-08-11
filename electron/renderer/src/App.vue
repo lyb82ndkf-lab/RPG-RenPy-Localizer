@@ -247,7 +247,7 @@
         <el-card shadow="never" class="section-card full-card">
           <template #header>
             <div class="card-head">
-              <strong>Unknown Game Agent</strong>
+              <strong>{{ isWolfSelected ? 'Wolf RPG 工具' : 'Unknown Game Agent' }}</strong>
               <div class="card-head-right">
                 <el-button size="small" :loading="busy.agent" @click="loadAgentInspect">重新扫描</el-button>
                 <el-button size="small" type="primary" :loading="busy.agent" @click="runAgentPlan(true)">让 AI 分析</el-button>
@@ -525,6 +525,41 @@
                 <div v-else class="empty-tile">点击地图格子查看事件与触发条件。</div>
               </aside>
             </div>
+          </div>
+        </el-card>
+      </section>
+
+      <section v-else-if="currentView === 'memory'" class="view-shell feature-shell">
+        <el-card shadow="never" class="section-card full-card">
+          <template #header>
+            <div class="card-head">
+              <strong>CE &#x4FEE;&#x6539;&#x5668;</strong>
+              <div class="card-head-right wrap">
+                <el-tag :type="memorySession ? 'success' : 'info'" effect="plain">{{ memorySession ? `PID ${memorySession.pid}` : '\u7b49\u5f85\u641c\u7d22' }}</el-tag>
+                <el-button size="small" :icon="Refresh" :loading="busy.memory" @click="loadMemoryProcesses">&#x5237;&#x65B0;&#x8FDB;&#x7A0B;</el-button>
+              </div>
+            </div>
+          </template>
+          <div class="memory-page">
+            <el-alert type="info" :closable="false" show-icon title="&#x4E24;&#x6B65;&#x627E;&#x91D1;&#x5E01;&#xFF1A;&#x8BB0;&#x4E0B;&#x5F53;&#x524D;&#x6570;&#x91CF; &#x2192; &#x56DE;&#x6E38;&#x620F;&#x4F7F;&#x5B83;&#x53D8;&#x5316; &#x2192; &#x8F93;&#x5165;&#x65B0;&#x6570;&#x91CF;&#x518D;&#x6B21;&#x641C;&#x7D22;&#x2192; &#x9009;&#x4E2D;&#x5730;&#x5740;&#x5E76;&#x4FEE;&#x6539;&#x3002;" />
+            <section class="memory-group">
+              <h3>&#x7B2C; 1 &#x6B65;&#xFF1A;&#x9009;&#x62E9;&#x6E38;&#x620F;&#x8FDB;&#x7A0B;&#x5E76;&#x9996;&#x6B21;&#x641C;&#x7D22;</h3>
+              <div class="memory-controls">
+                <label><span>&#x6E38;&#x620F;&#x8FDB;&#x7A0B;</span><el-select v-model="memoryForm.pid" filterable placeholder="&#x5148;&#x542F;&#x52A8;&#x5F53;&#x524D;&#x6E38;&#x620F;" @change="clearMemorySession"><el-option v-for="process in memoryProcesses" :key="process.pid" :label="`${process.name} (PID ${process.pid})`" :value="process.pid" /></el-select></label>
+                <label><span>&#x6570;&#x503C;&#x7C7B;&#x578B;</span><el-select v-model="memoryForm.valueType" @change="clearMemorySession"><el-option label="4-byte signed integer (gold)" value="int32" /><el-option label="4-byte unsigned integer" value="uint32" /><el-option label="4-byte float" value="float32" /><el-option label="8-byte signed integer" value="int64" /></el-select></label>
+                <label><span>&#x5F53;&#x524D;&#x6570;&#x503C;</span><el-input v-model="memoryForm.initialValue" inputmode="decimal" placeholder="&#x4F8B;&#x5982; 1250" /></label>
+                <el-button type="primary" :loading="busy.memory" @click="startMemorySearch">&#x9996;&#x6B21;&#x641C;&#x7D22;</el-button>
+              </div>
+              <div v-if="!memoryProcesses.length" class="mini-info">&#x672A;&#x627E;&#x5230;&#x8FD0;&#x884C;&#x4E2D;&#x7684;&#x5F53;&#x524D;&#x6E38;&#x620F;&#x8FDB;&#x7A0B;&#x3002;&#x8BF7;&#x5148;&#x5728;&#x6E38;&#x620F;&#x5E93;&#x70B9;&#x51FB;&#x201C;&#x542F;&#x52A8;&#x201D;&#xFF0C;&#x518D;&#x56DE;&#x5230;&#x6B64;&#x9875;&#x5237;&#x65B0;&#x3002;</div>
+            </section>
+            <section v-if="memorySession" class="memory-group">
+              <div class="memory-result-head"><div><h3>&#x7B2C; {{ memorySession.pass + 1 }} &#x6B65;&#xFF1A;&#x7F29;&#x5C0F;&#x7ED3;&#x679C;</h3><span>&#x5DF2;&#x627E;&#x5230; {{ memorySession.count.toLocaleString() }} &#x4E2A;&#x5019;&#x9009;&#x5730;&#x5740;{{ memorySession.truncated ? '\uff08\u5df2\u8fbe\u9996\u6b21\u7ed3\u679c\u4e0a\u9650\uff09' : '' }}&#x3002;</span></div><el-button plain @click="clearMemorySession">&#x91CD;&#x65B0;&#x5F00;&#x59CB;</el-button></div>
+              <div class="memory-refine-row"><el-input v-model="memoryForm.changedValue" inputmode="decimal" placeholder="&#x5728;&#x6E38;&#x620F;&#x4E2D;&#x53D8;&#x5316;&#x540E;&#x7684;&#x65B0;&#x6570;&#x503C;" /><el-button type="primary" :loading="busy.memory" @click="refineMemorySearch">&#x4EE5;&#x65B0;&#x6570;&#x503C;&#x518D;&#x6B21;&#x641C;&#x7D22;</el-button></div>
+              <div v-if="memorySession.count" class="memory-write-row"><el-input v-model="memoryForm.writeValue" inputmode="decimal" placeholder="&#x8981;&#x5199;&#x5165;&#x7684;&#x6570;&#x503C;&#xFF0C;&#x4F8B;&#x5982; 999999" /><el-button type="success" :disabled="!selectedMemoryAddress" :loading="busy.memory" @click="writeMemoryValue">&#x4FEE;&#x6539;&#x9009;&#x4E2D;&#x5730;&#x5740;</el-button></div>
+              <el-alert v-if="memorySession.count > 1" type="warning" :closable="false" show-icon title="&#x7ED3;&#x679C;&#x8FD8;&#x4E0D;&#x6B62;&#x4E00;&#x4E2A;&#xFF1A;&#x8BF7;&#x518D;&#x8BA9;&#x6E38;&#x620F;&#x91CC;&#x7684;&#x6570;&#x503C;&#x53D8;&#x5316;&#x4E00;&#x6B21;&#xFF0C;&#x7EE7;&#x7EED;&#x7528;&#x65B0;&#x503C;&#x641C;&#x7D22;&#x3002;" />
+              <el-table :data="memoryResults" height="260" highlight-current-row empty-text="&#x6CA1;&#x6709;&#x5339;&#x914D;&#x5730;&#x5740;&#xFF0C;&#x8BF7;&#x91CD;&#x65B0;&#x5F00;&#x59CB;&#x641C;&#x7D22;&#x3002;" @current-change="selectMemoryAddress"><el-table-column type="index" label="#" width="70" /><el-table-column prop="address" label="&#x5185;&#x5B58;&#x5730;&#x5740;" min-width="280" /><el-table-column label="&#x9009;&#x4E2D;" width="100"><template #default="{ row }"><el-tag v-if="row.address === selectedMemoryAddress" type="success">OK</el-tag></template></el-table-column></el-table>
+              <div class="mini-info">&#x4EC5;&#x663E;&#x793A;&#x524D; 1,000 &#x4E2A;&#x5019;&#x9009;&#x5730;&#x5740;&#x3002;&#x5B9E;&#x9645;&#x4FEE;&#x6539;&#x53EA;&#x5141;&#x8BB8;&#x5BF9;&#x5F53;&#x524D;&#x641C;&#x7D22;&#x7ED3;&#x679C;&#x4E2D;&#x9009;&#x4E2D;&#x7684;&#x5730;&#x5740;&#x6267;&#x884C;&#x3002;</div>
+            </section>
           </div>
         </el-card>
       </section>
@@ -844,6 +879,7 @@ const navItems = [
   { key: 'library', label: '游戏库', icon: Reading },
   { key: 'translations', label: '翻译', icon: Notebook },
   { key: 'agent', label: '未知游戏 Agent', icon: MagicStick },
+  { key: 'memory', label: 'CE \u4fee\u6539\u5668', icon: Coin },
   { key: 'data', label: '数据修改', icon: EditPen },
   { key: 'saves', label: '存档', icon: Coin },
   { key: 'maps', label: '地图', icon: MapLocation },
@@ -857,6 +893,7 @@ const viewMetaMap = {
   library: { eyebrow: 'Library', title: '游戏库', subtitle: '在这一页完成添加、筛选、启动和移除游戏。' },
   translations: { eyebrow: 'Translation', title: '翻译工作台', subtitle: 'AI 批译、查看详情，以及导入导出翻译包。' },
   agent: { eyebrow: 'Agent', title: '未知游戏 Agent', subtitle: '自动识别 Unity、Unreal、Godot、Electron 等引擎，扫描文本并生成可回滚的隔离运行副本。' },
+  memory: { eyebrow: 'Memory', title: 'CE \u4fee\u6539\u5668', subtitle: '\u9009\u62e9\u5f53\u524d\u6e38\u620f\u8fdb\u7a0b\uff0c\u6309\u6570\u503c\u53d8\u5316\u4e24\u6b21\u641c\u7d22\uff0c\u5373\u53ef\u4fee\u6539\u91d1\u5e01\u7b49\u6570\u503c\u3002' },
   data: { eyebrow: 'Data', title: '数据修改', subtitle: '角色、物品、技能、敌人等数据库字段直接编辑。' },
   saves: { eyebrow: 'Save', title: '存档修改', subtitle: '直接读取存档槽并修改金钱、物品和角色等级。开关与变量请在数据修改页实时操作。' },
   maps: { eyebrow: 'Map', title: '地图查看', subtitle: '查看地图、事件和基础布局。' },
@@ -875,7 +912,7 @@ const entries = ref([]);
 const librarySearch = ref('');
 const selectedPath = ref('');
 const loadedProjectPath = ref('');
-const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, models: false, aiTest: false, agent: false, update: false });
+const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, memory: false, models: false, aiTest: false, agent: false, update: false });
 const viewLoading = ref(false);
 const gameStatus = ref({ running: false, activePath: '', games: [] });
 let gameStatusTimer = null;
@@ -927,6 +964,12 @@ const hoveredTile = ref(null);
 const selectedTile = ref(null);
 const mapDragging = ref(false);
 const mapDragState = reactive({ x: 0, y: 0, left: 0, top: 0, moved: false });
+
+const memoryProcesses = ref([]);
+const memorySession = ref(null);
+const memoryResults = ref([]);
+const selectedMemoryAddress = ref('');
+const memoryForm = reactive({ pid: null, valueType: 'int32', initialValue: '', changedValue: '', writeValue: '' });
 
 const runtimeState = ref(null);
 const runtimeConnected = ref(false);
@@ -1059,6 +1102,10 @@ const selectedEntry = computed(() => entries.value.find((entry) => entry.path ==
 const gameRunning = computed(() => Boolean(gameStatus.value.running));
 const isRenPySelected = computed(() => selectedEntry.value?.engine === "Ren'Py");
 const isRpgMakerSelected = computed(() => selectedEntry.value?.engine === 'RPG Maker MV/MZ');
+const isWolfSelected = computed(() => selectedEntry.value?.engine === 'Wolf RPG Editor');
+const isUnitySelected = computed(() => selectedEntry.value?.engine === 'Unity');
+const isUnrealSelected = computed(() => selectedEntry.value?.engine === 'Unreal Engine 4/5');
+const isGalgameSelected = computed(() => selectedEntry.value?.engine === 'Visual Novel / Galgame');
 const isUnknownSelected = computed(() => Boolean(selectedEntry.value) && !isRenPySelected.value && !isRpgMakerSelected.value);
 const agentTextCount = computed(() => translations.value.length);
 const pageLoading = computed(() => {
@@ -1070,6 +1117,7 @@ const pageLoading = computed(() => {
     data: false,
     saves: false,
     maps: false,
+    memory: busy.memory,
     runtime: false,
     live: busy.reload,
     ai: busy.models || busy.aiTest,
@@ -1082,6 +1130,13 @@ const visibleNavItems = computed(() => navItems.filter((item) => {
   if (!isUnknownSelected.value && item.key === 'agent') return false;
   if (isUnknownSelected.value && ['data', 'saves', 'maps', 'runtime', 'live'].includes(item.key)) return false;
   return true;
+}).map((item) => {
+  if (item.key !== 'agent') return item;
+  if (isWolfSelected.value) return { ...item, label: 'Wolf RPG ??' };
+  if (isUnitySelected.value) return { ...item, label: 'Unity ???' };
+  if (isUnrealSelected.value) return { ...item, label: 'UE4/UE5 ???' };
+  if (isGalgameSelected.value) return { ...item, label: 'Galgame ??' };
+  return item;
 }));
 const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => needsTranslationRepair(item)).length);
 const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([name, config]) => ({
@@ -1090,7 +1145,13 @@ const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([na
   providerLabel: ({ openai: 'OpenAI 兼容', anthropic: 'Anthropic', ollama: 'Ollama', accountbridge: '订阅账号' })[normalizeAiProvider(config.provider)] || 'OpenAI 兼容',
   model: config.model || '',
 })).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
-const viewMeta = computed(() => viewMetaMap[currentView.value] || viewMetaMap.library);
+const viewMeta = computed(() => {
+  if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity ???', subtitle: '???? Unity Localization?Polyglot CSV/TSV ??? JSON ???????????????????????' };
+  if (currentView.value === 'agent' && isUnrealSelected.value) return { eyebrow: 'Unreal', title: 'UE4/UE5 ???', subtitle: '?? UE4/UE5 Localization Archive ? Source/Translation ????????????????' };
+  if (currentView.value === 'agent' && isGalgameSelected.value) return { eyebrow: 'Galgame', title: 'Galgame ??', subtitle: '?? Kirikiri/KAG?NScripter/ONScripter ? GalTransl ???? JSON?????????????' };
+  if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG ??', subtitle: '???????????????????' };
+  return viewMetaMap[currentView.value] || viewMetaMap.library;
+});
 const filteredLibrary = computed(() => {
   const q = librarySearch.value.trim().toLowerCase();
   if (!q) return entries.value;
@@ -1241,6 +1302,11 @@ function clearProjectScopedState() {
   mapDetail.value = null;
   selectedTile.value = null;
   hoveredTile.value = null;
+  memoryProcesses.value = [];
+  memorySession.value = null;
+  memoryResults.value = [];
+  selectedMemoryAddress.value = '';
+  Object.assign(memoryForm, { pid: null, valueType: 'int32', initialValue: '', changedValue: '', writeValue: '' });
   runtimeState.value = null;
   runtimeConnected.value = false;
   Object.assign(agentExtractProgress, { active: false, status: 'idle', jobId: '', phase: '未开始', progress: 0, processedFiles: 0, totalFiles: 0, entryCount: 0, currentFile: '', message: '', error: '' });
@@ -1827,7 +1893,7 @@ async function startTranslation() {
     }
     if (isUnknownSelected.value) {
       await launchAgentRuntime();
-      toast('未知引擎翻译完成，已生成可回滚的隔离运行副本。');
+      toast(isWolfSelected.value ? 'Wolf RPG 翻译完成，已生成可回滚的隔离运行副本。' : '未知引擎翻译完成，已生成可回滚的隔离运行副本。');
       return;
     }
     await buildRenpyRuntimeAndLaunch();
@@ -1937,6 +2003,79 @@ function runtimeSwitchValue(id) { return Boolean((runtimeState.value?.switches |
 async function toggleRuntimeSwitch(id) { await setRuntimePayload({ switches: { [id]: !runtimeSwitchValue(id) } }); }
 async function handleEventCommand(command) { const match = String(command || '').match(/传送[：:]\s*地图\s*(\d+)\s*\((\d+)\s*,\s*(\d+)\)/); if (!match) return; await loadMapDetail(Number(match[1])); selectedTile.value = { x: Number(match[2]), y: Number(match[3]) }; await nextTick(); centerMapTile(selectedTile.value.x, selectedTile.value.y); drawMap(); }
 function centerMapTile(x, y) { if (!mapViewport.value) return; mapViewport.value.scrollTo({ left: x * mapTileSize - mapViewport.value.clientWidth / 2, top: y * mapTileSize - mapViewport.value.clientHeight / 2, behavior: 'smooth' }); }
+
+async function loadMemoryProcesses() {
+  if (!await ensureProjectLoaded()) return;
+  busy.memory = true;
+  try {
+    const data = await api('/memory/processes');
+    memoryProcesses.value = data.processes || [];
+    const available = new Set(memoryProcesses.value.map((item) => item.pid));
+    if (!available.has(memoryForm.pid)) memoryForm.pid = data.preferredPid || memoryProcesses.value[0]?.pid || null;
+  } catch (error) {
+    toast('\u8bfb\u53d6\u6e38\u620f\u8fdb\u7a0b\u5931\u8d25\uff1a' + error.message, 'error');
+  } finally {
+    busy.memory = false;
+  }
+}
+function applyMemorySession(data) {
+  memorySession.value = data;
+  memoryResults.value = data.results || [];
+  selectedMemoryAddress.value = '';
+}
+async function clearMemorySession() {
+  const sessionId = memorySession.value?.sessionId;
+  memorySession.value = null;
+  memoryResults.value = [];
+  selectedMemoryAddress.value = '';
+  if (!sessionId) return;
+  try { await api('/memory/clear', { body: { sessionId } }); } catch (_) {}
+}
+async function startMemorySearch() {
+  if (!memoryForm.pid) return toast('\u8bf7\u5148\u9009\u62e9\u5df2\u542f\u52a8\u7684\u6e38\u620f\u8fdb\u7a0b\u3002', 'warning');
+  if (String(memoryForm.initialValue).trim() === '') return toast('\u8bf7\u8f93\u5165\u6e38\u620f\u5185\u5f53\u524d\u7684\u6570\u503c\u3002', 'warning');
+  busy.memory = true;
+  try {
+    const data = await api('/memory/scan/start', { body: { pid: memoryForm.pid, valueType: memoryForm.valueType, value: memoryForm.initialValue } });
+    applyMemorySession(data);
+    memoryForm.changedValue = '';
+    toast(`\u9996\u6b21\u641c\u7d22\u5b8c\u6210\uff1a${data.count.toLocaleString()} \u4e2a\u5019\u9009\u5730\u5740`);
+  } catch (error) {
+    toast('\u9996\u6b21\u641c\u7d22\u5931\u8d25\uff1a' + error.message, 'error');
+  } finally {
+    busy.memory = false;
+  }
+}
+async function refineMemorySearch() {
+  if (!memorySession.value) return;
+  if (String(memoryForm.changedValue).trim() === '') return toast('\u8bf7\u8f93\u5165\u6570\u503c\u53d8\u5316\u540e\u7684\u65b0\u503c\u3002', 'warning');
+  busy.memory = true;
+  try {
+    const data = await api('/memory/scan/refine', { body: { sessionId: memorySession.value.sessionId, value: memoryForm.changedValue } });
+    applyMemorySession(data);
+    toast(`\u7f29\u5c0f\u7ed3\u679c\u5b8c\u6210\uff1a${data.count.toLocaleString()} \u4e2a\u5019\u9009\u5730\u5740`);
+  } catch (error) {
+    toast('\u518d\u6b21\u641c\u7d22\u5931\u8d25\uff1a' + error.message, 'error');
+  } finally {
+    busy.memory = false;
+  }
+}
+function selectMemoryAddress(row) {
+  selectedMemoryAddress.value = row?.address || '';
+}
+async function writeMemoryValue() {
+  if (!memorySession.value || !selectedMemoryAddress.value) return toast('\u8bf7\u5148\u5728\u8868\u683c\u9009\u4e2d\u4e00\u4e2a\u5730\u5740\u3002', 'warning');
+  if (String(memoryForm.writeValue).trim() === '') return toast('\u8bf7\u8f93\u5165\u8981\u4fee\u6539\u4e3a\u7684\u6570\u503c\u3002', 'warning');
+  busy.memory = true;
+  try {
+    const data = await api('/memory/write', { body: { sessionId: memorySession.value.sessionId, address: selectedMemoryAddress.value, value: memoryForm.writeValue } });
+    toast(`\u5df2\u5199\u5165 ${data.value} \uff08${data.address}\uff09`);
+  } catch (error) {
+    toast('\u5199\u5165\u5931\u8d25\uff1a' + error.message, 'error');
+  } finally {
+    busy.memory = false;
+  }
+}
 
 async function loadRuntimeState(silent = false) {
   if (!(await ensureProjectLoaded())) return;
@@ -2265,6 +2404,7 @@ async function loadViewData(view, refresh = false) {
   else if (view === 'data') await loadData(refresh);
   else if (view === 'saves') await loadSaveSlots();
   else if (view === 'maps') await loadMaps();
+  else if (view === 'memory') await loadMemoryProcesses();
   else if (view === 'runtime') await loadRuntimeState(false);
   else if (view === 'live' && !isRpgMakerSelected.value) await loadLiveStatus();
   loadedViewKeys.add(key);

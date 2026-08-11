@@ -9,17 +9,42 @@ Set-Location $ProjectRoot
 
 function Invoke-CheckedNative {
     param([Parameter(Mandatory=$true)][scriptblock]$Command)
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "命令执行失败，退出码：$LASTEXITCODE"
+    # PyInstaller writes its progress stream to stderr.  Keep `Stop` for
+    # PowerShell failures, but do not treat normal native stderr output as a
+    # terminating error; the executable's exit code is authoritative.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Command
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "命令执行失败，退出码：$exitCode"
     }
 }
 
 Write-Host "== RPGRenPyLocalizer Electron 一体化构建 ==" -ForegroundColor Cyan
 
-$Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) {
-    $Python = "python"
+$Python = $null
+foreach ($candidate in @(
+    (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
+    (Join-Path $ProjectRoot ".build-venv\Scripts\python.exe"),
+    "python"
+)) {
+    try {
+        & $candidate -c "import encodings" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $Python = $candidate
+            break
+        }
+    } catch {
+        continue
+    }
+}
+if (-not $Python) {
+    throw "未找到可用的 Python 运行时。"
 }
 
 Write-Host "[1/4] 检查 PyInstaller..." -ForegroundColor Cyan

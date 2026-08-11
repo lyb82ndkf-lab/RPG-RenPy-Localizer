@@ -1,42 +1,57 @@
-﻿# RPGRenPyLocalizer
+# RPGRenPyLocalizer
 
-面向 Windows 单机游戏的 RPG Maker MV/MZ 与 Ren'Py 本地化、实时翻译和数据辅助工具，支持 PC 桌面端与 Android 移动端双端运行。
+面向 Windows 单机游戏的本地化工作台。它将游戏检测、文本提取、翻译编辑、导出与写回聚合到一个 PC 桌面应用中。
 
-当前版本：**3.1.0（PC / Android）**
+当前版本：**3.2.0（PC 桌面版）**
 
-- 下载版本：[GitHub Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)
-- 查看更新：[GitHub Tags](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/tags)
-- 提交建议：[lyb82ndkf@gmail.com](mailto:lyb82ndkf@gmail.com)
+- 桌面端：Electron + Vue 3 + Python 本地服务
+- 覆盖格式：RPG Maker MV/MZ、Ren'Py、Wolf RPG Editor、Unity、UE4/UE5 与常见 Galgame 脚本
+- 处理原则：在游戏目录旁创建隔离副本，保留原始文件与可回滚的翻译数据。
 
-> 本工具面向本地单机游戏的翻译、调试与个人存档管理。修改游戏文件或存档前请保留备份，并遵守游戏许可和当地法律。
+桌面版入口：[Electron 打包说明](./ELECTRON_README.md)
+后端 API 说明：[API 文档](./API.md)
 
-## 3.1.0 版本更新
+## 3.2.0 版本更新（PC 桌面版）
 
-3.0.0 将 PC 端已经验证的 Ren'Py 实时翻译调度策略同步到 Android，并把两端发布版本统一为 **3.0.0**。本次重点不是改变用户的 AI 配置，而是让单批数量、并发数和请求间隔真正按已保存的设置工作。
+3.2.0 将工作台从 RPG Maker / Ren'Py 扩展为多引擎文本本地化流程，同时在左侧导航提供简化的游戏数值修改器。
 
-### PC 端更新
+### 已接入的引擎与格式
 
-- **300 条预读窗口**：Ren'Py 会从当前对话附近提取并补齐后续文本，最多维持 300 条未翻译预读，减少玩家读到新一句才开始请求 AI 的情况。
-- **按配置并行批译**：严格使用 AI 设置中的“单批数量 × 并发线程”派发批次；例如设置 50 条、4 并发时，最多同时处理 4 个 50 条批次，而不是退化为逐条请求。
-- **当前对话优先**：当前屏幕文本不会被普通失败退避阻塞。大批响应不完整时，会优先对当前句做即时补救；其余遗漏文本继续以小批并行修复。
-- **更可靠的脚本锚点**：运行时文本与脚本中带 Ren'Py 标签的同一句也能匹配，从而正确补充同文件、同语言的后续预读队列。
-- **选项注入安全修复**：不再修改 Ren'Py 菜单 AST 原始选项，只在显示层替换并套用中文字体，避免重复进入菜单后选项错位、污染或显示方框。
-- **实时状态更可读**：实时翻译状态会说明预读数量、并行批次、补救批次及当前句即时补救，便于判断是 API、队列还是缓存命中导致等待。
+| 类型 | 检测与提取范围 | 写回方式 |
+| --- | --- | --- |
+| Wolf RPG Editor | `Data` / `BasicData` 与 MTool 导出的 JSON 翻译包 | 生成带 `translation` 字段的副本翻译文件 |
+| Unity | Unity Localization CSV/TSV、String Table、Polyglot 表与常见 JSON 本地化表 | 保持 key 与目标语言字段，写入隔离副本 |
+| Unreal Engine 4/5 | `Content/Localization` 下的 archive JSON 条目 | 保留 Source / Translation 结构的翻译副本 |
+| Galgame / Visual Novel | Kirikiri/KAG、NScripter/ONScripter 特征，以及 GalTransl JSON 剧本 | 将对白写入 `pre_zh` 或 `proofread_zh` |
+| RPG Maker MV/MZ 与 Ren'Py | 原有 JSON、YAML、RPA / 脚本流程 | 维持现有翻译包与导出流程 |
 
-### Android App 更新
+### Wolf RPG Editor 工作流
 
-- **同步 PC 实时调度**：Ren'Py Hook 预读窗口提升到 300 条；手机端会先把当前对话放在队首，再用已保存的批大小填充同一批次并并行请求 AI。
-- **配置不再被暗中截断**：手机端单批最高支持 200 条、实际并发最高支持 8 路；运行中会读取 AI 设置中的批大小、并发数和请求间隔，而不是固定使用旧的 4 条快速批或 4 路线程上限。
-- **当前句即时回退**：当前对话忽略普通失败冷却；大批返回缺句时先单独重试当前句，再把其余遗漏文本按小批立即补救，避免等待 5 秒后才重新入队。
-- **实时嵌入与选项安全性**：翻译结果写入运行时缓存并通知游戏刷新；菜单不再改写原始选项数据，显示层负责中文字体包装与替换。
-- **统一版本发布**：Android `versionName` 为 `3.0.0`，`versionCode` 为 `300000`，可用于覆盖此前同签名的旧调试包。
+1. 载入游戏根目录，确认当前游戏标签显示为 **Wolf RPG Editor**。
+2. 点击“开始翻译”或“刷新当前页”重新提取。支持读取 MTool 已导出的翻译 JSON，用于稳定地编辑文本。
+3. 在翻译工作台中筛选、翻译、校对，再导出翻译包或使用写回功能。
 
-### 未知游戏 Agent（PC）
+### Unity 、UE4/UE5 与 Galgame 工作流
 
-- 游戏库现在可以导入带有明确文件信号的 Unity、Unreal Engine 4/5、Godot 和 Electron/Web 游戏；单独选择未知 `.exe` 也会标记为 Generic Windows Game。
-- Agent 工作台提供只读引擎扫描、资源信号、候选文本提取、AI 分析计划和工具清单。
-- 可将已保存译文生成到 `.rpgrtl_workspace/unknown_runtime_game` 隔离副本，再启动副本验证；原游戏目录不会写入，副本可直接删除回滚。
-- Unity、Unreal、Godot 的专用资源解析器和进程 Hook 通过工具清单预留适配点，后续按具体游戏启用，不对未知进程盲目注入。
+- 载入后先核对侧边栏的引擎类型。如果识别为未知，仍可以在翻译页分执行一次扫描。
+- 所有解析结果都带来源文件、分类与翻译状态，便于过滤 UI 文本、对白和资源字符串。
+- 对于加密、打包或 cooked 资源，先导出为可编辑的本地化表或 JSON，再载入本工具进行翻译。
+
+### 简化 CE 修改器
+
+左侧导航的 **CE 修改器** 可对已运行的游戏进行两步数值筛选：
+
+1. 选择游戏进程，输入当前金币、经验或道具数量，执行首次搜索。
+2. 回到游戏让数值变化，输入变化后的数值进行下一次搜索。
+3. 从候选地址中选择匹配项，输入新值并写入。
+
+扫描和写入仅在当前 Windows 用户进程上执行，支持 32 位整数值流程，以降低修改金币等常见数值的操作步数。
+
+### 安全写回与验证
+
+- 加载时会创建隔离副本，不覆盖原游戏文件。
+- 翻译前可在工作台检查来源文件和类别，导出后保留原始包作为回滚副本。
+- 重新扫描时会更新前端清单，可用于检查解析规则和翻译输出。
 
 ## 2.3.0 / 4.0 历史版本更新
 
@@ -202,7 +217,7 @@ RPG Maker XP、VX 和 VX Ace 只能识别部分资源，不保证实时组件、
 ### PC端 (Windows)
 
 1. 打开 [Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)。
-2. 下载最新的 `RPGRenPyLocalizer Setup 3.0.0.exe`（安装版）或 `RPGRenPyLocalizer 3.0.0.exe`（免安装便携版）。
+2. 下载最新的 `RPGRenPyLocalizer Setup 3.2.0.exe`（安装版）或 `RPGRenPyLocalizer 3.2.0.exe`（免安装便携版）。
 3. 安装版按提示安装；便携版解压即用。
 4. 从桌面或开始菜单启动 RPGRenPyLocalizer。
 

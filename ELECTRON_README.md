@@ -1,4 +1,4 @@
-﻿# Electron 版说明
+# Electron 版说明
 
 本项目现在同时保留原 Python/Tkinter 入口，并新增 Electron 桌面壳。
 
@@ -31,8 +31,8 @@ powershell -ExecutionPolicy Bypass -File .\build_electron_release.ps1
 
 ```text
 release-electron/
-├─ RPGRenPyLocalizer Setup 0.2.0.exe   # 标准安装包
-├─ RPGRenPyLocalizer 0.2.0.exe         # 可选 portable 单 exe（运行 npm run portable 生成）
+├─ RPGRenPyLocalizer Setup 3.2.0.exe   # 标准安装包
+├─ RPGRenPyLocalizer 3.2.0.exe         # 可选 portable 单 exe（运行 npm run portable 生成）
 └─ win-unpacked/                       # 目录版，可直接运行 RPGRenPyLocalizer.exe
 ```
 
@@ -62,3 +62,9 @@ npm run portable
 ## 注意
 
 新界面调用的是现有 Python 核心逻辑，因此底层能力与旧工具一致；旧 `main.py` / `launcher.py` 仍可继续运行，方便回退。
+
+## 3.2.0 桌面版新增能力
+
+- 游戏识别与翻译提取扩展至 Wolf RPG Editor、Unity 本地化表、UE4/UE5 archive JSON 与 Galgame / Visual Novel 脚本。
+- 左侧导航包含 CE 修改器：选进程、首次搜索、值变化后继续筛选、选中地址并写入新值。
+- 当前打包版本号为 `3.2.0`，产物输出到 `release-electron/`。

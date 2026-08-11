@@ -23,6 +23,22 @@ class AiApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def test_preflight_rejects_missing_template_tokens_for_galgame(self) -> None:
+        game_root = Path(self.temp_dir.name) / "galgame"
+        game_root.mkdir()
+        (game_root / "krkr.exe").write_bytes(b"MZ")
+        self.api.load_project({"path": str(game_root)})
+        self.api.translation_entries = [TranslationEntry(
+            "line-1", "Hello, {player}! \\N[4]", "", "script.json", "galtransl-json;row=0", "galgame_dialogue"
+        )]
+        with self.assertRaises(ApiError):
+            self.api.translations_save_targets({"updates": [{"entry_id": "line-1", "target": "??????"}]})
+        result = self.api.translations_save_targets({"updates": [{"entry_id": "line-1", "target": "???{player}? \\N[4]"}]})
+        self.assertEqual(result["changed"], 1)
+        report = self.api.translations_preflight({})
+        self.assertEqual(report["summary"]["errors"], 0)
+        self.assertEqual(report["summary"]["verifiedWriteback"], 1)
+
     def test_provider_aliases_are_normalized(self) -> None:
         self.assertEqual(self.api._normalize_ai_provider("openai-compatible"), "openai")
         self.assertEqual(self.api._normalize_ai_provider("Claude"), "anthropic")

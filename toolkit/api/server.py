@@ -55,6 +55,20 @@ ANTIGRAVITY_MODELS = [
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium",
 ]
+TRANSLATION_TEMPLATE_TOKEN = re.compile(
+    r"\\[A-Za-z]+(?:\[[^\]\r\n]{0,128}\])?"
+    r"|\$\{[^}\r\n]{1,160}\}"
+    r"|\{(?:\d+|[A-Za-z_][A-Za-z0-9_.-]{0,80})\}"
+    r"|%(?:\d+\$)?[-+#0 ]*\d*(?:\.\d+)?[diuoxXfFeEgGcs]"
+    r"|<[/!]?[A-Za-z][^>\r\n]{0,160}>"
+)
+
+
+def _translation_template_tokens(value: str) -> list[str]:
+    """Return ordered control, placeholder, printf, and markup tokens."""
+    return [match.group(0) for match in TRANSLATION_TEMPLATE_TOKEN.finditer(str(value or ""))]
+
+
 ANTIGRAVITY_MODEL_ALIASES = {
     "Gemini 3.1 Pro (High)": "gemini-3.1-pro-high",
     "Gemini 3.1 Pro (Low)": "gemini-3.1-pro-low",
@@ -897,6 +911,78 @@ class ToolkitApi:
 
     def _filter_safe_translation_entries(self, entries: list[TranslationEntry]) -> list[TranslationEntry]:
         return [entry for entry in entries if self._is_safe_translation_entry(entry)]
+
+    @staticmethod
+    def _entry_write_status(entry: TranslationEntry) -> str:
+        context = str(entry.context or "")
+        if context.startswith(("mtool-dump;", "wolf-field;", "unity-table;", "unity-json;", "unreal-archive;", "galtransl-json;")):
+            return "verified"
+        return "text-scan"
+
+    def translations_preflight(self, body: JsonDict) -> JsonDict:
+        """Summarize translation coverage and catch write-back hazards early."""
+        if not self.translation_entries:
+            self.translation_entries = self._service().extract_translations()
+            self._restore_translation_cache()
+        entries = self._filter_safe_translation_entries(self.translation_entries)
+        issues: list[JsonDict] = []
+        translated = 0
+        verified = 0
+        text_scan = 0
+        for entry in entries:
+            target = str(entry.target or "").strip()
+            write_status = self._entry_write_status(entry)
+            if write_status == "verified":
+                verified += 1
+            else:
+                text_scan += 1
+            if not target:
+                continue
+            translated += 1
+            try:
+                self._validate_translation_target(entry.source, target)
+            except ApiError as exc:
+                issues.append({
+                    "severity": "error",
+                    "code": "tokens",
+                    "entry_id": entry.entry_id,
+                    "file": entry.file,
+                    "source": entry.source[:160],
+                    "message": str(exc),
+                })
+                continue
+            if target == entry.source:
+                issues.append({
+                    "severity": "warning",
+                    "code": "same-as-source",
+                    "entry_id": entry.entry_id,
+                    "file": entry.file,
+                    "source": entry.source[:160],
+                    "message": "译文与原文相同，启动前请确认这是有意保留。",
+                })
+            if len(target) > max(1200, len(entry.source) * 4):
+                issues.append({
+                    "severity": "warning",
+                    "code": "length",
+                    "entry_id": entry.entry_id,
+                    "file": entry.file,
+                    "source": entry.source[:160],
+                    "message": "译文长度显著超出原文，请检查游戏文本框、自动换行和字体显示。",
+                })
+        return {
+            "ok": True,
+            "engine": self._project().engine,
+            "summary": {
+                "total": len(entries),
+                "translated": translated,
+                "missing": len(entries) - translated,
+                "verifiedWriteback": verified,
+                "textScanWriteback": text_scan,
+                "errors": sum(1 for item in issues if item["severity"] == "error"),
+                "warnings": sum(1 for item in issues if item["severity"] == "warning"),
+            },
+            "issues": issues[:100],
+        }
 
     def translations_apply(self, body: JsonDict) -> JsonDict:
         raise ApiError("为保护原游戏完整性，已禁用永久覆盖原文件。请使用“选择译文启动”，它会生成独立、可删除的运行副本。", 409)
@@ -1989,6 +2075,8 @@ class ToolkitApi:
             raise ApiError(f"译文控制符不完整：{source[:80]}")
         if self.project.engine == "Ren'Py" and not RenPyService.control_tokens_preserved(source, target):
             raise ApiError(f"Ren'Py 控制符不完整：{source[:80]}")
+        if _translation_template_tokens(source) != _translation_template_tokens(target):
+            raise ApiError(f"译文占位符或控制标记不完整：{source[:80]}")
 
     def _merged_translation_map(self, body: JsonDict) -> dict[str, TranslationEntry]:
         return {entry.entry_id: entry for entry in self._merged_translation_list(body)}
@@ -3188,6 +3276,7 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/project/launch": return api.launch_project(body)
     if method == "GET" and path == "/translations": return api.translations(query)
     if method == "GET" and path == "/translations/versions": return api.translations_versions()
+    if method == "POST" and path == "/translations/preflight": return api.translations_preflight(body)
     if method == "POST" and path == "/translations/save-targets": return api.translations_save_targets(body)
     if method == "POST" and path == "/translations/apply": return api.translations_apply(body)
     if method == "POST" and path == "/translations/export": return api.translations_export(body)

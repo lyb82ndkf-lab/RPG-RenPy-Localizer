@@ -247,9 +247,10 @@
         <el-card shadow="never" class="section-card full-card">
           <template #header>
             <div class="card-head">
-              <strong>{{ isWolfSelected ? 'Wolf RPG 工具' : 'Unknown Game Agent' }}</strong>
+              <strong>{{ viewMeta.title }}</strong>
               <div class="card-head-right">
                 <el-button size="small" :loading="busy.agent" @click="loadAgentInspect">重新扫描</el-button>
+                <el-button size="small" :loading="busy.agent" :disabled="!translations.length" @click="runAgentPreflight">翻译预检</el-button>
                 <el-button size="small" type="primary" :loading="busy.agent" @click="runAgentPlan(true)">让 AI 分析</el-button>
               </div>
             </div>
@@ -258,6 +259,18 @@
             <template #title>检测到 {{ agentInspect.engine }}；原游戏目录只读，运行时会使用可删除的隔离副本。</template>
             <div class="agent-meta">文件 {{ agentInspect.fileCount || 0 }} 个 · 信号 {{ (agentInspect.signals || []).length }} 条 · 可提取文本 {{ agentTextCount }} 条</div>
           </el-alert>
+          <el-card v-if="agentPreflight" shadow="never" class="agent-progress-card">
+            <div class="agent-progress-head">
+              <strong>翻译预检</strong>
+              <span>{{ agentPreflight.summary.errors ? '需修复' : (agentPreflight.summary.warnings ? '请检查' : '通过') }}</span>
+            </div>
+            <div class="agent-progress-meta">
+              已翻译 {{ agentPreflight.summary.translated }}/{{ agentPreflight.summary.total }} 条 ? 缺少 {{ agentPreflight.summary.missing }} 条 ? 精确写回 {{ agentPreflight.summary.verifiedWriteback }} 条 ? 文本扫描写回 {{ agentPreflight.summary.textScanWriteback }} 条
+            </div>
+            <el-alert v-for="issue in agentPreflight.issues.slice(0, 5)" :key="`${issue.entry_id}-${issue.code}`" :type="issue.severity === 'error' ? 'error' : 'warning'" :closable="false" show-icon class="agent-preflight-issue">
+              <template #title>{{ issue.file }} ? {{ issue.message }}</template>
+            </el-alert>
+          </el-card>
           <el-card v-if="agentExtractProgress.active || agentExtractProgress.status === 'done' || agentExtractProgress.status === 'error'" shadow="never" class="agent-progress-card">
             <div class="agent-progress-head">
               <strong>{{ agentExtractProgress.phase }}</strong>
@@ -935,6 +948,7 @@ const translationStopRequested = ref(false);
 const agentInspect = ref(null);
 const agentPlan = ref(null);
 const agentAiPlan = ref('');
+const agentPreflight = ref(null);
 const agentExtractProgress = reactive({ active: false, status: 'idle', jobId: '', phase: '未开始', progress: 0, processedFiles: 0, totalFiles: 0, entryCount: 0, currentFile: '', message: '', error: '' });
 
 const dataRecords = ref([]);
@@ -1132,10 +1146,10 @@ const visibleNavItems = computed(() => navItems.filter((item) => {
   return true;
 }).map((item) => {
   if (item.key !== 'agent') return item;
-  if (isWolfSelected.value) return { ...item, label: 'Wolf RPG ??' };
-  if (isUnitySelected.value) return { ...item, label: 'Unity ???' };
-  if (isUnrealSelected.value) return { ...item, label: 'UE4/UE5 ???' };
-  if (isGalgameSelected.value) return { ...item, label: 'Galgame ??' };
+  if (isWolfSelected.value) return { ...item, label: 'Wolf RPG 翻译' };
+  if (isUnitySelected.value) return { ...item, label: 'Unity 翻译' };
+  if (isUnrealSelected.value) return { ...item, label: 'UE4/UE5 翻译' };
+  if (isGalgameSelected.value) return { ...item, label: 'Galgame 翻译' };
   return item;
 }));
 const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => needsTranslationRepair(item)).length);
@@ -1146,10 +1160,10 @@ const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([na
   model: config.model || '',
 })).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
 const viewMeta = computed(() => {
-  if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity ???', subtitle: '???? Unity Localization?Polyglot CSV/TSV ??? JSON ???????????????????????' };
-  if (currentView.value === 'agent' && isUnrealSelected.value) return { eyebrow: 'Unreal', title: 'UE4/UE5 ???', subtitle: '?? UE4/UE5 Localization Archive ? Source/Translation ????????????????' };
-  if (currentView.value === 'agent' && isGalgameSelected.value) return { eyebrow: 'Galgame', title: 'Galgame ??', subtitle: '?? Kirikiri/KAG?NScripter/ONScripter ? GalTransl ???? JSON?????????????' };
-  if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG ??', subtitle: '???????????????????' };
+  if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity 翻译工作台', subtitle: '自动识别 Unity Localization、Polyglot CSV/TSV 与可编辑 JSON 本地化表。' };
+  if (currentView.value === 'agent' && isUnrealSelected.value) return { eyebrow: 'Unreal', title: 'UE4/UE5 翻译工作台', subtitle: '读取 UE4/UE5 Localization Archive 的 Source/Translation 字段，保留可写回的定位信息。' };
+  if (currentView.value === 'agent' && isGalgameSelected.value) return { eyebrow: 'Galgame', title: 'Galgame 翻译工作台', subtitle: '支持 Kirikiri/KAG、NScripter/ONScripter 与 GalTransl 兼容 JSON 的剧本翻译流程。' };
+  if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG 翻译工作台', subtitle: '优先解析 MTool 导出翻译包和可识别的 MPS 事件文本，所有写回都在隔离副本中进行。' };
   return viewMetaMap[currentView.value] || viewMetaMap.library;
 });
 const filteredLibrary = computed(() => {
@@ -1368,6 +1382,17 @@ async function runAgentPlan(runAi = false) {
     if (data.aiError) toast(`AI 分析失败：${data.aiError}`, 'warning');
   } finally { busy.agent = false; }
 }
+async function runAgentPreflight() {
+  if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/translations/preflight', { body: {} });
+    agentPreflight.value = data;
+    const summary = data.summary || {};
+    toast(summary.errors ? `预检完成：${summary.errors} 项错误需修复` : `预检完成：${summary.warnings || 0} 项提醒`, summary.errors ? 'warning' : 'success');
+  } catch (error) { toast(error.message, 'error'); } finally { busy.agent = false; }
+}
+
 async function extractAgentText() {
   if (!isUnknownSelected.value || !(await ensureProjectLoaded())) return;
   busy.agent = true;
@@ -1382,6 +1407,7 @@ async function extractAgentText() {
       Object.assign(agentExtractProgress, snapshot, { active: snapshot.status !== 'done' && snapshot.status !== 'error' });
       if (snapshot.status === 'done') {
         translations.value = snapshot.entries || [];
+        agentPreflight.value = null;
         selectedTranslationId.value = translations.value[0]?.entry_id || '';
         toast(`\u5df2\u63d0\u53d6 ${snapshot.entryCount || translations.value.length || 0} \u6761\u5019\u9009\u6587\u672c`);
         finished = true;

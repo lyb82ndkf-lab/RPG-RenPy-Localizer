@@ -182,19 +182,60 @@ class AndroidAiTranslationService {
     }
 
     private fun extractJsonObject(content: String): String {
-        val cleaned = content.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val noThink = content.replace(Regex("""<think>[\s\S]*?</think>"""), "").trim()
+        val cleaned = if (noThink.contains("```")) {
+            Regex("""```(?:json)?([\s\S]*?)```""").find(noThink)?.groupValues?.get(1)?.trim() ?: noThink
+        } else noThink
         val start = cleaned.indexOf('{')
+        if (start < 0) {
+            val arrStart = cleaned.indexOf('[')
+            val arrEnd = cleaned.lastIndexOf(']')
+            if (arrStart >= 0 && arrEnd > arrStart) return cleaned.substring(arrStart, arrEnd + 1)
+            throw IllegalStateException("AI response is not JSON: ${cleaned.take(500)}")
+        }
         val end = cleaned.lastIndexOf('}')
-        if (start < 0 || end <= start) throw IllegalStateException("AI response is not JSON: ${cleaned.take(500)}")
-        return cleaned.substring(start, end + 1)
+        if (end > start) return cleaned.substring(start, end + 1)
+        return cleaned.substring(start) + "\n}"
     }
 
-    private fun parseTranslatedObject(jsonText: String): JSONObject = try {
-        JSONObject(jsonText)
-    } catch (_: Throwable) {
-        throw IllegalStateException("AI returned invalid JSON: ${jsonText.take(700)}")
-    }
+    private fun parseTranslatedObject(jsonText: String): JSONObject {
+        try {
+            if (jsonText.startsWith("{")) return JSONObject(jsonText)
+            if (jsonText.startsWith("[")) {
+                val arr = org.json.JSONArray(jsonText)
+                val obj = JSONObject()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i)
+                    if (item != null) {
+                        val k = item.optString("id").ifBlank { item.optString("entry_id").ifBlank { (i + 1).toString() } }
+                        val v = item.optString("target").ifBlank { item.optString("translation") }
+                        if (k.isNotBlank() && v.isNotBlank()) obj.put(k, v)
+                    } else {
+                        val str = arr.optString(i)
+                        if (str.isNotBlank()) obj.put((i + 1).toString(), str)
+                    }
+                }
+                return obj
+            }
+        } catch (_: Throwable) {}
 
+        val recovered = JSONObject()
+        val pairRegex = Regex(""""([^"\\]*(?:\\.[^"\\]*)*)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"""")
+        pairRegex.findAll(jsonText).forEach { match ->
+            val key = match.groupValues[1]
+            val value = match.groupValues[2]
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t")
+            if (key.isNotBlank() && value.isNotBlank()) {
+                recovered.put(key, value)
+            }
+        }
+        if (recovered.length() > 0) return recovered
+        throw IllegalStateException("AI returned unparseable JSON: ${jsonText.take(500)}")
+    }
     private fun error(error: Throwable) = JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName)
 
     companion object {

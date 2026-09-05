@@ -45,7 +45,8 @@ init -7 python:
     try:
         _rpgrtl_cjk_font = None
         for _f in (
-            "game/DejaVuSans.ttf",
+            "fonts/RPGRenPyLocalizerCJK.ttf",
+            "game/fonts/RPGRenPyLocalizerCJK.ttf",
             "C:/windows/Fonts/msyh.ttc",
             "C:/windows/Fonts/simhei.ttf",
             "C:/Windows/Fonts/msyh.ttc",
@@ -53,6 +54,13 @@ init -7 python:
             "C:/Windows/Fonts/simhei.ttf",
             "C:/Windows/Fonts/simsun.ttc",
             "C:/Windows/Fonts/NotoSansCJK-Regular.ttc",
+            "/system/fonts/NotoSansSC-Regular.otf",
+            "/system/fonts/NotoSansCJK-Regular.ttc",
+            "/system/fonts/SourceHanSansCN-Regular.otf",
+            "/system/fonts/DroidSansFallback.ttf",
+            "/system/fonts/MiSans-Regular.ttf",
+            "/system/fonts/OPPOSans-Regular.ttf",
+            "/system/fonts/HarmonyOS_Sans_SC.ttf",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
             "/System/Library/Fonts/PingFang.ttc",

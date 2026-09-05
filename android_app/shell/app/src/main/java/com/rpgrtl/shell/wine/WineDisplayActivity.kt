@@ -492,6 +492,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
         val guestRoot = WinePathCompat.newRootfsPrefix(this)
 
+        cleanupStaleWineSockets(rootDir)
         File(rootDir, "tmp/.X11-unix").mkdirs()
         File(rootDir, "tmp/.sound").mkdirs()
         File(rootDir, "tmp/.sysvshm").mkdirs()
@@ -641,10 +642,13 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         env.put("BOX64_DYNAREC", "1")
         env.put("BOX64_DYNAREC_FASTNAN", "1")
         env.put("BOX64_DYNAREC_FASTROUND", "1")
-        env.put("BOX64_DYNAREC_BIGBLOCK", "3")
+        val launchTarget = resolveLaunchFile(gameExePath)
+        val isRenPy = findRenPyProjectRoot(launchTarget) != null
+        env.put("BOX64_DYNAREC_BIGBLOCK", if (isRenPy) "1" else "3")
+        env.put("BOX64_DYNAREC_SAFEFLAGS", if (isRenPy) "1" else "0")
         env.put("BOX64_DYNAREC_FORWARD", "512")
         env.put("BOX64_DYNAREC_CALLRET", "1")
-        env.put("BOX64_DYNAREC_NATIVEFLAGS", "1")
+        env.put("BOX64_DYNAREC_NATIVEFLAGS", if (isRenPy) "0" else "1")
         env.put("BOX64_DYNAREC_WEAKBARRIER", "2")
         env.put("DXVK_LOG_LEVEL", "none")
         env.put("DXVK_STATE_CACHE_PATH", RootFS.getDosUserCachePath())
@@ -933,10 +937,30 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
                 .substringAfter("document/", "")
                 .substringAfter("tree/", "")
         }
-        if (!documentId.startsWith("primary:", ignoreCase = true)) return null
-        val relativePath = documentId.substringAfter(':').trimStart('/')
+        val deviceId = documentId.substringBefore(':', "")
+        val relativePath = documentId.substringAfter(':', "").trimStart('/')
         if (relativePath.isBlank()) return null
-        return File("/storage/emulated/0", relativePath)
+        if (deviceId.equals("primary", ignoreCase = true) || documentId.startsWith("primary:", ignoreCase = true)) {
+            return File("/storage/emulated/0", relativePath)
+        }
+        if (deviceId.isNotBlank()) {
+            val sdCard = File("/storage/$deviceId", relativePath)
+            if (sdCard.exists()) return sdCard
+        }
+        return null
+    }
+
+    private fun cleanupStaleWineSockets(rootDir: File) {
+        runCatching {
+            listOf("tmp/.X11-unix", "tmp/.sound", "tmp/.sysvshm", "tmp/shm").forEach { sub ->
+                val dir = File(rootDir, sub)
+                if (dir.exists()) {
+                    dir.listFiles()?.forEach { file -> runCatching { file.delete() } }
+                } else {
+                    dir.mkdirs()
+                }
+            }
+        }
     }
 
     private fun resolveExecutableName(uri: Uri, fallback: String): String {
@@ -1296,8 +1320,8 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         try { xServerView?.onPause() } catch (error: Throwable) {
             Log.w(TAG, "xServerView cleanup failed", error)
         }
+        try { cleanupStaleWineSockets(rootFS.rootDir) } catch (_: Throwable) {}
     }
-
     override fun onPause() {
         // Keep Wine running when the RPGTL tool page is opened, so CDP/runtime edits stay live.
         super.onPause()

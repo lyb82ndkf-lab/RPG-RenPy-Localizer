@@ -172,58 +172,274 @@ label { display: block; color: var(--text-muted); font-size: .70rem; font-weight
 .event-meta{font-size:10px;color:#8194ad;margin-top:2px}
 .event-cmds{font-size:10px;color:#8fb1c4;margin-top:3px;word-break:break-all}
 
-/* Flat shell: remove all card styling, use section dividers, fix nav color. */
-html,body,#app,.app-container{background:#0b0f16!important}
-
-/* Flatten every card-like surface */
-.app-hero,.summary-panel,.game-row,.empty-panel,.stat-card,.progress-panel,
-.action-panel,.settings-panel,.warning-banner,.loading-overlay,
-.glass-panel,.card,.page-head,.library-hero,.library-status-card,.toolbar-card,
-.progress-card,.clean-hero,.clean-game-card,.library-list,.current-game-card,
-.empty-library-card,.control-hero,.control-stage-card,.control-card,.return-card,
-.settings-card,.control-stage,.header-card,.map-panel,.editor-panel,
-.item-card,.runtime-groups,.metric,.notice,.app-status{
-  border-radius:0!important;
-  box-shadow:none!important;
-  border:1px solid rgba(255,255,255,.07)!important;
-  background:transparent!important
-}
-.app-hero,.library-hero,.page-head,.clean-hero,.control-hero,.settings-top{
-  background:transparent!important
-}
-.game-row,.clean-game-card,.library-status-card,.toolbar-card,.progress-card,
-.empty-panel,.empty-library-card,.settings-card,.stat-card,.progress-panel,
-.action-panel,.settings-panel,.warning-banner,.loading-overlay,
-.control-stage-card,.control-card,.return-card,.header-card,.map-panel,
-.editor-panel,.item-card,.metric,.notice,.app-status{
-  background:rgba(15,23,36,.50)!important
+/* === Refined Cyber-Teal Dark Aesthetic & Side-Rail Layout === */
+html, body, #app {
+  background: #07111e !important;
+  color: #edf4ff;
 }
 
-/* Section divider lines */
-.app-page > section{position:relative}
-.app-page > section + section::before,
-.library-view > section + section::before,
-.translations-view > section + section::before,
-.settings-view > section + section::before{
-  content:'';display:block;height:1px;margin:0 auto 2px;
-  background:linear-gradient(90deg,transparent,rgba(77,214,200,.18),transparent)
+.app-container.landscape {
+  display: flex !important;
+  flex-direction: row !important;
+  height: 100dvh !important;
+  width: 100vw !important;
+  overflow: hidden !important;
 }
 
-/* Bottom nav: dark icon on green active background */
-.nav-item.router-link-active{
-  color:#06111c!important;
-  background:#4dd6c8!important;
-  background-image:none!important
+.app-container.landscape .view-content {
+  flex: 1 !important;
+  height: 100% !important;
+  overflow-y: auto !important;
+  padding: 12px 18px !important;
 }
-.nav-item.router-link-active .nav-icon{color:#06111c!important;stroke:#06111c}
 
-/* Buttons: keep flat */
-.btn-primary,.app-button.primary,.el-button--primary,
-.btn-secondary.active,.empty-plus,.placeholder-icon{
-  background:#4dd6c8!important;background-image:none!important;color:#06111c!important
+/* Side Rail Navigation (Landscape) */
+.side-rail {
+  width: 78px;
+  height: 100%;
+  background: rgba(8, 14, 24, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 4px 8px;
+  z-index: 100;
+  flex-shrink: 0;
 }
-.btn-primary,.app-button.primary,.el-button--primary,.btn-secondary.active{box-shadow:none!important}
 
+.rail-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.rail-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #4dd6c8, #3b82f6);
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  font-size: 15px;
+  color: #06111c;
+  box-shadow: 0 4px 14px rgba(77, 214, 200, 0.35);
+}
+
+.rail-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: #4dd6c8;
+  margin-top: 3px;
+  letter-spacing: 0.05em;
+}
+
+.rail-return-wrap {
+  width: 100%;
+  padding: 2px 2px 6px;
+}
+
+.rail-return-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ffffff;
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  border-radius: 10px;
+  padding: 6px 2px;
+  font-size: 10.5px;
+  font-weight: 850;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.38);
+  cursor: pointer;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.rail-return-btn:active {
+  transform: scale(0.96);
+}
+
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  flex: 1;
+  overflow-y: auto;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.rail-nav-item {
+  width: 100%;
+  min-height: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 750;
+  border-radius: 11px;
+  padding: 4px 2px;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.rail-nav-item:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.rail-nav-item.router-link-active {
+  color: #06111c !important;
+  background: #4dd6c8 !important;
+  box-shadow: 0 4px 14px rgba(77, 214, 200, 0.35);
+}
+
+.rail-nav-item.router-link-active .nav-icon {
+  color: #06111c !important;
+  stroke: #06111c !important;
+}
+
+.rail-footer {
+  margin-top: auto;
+  padding: 4px 0;
+}
+
+.rail-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #64748b;
+  display: inline-block;
+}
+
+.rail-status-dot.running {
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+}
+
+/* Portrait In-Game Top Strip */
+.game-strip {
+  padding: 6px 12px;
+  background: rgba(8, 14, 24, 0.94);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 50;
+}
+
+.game-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.game-strip-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.game-strip-title strong {
+  color: #4dd6c8;
+  font-size: 13px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip-return-btn {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #ffffff;
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 850;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  cursor: pointer;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a7f3d0;
+  box-shadow: 0 0 8px #a7f3d0;
+  display: inline-block;
+  animation: pulse-glow 1.6s infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(1.35); }
+}
+
+.game-tool-nav {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.game-tool-nav a {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 750;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+
+.game-tool-nav a.router-link-active {
+  background: #4dd6c8;
+  color: #06111c;
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(77, 214, 200, 0.35);
+}
+
+/* Cards & Surfaces */
+.app-hero, .summary-panel, .game-row, .empty-panel, .stat-card, .progress-panel,
+.action-panel, .settings-panel, .warning-banner, .loading-overlay, .card,
+.page-head, .library-hero, .library-status-card, .toolbar-card, .progress-card,
+.settings-card, .control-stage-card, .control-card, .return-card, .header-card,
+.map-panel, .editor-panel, .item-card, .notice, .app-status {
+  border-radius: 16px !important;
+  background: rgba(14, 22, 36, 0.82) !important;
+  border: 1px solid rgba(125, 211, 252, 0.16) !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.app-button.primary, .btn-primary, .el-button--primary {
+  background: linear-gradient(135deg, #4dd6c8, #06b6d4) !important;
+  color: #06111c !important;
+  font-weight: 850 !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 14px rgba(77, 214, 200, 0.3) !important;
+}
 .log-help{margin:0;color:#8fb1c4;font-size:11px;line-height:1.45}
 .runtime-log-box{
   width:100%;

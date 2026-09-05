@@ -109,6 +109,11 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         consumeExternalLaunchIntent(intent)
+        if (externalSourceApp == "rpgtl_wine") {
+            toolPageGameMode = true
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            loadToolPage(fromGame = true)
+        }
         if (!externalGamePath.isBlank() || externalContainerId >= 0 || externalContainerName.isNotBlank()) {
             notifyWeb("Connected from Winlator: ${externalGameTitle.ifBlank { externalContainerName.ifBlank { "game" } }}")
         }
@@ -202,6 +207,10 @@ class MainActivity : Activity() {
         externalGameTitle = intent.getStringExtra("game_title") ?: externalGameTitle
         externalGamePath = intent.getStringExtra("game_path") ?: externalGamePath
         externalTargetPage = intent.getStringExtra("target_page") ?: externalTargetPage
+        if (externalSourceApp == "rpgtl_wine") {
+            toolPageGameMode = true
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
         val extras = JSONObject().apply {
             put("source_app", externalSourceApp)
             put("container_id", externalContainerId)
@@ -209,6 +218,8 @@ class MainActivity : Activity() {
             put("game_title", externalGameTitle)
             put("game_path", externalGamePath)
             put("target_page", externalTargetPage)
+            put("mode", if (toolPageGameMode) "game" else "normal")
+            put("game_mode", if (toolPageGameMode) "in_game" else "normal")
         }
         getPreferences(Context.MODE_PRIVATE)
             .edit()
@@ -216,6 +227,20 @@ class MainActivity : Activity() {
             .apply()
     }
 
+    fun returnToGame() {
+        if (externalSourceApp == "rpgtl_wine") {
+            val intent = Intent(this, WineDisplayActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            startActivity(intent)
+            return
+        }
+        if (lastGameUrl.isNotBlank()) {
+            showGamePage()
+            return
+        }
+        toggleToolPage()
+    }
     private fun setupWebView(webView: WebView, exposeBridge: Boolean) {
         with(webView.settings) {
             javaScriptEnabled = true
@@ -270,17 +295,14 @@ class MainActivity : Activity() {
     }
 
     private fun loadToolPage(fromGame: Boolean = false) {
-        val hadRunningGame = fromGame || gameViewActive || lastGameUrl.isNotBlank()
+        val hadRunningGame = fromGame || gameViewActive || lastGameUrl.isNotBlank() || externalSourceApp == "rpgtl_wine"
         gameViewActive = false
-        toolPageGameMode = hadRunningGame && fromGame
+        toolPageGameMode = hadRunningGame && (fromGame || externalSourceApp == "rpgtl_wine")
         requestedOrientation = if (toolPageGameMode) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
-        updateToolButton()
-        clearTouchControls()
-        removeGameToolbar()
         setGameTouchBlocked(false)
         hideGameLoadingOverlay(0)
         binding.gameWebView.visibility = View.INVISIBLE
@@ -1745,18 +1767,24 @@ class MainActivity : Activity() {
             val size = dp(sizeDp.coerceIn(34.0, 150.0).toFloat())
             val x = item.optDouble("x", 0.5).coerceIn(0.02, 0.98)
             val y = item.optDouble("y", 0.5).coerceIn(0.04, 0.96)
+            val normalBgColor = if (isJoystick) 0x553C9DFF else 0xCC0D1726.toInt()
+            val pressedBgColor = 0xEE4DD6C8.toInt()
+            val normalTextColor = 0xEEFFFFFF.toInt()
+            val pressedTextColor = 0xFF06111C.toInt()
+            val normalStrokeColor = 0xAA4DD6C8.toInt()
+            fun makeDrawable(pressed: Boolean) = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                cornerRadius = if (isJoystick) size / 2f else dp(10f).toFloat()
+                setColor(if (pressed) pressedBgColor else normalBgColor)
+                setStroke(dp(1.5f), if (pressed) 0xFFFFFFFF.toInt() else normalStrokeColor)
+            }
             val view = TextView(this).apply {
-                text = if (isJoystick) "O" else item.optString("label", "A")
-                textSize = if (isJoystick) 18f else 15f
+                text = if (isJoystick) "◎" else item.optString("label", "A")
+                textSize = if (isJoystick) 22f else 15f
                 gravity = android.view.Gravity.CENTER
-                setTextColor(0xEEFFFFFF.toInt())
-                alpha = item.optDouble("opacity", 0.62).coerceIn(0.18, 1.0).toFloat()
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                    cornerRadius = if (isJoystick) size / 2f else dp(7f).toFloat()
-                    setColor(if (isJoystick) 0x553C9DFF else 0xAA101820.toInt())
-                    setStroke(dp(1f), 0xAA3DE0D0.toInt())
-                }
+                setTextColor(normalTextColor)
+                alpha = item.optDouble("opacity", 0.68).coerceIn(0.18, 1.0).toFloat()
+                background = makeDrawable(false)
             }
             val left = (rootWidth * x - size / 2.0).toInt().coerceIn(0, (rootWidth - size).coerceAtLeast(0))
             val top = (rootHeight * y - size / 2.0).toInt().coerceIn(0, (rootHeight - size).coerceAtLeast(0))
@@ -1765,34 +1793,54 @@ class MainActivity : Activity() {
                 topMargin = top
             }
             if (isJoystick) {
-                var activeDir: Int? = null
-                fun release() {
-                    activeDir?.let { dispatchKeyToGame(it, KeyEvent.ACTION_UP) }
-                    activeDir = null
+                var activeDirs = mutableSetOf<Int>()
+                fun setDirections(newDirs: Set<Int>) {
+                    val toRelease = activeDirs - newDirs
+                    val toPress = newDirs - activeDirs
+                    toRelease.forEach { dispatchKeyToGame(it, KeyEvent.ACTION_UP) }
+                    toPress.forEach { dispatchKeyToGame(it, KeyEvent.ACTION_DOWN) }
+                    activeDirs = newDirs.toMutableSet()
                 }
-                fun press(code: Int) {
-                    if (activeDir == code) return
-                    release()
-                    activeDir = code
-                    dispatchKeyToGame(code, KeyEvent.ACTION_DOWN)
+                fun release() {
+                    activeDirs.forEach { dispatchKeyToGame(it, KeyEvent.ACTION_UP) }
+                    activeDirs.clear()
                 }
                 view.setOnTouchListener { _, event ->
                     when (event.actionMasked) {
-                        android.view.MotionEvent.ACTION_DOWN,
+                        android.view.MotionEvent.ACTION_DOWN -> {
+                            view.background = makeDrawable(true)
+                            view.setTextColor(pressedTextColor)
+                            runCatching { view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY) }
+                            true
+                        }
                         android.view.MotionEvent.ACTION_MOVE -> {
                             val dx = event.x - size / 2f
                             val dy = event.y - size / 2f
-                            if (kotlin.math.abs(dx) < dp(8f) && kotlin.math.abs(dy) < dp(8f)) {
+                            val dist = kotlin.math.hypot(dx.toDouble(), dy.toDouble())
+                            val deadzone = dp(8f)
+                            if (dist < deadzone) {
                                 release()
-                            } else if (kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
-                                press(if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
                             } else {
-                                press(if (dy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP)
+                                val angle = (Math.toDegrees(Math.atan2(dy.toDouble(), dx.toDouble())) + 360) % 360
+                                val dirs = when {
+                                    angle >= 337.5 || angle < 22.5 -> setOf(KeyEvent.KEYCODE_DPAD_RIGHT)
+                                    angle in 22.5..67.5 -> setOf(KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
+                                    angle in 67.5..112.5 -> setOf(KeyEvent.KEYCODE_DPAD_DOWN)
+                                    angle in 112.5..157.5 -> setOf(KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
+                                    angle in 157.5..202.5 -> setOf(KeyEvent.KEYCODE_DPAD_LEFT)
+                                    angle in 202.5..247.5 -> setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT)
+                                    angle in 247.5..292.5 -> setOf(KeyEvent.KEYCODE_DPAD_UP)
+                                    angle in 292.5..337.5 -> setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_RIGHT)
+                                    else -> emptySet()
+                                }
+                                setDirections(dirs)
                             }
                             true
                         }
                         android.view.MotionEvent.ACTION_UP,
                         android.view.MotionEvent.ACTION_CANCEL -> {
+                            view.background = makeDrawable(false)
+                            view.setTextColor(normalTextColor)
                             release()
                             true
                         }
@@ -1804,11 +1852,16 @@ class MainActivity : Activity() {
                 view.setOnTouchListener { _, event ->
                     when (event.actionMasked) {
                         android.view.MotionEvent.ACTION_DOWN -> {
+                            view.background = makeDrawable(true)
+                            view.setTextColor(pressedTextColor)
+                            runCatching { view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY) }
                             dispatchKeyToGame(keyCode, KeyEvent.ACTION_DOWN)
                             true
                         }
                         android.view.MotionEvent.ACTION_UP,
                         android.view.MotionEvent.ACTION_CANCEL -> {
+                            view.background = makeDrawable(false)
+                            view.setTextColor(normalTextColor)
                             dispatchKeyToGame(keyCode, KeyEvent.ACTION_UP)
                             true
                         }
@@ -2037,11 +2090,23 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
             KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
             KeyEvent.KEYCODE_ENTER -> "Enter"
-            KeyEvent.KEYCODE_BACK -> "Escape"
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> "Escape"
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "Shift"
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "Control"
-            KeyEvent.KEYCODE_ESCAPE -> "Escape"
             KeyEvent.KEYCODE_SPACE -> " "
+            KeyEvent.KEYCODE_Q -> "q"
+            KeyEvent.KEYCODE_W -> "w"
+            KeyEvent.KEYCODE_E -> "e"
+            KeyEvent.KEYCODE_R -> "r"
+            KeyEvent.KEYCODE_A -> "a"
+            KeyEvent.KEYCODE_S -> "s"
+            KeyEvent.KEYCODE_D -> "d"
+            KeyEvent.KEYCODE_Z -> "z"
+            KeyEvent.KEYCODE_X -> "x"
+            KeyEvent.KEYCODE_C -> "c"
+            KeyEvent.KEYCODE_TAB -> "Tab"
+            KeyEvent.KEYCODE_F5 -> "F5"
+            KeyEvent.KEYCODE_F12 -> "F12"
             else -> "Enter"
         }
     }
@@ -2053,11 +2118,23 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
             KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
             KeyEvent.KEYCODE_ENTER -> "Enter"
-            KeyEvent.KEYCODE_BACK -> "Escape"
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> "Escape"
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "ShiftLeft"
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "ControlLeft"
-            KeyEvent.KEYCODE_ESCAPE -> "Escape"
             KeyEvent.KEYCODE_SPACE -> "Space"
+            KeyEvent.KEYCODE_Q -> "KeyQ"
+            KeyEvent.KEYCODE_W -> "KeyW"
+            KeyEvent.KEYCODE_E -> "KeyE"
+            KeyEvent.KEYCODE_R -> "KeyR"
+            KeyEvent.KEYCODE_A -> "KeyA"
+            KeyEvent.KEYCODE_S -> "KeyS"
+            KeyEvent.KEYCODE_D -> "KeyD"
+            KeyEvent.KEYCODE_Z -> "KeyZ"
+            KeyEvent.KEYCODE_X -> "KeyX"
+            KeyEvent.KEYCODE_C -> "KeyC"
+            KeyEvent.KEYCODE_TAB -> "Tab"
+            KeyEvent.KEYCODE_F5 -> "F5"
+            KeyEvent.KEYCODE_F12 -> "F12"
             else -> "Enter"
         }
     }
@@ -2073,6 +2150,19 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> 16
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> 17
             KeyEvent.KEYCODE_SPACE -> 32
+            KeyEvent.KEYCODE_Q -> 81
+            KeyEvent.KEYCODE_W -> 87
+            KeyEvent.KEYCODE_E -> 69
+            KeyEvent.KEYCODE_R -> 82
+            KeyEvent.KEYCODE_A -> 65
+            KeyEvent.KEYCODE_S -> 83
+            KeyEvent.KEYCODE_D -> 68
+            KeyEvent.KEYCODE_Z -> 90
+            KeyEvent.KEYCODE_X -> 88
+            KeyEvent.KEYCODE_C -> 67
+            KeyEvent.KEYCODE_TAB -> 9
+            KeyEvent.KEYCODE_F5 -> 116
+            KeyEvent.KEYCODE_F12 -> 123
             else -> 13
         }
     }
@@ -2154,8 +2244,16 @@ class MainActivity : Activity() {
         val requestedEnd = endText.toLongOrNull() ?: (total - 1)
         val end = requestedEnd.coerceIn(start, total - 1)
         val length = end - start + 1
-        val input = contentResolver.openInputStream(file.uri) ?: return null
-        skipFully(input, start)
+        val pfd = runCatching { contentResolver.openFileDescriptor(file.uri, "r") }.getOrNull()
+        val input: InputStream = if (pfd != null) {
+            val fis = java.io.FileInputStream(pfd.fileDescriptor)
+            runCatching { fis.channel.position(start) }
+            fis
+        } else {
+            val stream = contentResolver.openInputStream(file.uri) ?: return null
+            skipFully(stream, start)
+            stream
+        }
         val limited = object : java.io.FilterInputStream(input) {
             private var remaining = length
             override fun read(): Int {
@@ -2170,6 +2268,13 @@ class MainActivity : Activity() {
                 val read = super.read(buffer, offset, max)
                 if (read > 0) remaining -= read.toLong()
                 return read
+            }
+            override fun close() {
+                try {
+                    super.close()
+                } finally {
+                    runCatching { pfd?.close() }
+                }
             }
         }
         return WebResourceResponse(
@@ -2385,8 +2490,17 @@ class MainActivity : Activity() {
 
     private fun buildGameFileIndex(root: DocumentFile, uri: Uri? = lastTreeUri) {
         Thread {
-            val index = mutableMapOf<String, DocumentFile>()
-            val pathIndex = mutableMapOf<String, String>()
+            val index = ConcurrentHashMap<String, DocumentFile>()
+            val pathIndex = ConcurrentHashMap<String, String>()
+            try {
+                root.listFiles().forEach { child ->
+                    val name = child.name ?: return@forEach
+                    index[name.lowercase()] = child
+                    pathIndex[name.lowercase()] = name
+                }
+                gameFileIndex = index
+            } catch (_: Throwable) {}
+
             fun walk(node: DocumentFile, prefix: String, depth: Int) {
                 if (depth > 8) return
                 node.listFiles().forEach { child ->
@@ -2407,7 +2521,7 @@ class MainActivity : Activity() {
                 saveGamePathIndex(pathIndex, uri)
                 notifyWeb("File index ready: ${index.size} items")
             } catch (_: Throwable) {
-                gameFileIndex = emptyMap()
+                if (gameFileIndex.isEmpty()) gameFileIndex = emptyMap()
             }
         }.start()
     }
@@ -2992,6 +3106,10 @@ class MainActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (toolPageGameMode || externalSourceApp == "rpgtl_wine") {
+                returnToGame()
+                return true
+            }
             if (lastGameUrl.isNotBlank()) {
                 toggleToolPage()
                 return true

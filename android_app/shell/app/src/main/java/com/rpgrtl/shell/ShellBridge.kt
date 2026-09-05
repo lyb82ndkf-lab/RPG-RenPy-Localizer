@@ -139,6 +139,13 @@ class ShellBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun returnToGame() {
+        activity.runOnUiThread {
+            activity.returnToGame()
+        }
+    }
+
+    @JavascriptInterface
     fun androidTranslationEntries(limit: Int): String {
         return activity.androidTranslationEntries(limit)
     }

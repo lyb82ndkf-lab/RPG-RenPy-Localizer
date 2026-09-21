@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$SkipNpmInstall,
     [switch]$DirOnly
 )
@@ -9,9 +9,6 @@ Set-Location $ProjectRoot
 
 function Invoke-CheckedNative {
     param([Parameter(Mandatory=$true)][scriptblock]$Command)
-    # PyInstaller writes its progress stream to stderr.  Keep `Stop` for
-    # PowerShell failures, but do not treat normal native stderr output as a
-    # terminating error; the executable's exit code is authoritative.
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -21,18 +18,28 @@ function Invoke-CheckedNative {
         $ErrorActionPreference = $previousErrorActionPreference
     }
     if ($exitCode -ne 0) {
-        throw "命令执行失败，退出码：$exitCode"
+        throw "Command execution failed with exit code: $exitCode"
     }
 }
 
-Write-Host "== RPGRenPyLocalizer Electron 一体化构建 ==" -ForegroundColor Cyan
+Write-Host "== RPGRenPyLocalizer Electron Build ==" -ForegroundColor Cyan
 
 $Python = $null
-foreach ($candidate in @(
-    (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
+$candidates = @()
+try {
+    $pyCandidate = (& py -3.12 -c "import sys; print(sys.executable)" 2>$null)
+    if ($pyCandidate) {
+        $candidates += $pyCandidate.Trim()
+    }
+} catch {}
+$candidates += @(
+    "C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe",
     (Join-Path $ProjectRoot ".build-venv\Scripts\python.exe"),
+    (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
     "python"
-)) {
+)
+
+foreach ($candidate in $candidates) {
     try {
         & $candidate -c "import encodings" 2>$null
         if ($LASTEXITCODE -eq 0) {
@@ -44,19 +51,19 @@ foreach ($candidate in @(
     }
 }
 if (-not $Python) {
-    throw "未找到可用的 Python 运行时。"
+    throw "No usable Python runtime found."
 }
 
-Write-Host "[1/4] 检查 PyInstaller..." -ForegroundColor Cyan
+Write-Host "[1/4] Checking PyInstaller..." -ForegroundColor Cyan
 try {
     & $Python -m PyInstaller --version | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller missing" }
 } catch {
-    Write-Host "安装 PyInstaller..." -ForegroundColor Yellow
+    Write-Host "Installing PyInstaller..." -ForegroundColor Yellow
     Invoke-CheckedNative { & $Python -m pip install pyinstaller }
 }
 
-Write-Host "[2/4] 打包 Python API 后端..." -ForegroundColor Cyan
+Write-Host "[2/4] Packaging Python API Backend..." -ForegroundColor Cyan
 $BackendBuild = Join-Path $ProjectRoot "build\electron-backend"
 $BackendDist = Join-Path $BackendBuild "rpgrtl-api"
 if (Test-Path $BackendBuild) { Remove-Item -LiteralPath $BackendBuild -Recurse -Force }
@@ -74,19 +81,19 @@ Invoke-CheckedNative { & $Python -m PyInstaller `
     api_server_entry.py }
 
 if (-not (Test-Path (Join-Path $BackendDist "rpgrtl-api.exe"))) {
-    throw "Python 后端打包失败：未找到 rpgrtl-api.exe"
+    throw "Python backend build failed: rpgrtl-api.exe not found"
 }
 
-Write-Host "[3/4] 安装 Electron 依赖..." -ForegroundColor Cyan
+Write-Host "[3/4] Checking Electron dependencies..." -ForegroundColor Cyan
 if (-not $SkipNpmInstall) {
     Invoke-CheckedNative { npm install }
 }
 
-Write-Host "[4/4] 构建 Electron 应用..." -ForegroundColor Cyan
+Write-Host "[4/4] Building Electron application..." -ForegroundColor Cyan
 if ($DirOnly) {
     Invoke-CheckedNative { npm run pack }
 } else {
     Invoke-CheckedNative { npm run dist }
 }
 
-Write-Host "构建完成。输出目录：$ProjectRoot\release-electron" -ForegroundColor Green
+Write-Host "Build complete! Output directory: $ProjectRoot\release-electron" -ForegroundColor Green

@@ -1,0 +1,62 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="512dp"
+    android:height="512dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Deep Dark Rounded Background Matching Brand Identity -->
+    <path
+        android:fillColor="#0D1017"
+        android:pathData="M180,0 L844,0 A180,180 0 0,1 1024,180 L1024,844 A180,180 0 0,1 844,1024 L180,1024 A180,180 0 0,1 0,844 L0,180 A180,180 0 0,1 180,0 Z" />
+
+    <!-- Top Arc & Clockwise Arrow -->
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M214,324 A342,342 0 0,1 806,312" />
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M726,312 L806,312 L806,232" />
+
+    <!-- Bottom Arc & Clockwise Arrow -->
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M810,700 A342,342 0 0,1 218,712" />
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M298,712 L218,712 L218,792" />
+
+    <!-- Letter R 1 -->
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M196,394 L196,634 M196,394 L324,394 C376,394 410,424 410,461 C410,498 376,528 324,528 L196,528 M250,528 L410,634" />
+
+    <!-- Letter R 2 -->
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M446,394 L446,634 M446,394 L574,394 C626,394 660,424 660,461 C660,498 626,528 574,528 L446,528 M500,528 L660,634" />
+
+    <!-- Letter L -->
+    <path
+        android:strokeColor="#C8CFDC"
+        android:strokeWidth="20"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M700,394 L700,634 L852,634" />
+</vector>

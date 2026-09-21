@@ -306,6 +306,195 @@ class UnknownGameServiceTests(unittest.TestCase):
             entries = service.extract_translations()
             self.assertFalse(any(item.file.lower().endswith(".txt") for item in entries))
 
+    def test_srpg_studio_detection_and_bridge_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Game.exe").write_bytes(b"MZ")
+            (root / "Data.dts").write_bytes(b"DTS\x00")
+            plugin_dir = root / "Plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "custom.js").write_text("// plugin", encoding="utf-8")
+            project = detect_project(root)
+            self.assertEqual(project.engine, "SRPG Studio")
+            service = UnknownGameService(project)
+            bridge_path = service.install_runtime_bridge()
+            self.assertIsNotNone(bridge_path)
+            self.assertTrue(bridge_path.is_file())
+            self.assertEqual(bridge_path.name, "RPGRenPyLocalizer_SRPG.js")
+            content = bridge_path.read_text(encoding="utf-8")
+            self.assertIn("RPGRenPyLocalizer", content)
+            self.assertIn("F9", content)
+
+    def test_rgss_packaged_games_detection_and_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Game.exe").write_bytes(b"MZ")
+            data_dir = root / "Data"
+            data_dir.mkdir(parents=True)
+            # Test RGSS3 (VX Ace)
+            (data_dir / "Scripts.rvdata2").write_bytes(b"RGSS3")
+            project = detect_project(root)
+            self.assertEqual(project.engine, "RPG Maker VX Ace")
+            service = UnknownGameService(project)
+            hook_path = service.install_runtime_bridge()
+            self.assertIsNotNone(hook_path)
+            self.assertEqual(hook_path.name, "RPGRenPyLocalizer_RGSS.rb")
+            self.assertIn("Bitmap", hook_path.read_text(encoding="utf-8"))
+
+    def test_kirikiri_patch_tjs_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "krkr.exe").write_bytes(b"MZ")
+            (root / "data.xp3").write_bytes(b"XP3\r\n")
+            project = detect_project(root)
+            service = UnknownGameService(project)
+            patch_path = service.install_runtime_bridge()
+            self.assertIsNotNone(patch_path)
+            self.assertEqual(patch_path.name, "patch.tjs")
+
+    def test_export_translation_file_for_mtool_and_loaders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = ProjectInfo("Wolf RPG Editor", root, root)
+            service = UnknownGameService(project)
+            entries = {
+                "e1": TranslationEntry("e1", "Hello", target="你好"),
+                "e2": TranslationEntry("e2", "World", target="世界"),
+            }
+            out_file = service.export_translation_file(entries)
+            self.assertTrue(out_file.is_file())
+            self.assertEqual(out_file.name, "翻译文件.json")
+            data = json.loads(out_file.read_text(encoding="utf-8"))
+            self.assertEqual(data["Hello"], "你好")
+            self.assertEqual(data["World"], "世界")
+
+    def test_bakin_detection_extraction_and_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Game.exe").write_bytes(b"MZ")
+            data_dir = root / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "bakinplayer.exe").write_bytes(b"MZ")
+            (data_dir / "bakinengine.dll").write_bytes(b"MZ")
+            (data_dir / "data.rbpack").write_bytes(b"RBPACK")
+            # Write MTool map basic list cache
+            cache_file = data_dir / "MTool_MapBasicListCache_123456.json"
+            cache_file.write_text(json.dumps([
+                {"guId": "guid-1", "name": "王都／城門前", "category": "王都"},
+                {"guId": "guid-2", "name": "酒場", "category": "王都"}
+            ]), encoding="utf-8")
+            # Write 翻译文件.json
+            trans_file = root / "翻译文件.json"
+            trans_file.write_text(json.dumps({
+                "王都／城門前": "王都／城门前",
+                "ようこそ": "欢迎"
+            }), encoding="utf-8")
+
+            project = detect_project(root)
+            self.assertEqual(project.engine, "RPG Developer Bakin")
+            self.assertEqual(project.data_dir, data_dir)
+            service = UnknownGameService(project)
+
+            # Test plan
+            plan = service.plan()
+            self.assertEqual(plan["engine"], "RPG Developer Bakin")
+            self.assertIn("lastLoadedTrsFile", " ".join(plan["runtime_plan"]))
+
+            # Test extraction
+            entries = service.extract_translations()
+            sources = [e.source for e in entries]
+            self.assertIn("王都／城門前", sources)
+            self.assertIn("ようこそ", sources)
+
+            # Test runtime bridge
+            bridge_path = service.install_runtime_bridge()
+            self.assertIsNotNone(bridge_path)
+            self.assertEqual(bridge_path.name, "RPGRenPyLocalizer_BakinLauncher.bat")
+            self.assertTrue((data_dir / "lastLoadedTrsFile").is_file())
+            self.assertIn("翻译文件.json", (data_dir / "lastLoadedTrsFile").read_text(encoding="utf-8"))
+            self.assertTrue((data_dir / "fixFontName").is_file())
+            self.assertTrue((data_dir / "fixFontSizeOffBakin").is_file())
+            self.assertEqual((data_dir / "fixFontSizeOffBakin").read_text(encoding="utf-8").strip(), "-3")
+
+    def test_tyranobuilder_detection_extraction_and_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tyrano_dir = root / "tyrano"
+            tyrano_dir.mkdir(parents=True)
+            (tyrano_dir / "tyrano.js").write_text("// tyrano", encoding="utf-8")
+            scenario_dir = root / "data" / "scenario"
+            scenario_dir.mkdir(parents=True)
+            ks_content = (
+                "; comment\n"
+                "#Alice\n"
+                "今日はいい天気ですね。[p]\n"
+                "[glink text=\"公園へ行く\" target=*park]\n"
+                "#Bob\n"
+                "そうだね、出かけよう。[l][r]\n"
+            )
+            (scenario_dir / "scene1.ks").write_text(ks_content, encoding="utf-8")
+
+            project = detect_project(root)
+            self.assertEqual(project.engine, "TyranoBuilder")
+            service = UnknownGameService(project)
+
+            # Test plan
+            plan = service.plan()
+            self.assertEqual(plan["engine"], "TyranoBuilder")
+            self.assertIn("RPGRenPyLocalizer_Tyrano.js", " ".join(plan["runtime_plan"]))
+
+            # Test extraction
+            entries = service.extract_translations()
+            sources = [e.source for e in entries]
+            self.assertIn("今日はいい天気ですね。", sources)
+            self.assertIn("公園へ行く", sources)
+            self.assertIn("そうだね、出かけよう。", sources)
+
+            # Verify context
+            alice_entry = next(e for e in entries if e.source == "今日はいい天気ですね。")
+            self.assertIn("speaker=Alice", alice_entry.context)
+            choice_entry = next(e for e in entries if e.source == "公園へ行く")
+            self.assertEqual(choice_entry.category, "tyrano_choice")
+
+            # Test runtime bridge
+            bridge_path = service.install_runtime_bridge()
+            self.assertIsNotNone(bridge_path)
+            self.assertEqual(bridge_path.name, "RPGRenPyLocalizer_Tyrano.js")
+            content = bridge_path.read_text(encoding="utf-8")
+            self.assertIn("RPGRenPyTyranoBridge", content)
+            self.assertIn("F9", content)
+
+    def test_pixel_game_maker_detection_and_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "agtk.exe").write_bytes(b"MZ")
+            (root / "project.json").write_text(json.dumps({
+                "title": "Action Hero Quest",
+                "settings": {"name": "勇敢な騎士の冒険"},
+                "dialogue": ["魔王を倒す時が来た！"]
+            }), encoding="utf-8")
+
+            project = detect_project(root)
+            self.assertEqual(project.engine, "Pixel Game Maker MV")
+            service = UnknownGameService(project)
+            entries = service.extract_translations()
+            sources = [e.source for e in entries]
+            self.assertIn("魔王を倒す時が来た！", sources)
+
+    def test_smile_game_builder_detection_and_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "game.kmy").write_bytes(b"KMY")
+            project = detect_project(root)
+            self.assertEqual(project.engine, "Smile Game Builder")
+            service = UnknownGameService(project)
+            bridge_path = service.install_runtime_bridge()
+            self.assertIsNotNone(bridge_path)
+            self.assertTrue((root / "fixFontName").is_file())
+            self.assertTrue((root / "fixFontSizeOffKmy").is_file())
+            self.assertEqual((root / "fixFontSizeOffKmy").read_text(encoding="utf-8").strip(), "-2")
+
 
 if __name__ == "__main__":
     unittest.main()
+

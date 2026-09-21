@@ -72,6 +72,10 @@ class RuntimeBridge(private val containerId: String = "") {
                 ?.opt("value"))
     }
 
+    fun injectTranslations(): JSONObject {
+        return evaluate("(function(){ if (window.__rpgrtl_reloadTranslations) window.__rpgrtl_reloadTranslations(); })();")
+    }
+
     fun command(action: String, value: String = ""): JSONObject {
         val script = when (action) {
             "status" -> RPG_STATUS

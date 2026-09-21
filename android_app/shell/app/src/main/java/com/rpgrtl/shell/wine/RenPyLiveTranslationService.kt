@@ -79,7 +79,12 @@ class RenPyLiveTranslationService(
             }
             startServer()
             startTranslationWorker()
-            updateStatus("实时翻译已就绪，等待游戏文本")
+            val initMsg = if (translations.isNotEmpty()) {
+                "实时翻译已就绪（已载入 ${translations.size} 条本地字典）"
+            } else {
+                "实时翻译已就绪，等待游戏文本"
+            }
+            updateStatus(initMsg)
             ShellLog.info(context, "RenPy live translation ready cache=${translations.size}")
             true
         }.getOrElse { error ->
@@ -105,6 +110,15 @@ class RenPyLiveTranslationService(
             if (active === this) active = null
         }
     }
+
+    fun reloadTranslationDict() {
+        runCatching {
+            loadCache()
+            notifySeq.incrementAndGet()
+            ShellLog.info(context, "RenPy live translation dict reloaded count=${translations.size}")
+        }
+    }
+
 
     private fun isRenPyProject(scriptsDir: File): Boolean {
         if (!scriptsDir.isDirectory) return false
@@ -458,7 +472,10 @@ class RenPyLiveTranslationService(
                     val cfg = try {
                         loadAiSettings()
                     } catch (_: Throwable) {
-                        Thread.sleep(500)
+                        if (translations.isNotEmpty() && inFlight.get() == 0) {
+                            updateStatus("本地字典实时命中中（${translations.size}条）")
+                        }
+                        Thread.sleep(800)
                         continue
                     }
                     val maxWorkers = cfg.optInt("concurrency", DEFAULT_CONCURRENCY).coerceIn(1, MAX_CONCURRENCY)
@@ -766,12 +783,77 @@ class RenPyLiveTranslationService(
     )
 
     private fun loadCache() {
-        if (!cacheFile.isFile) return
-        val raw = runCatching { JSONObject(cacheFile.readText(Charsets.UTF_8)) }.getOrNull() ?: return
-        val values = raw.optJSONObject("translations") ?: return
-        values.keys().forEach { source ->
-            val target = values.optString(source).trim()
-            if (source.isNotBlank() && target.isNotBlank()) storeTranslation(source, target)
+        // 0. Bundled Core RPG Offline Dictionary from Assets
+        loadAssetDictIntoCache("dict/rpg_core_dict.json")
+
+        // 1. Live workspace cache
+        loadFileIntoCache(cacheFile)
+
+        // 2. Project-level offline translation dictionary files (from PC sync or manual workbench)
+        val candidates = listOf(
+            File(projectRoot, "翻译文件.json"),
+            File(projectRoot, "game/翻译文件.json"),
+            File(projectRoot, "ManualTransFile.json"),
+            File(projectRoot, "game/ManualTransFile.json"),
+            File(projectRoot, "translation.json"),
+            File(projectRoot, "game/translation.json"),
+            File(workspace, "translations.json")
+        )
+        for (candidate in candidates) {
+            loadFileIntoCache(candidate)
+        }
+        ShellLog.info(context, "RenPy loaded total ${translations.size} translations into live cache")
+    }
+
+    private fun loadAssetDictIntoCache(assetPath: String) {
+        runCatching {
+            val content = context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val obj = JSONObject(content)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = obj.optString(key)
+                if (key.isNotBlank() && value.isNotBlank()) {
+                    storeTranslation(key, value.trim())
+                }
+            }
+        }.onFailure {
+            ShellLog.error(context, "Failed to load asset dict $assetPath", it)
+        }
+    }
+
+    private fun loadFileIntoCache(file: File) {
+        if (!file.isFile) return
+        runCatching {
+            val content = file.readText(Charsets.UTF_8).trim()
+            if (content.startsWith("{")) {
+                val obj = JSONObject(content)
+                val mapObj = obj.optJSONObject("translations") ?: obj
+                val keys = mapObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val value = when (val opt = mapObj.opt(key)) {
+                        is String -> opt
+                        is JSONObject -> opt.optString("target", opt.optString("text", ""))
+                        else -> null
+                    }
+                    if (!key.isNullOrBlank() && !value.isNullOrBlank() && key != "translations" && key != "version" && key != "updated_at") {
+                        storeTranslation(key, value.trim())
+                    }
+                }
+            } else if (content.startsWith("[")) {
+                val array = JSONArray(content)
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val src = item.optString("src", item.optString("source", item.optString("original", "")))
+                    val dst = item.optString("dst", item.optString("target", item.optString("translation", "")))
+                    if (src.isNotBlank() && dst.isNotBlank()) {
+                        storeTranslation(src, dst.trim())
+                    }
+                }
+            }
+        }.onFailure {
+            ShellLog.error(context, "Failed to load translations from ${file.name}", it)
         }
     }
 

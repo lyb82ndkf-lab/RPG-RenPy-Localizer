@@ -11,6 +11,7 @@ same result set using the new value.
 import ctypes
 import os
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -349,3 +350,117 @@ class LocalMemoryScanner:
             return self._unpack_value(verified, session.value_type)
         finally:
             self._close_handle(handle)
+
+
+class SmartGoldModifier:
+    """Automated, Cheat-Engine-free memory gold modifier for any running game.
+
+    Simplifies the multi-step memory scanning workflow into a clean 1-click or
+    2-click operation without exposing raw memory addresses or type selection.
+    """
+
+    def __init__(self, scanner: LocalMemoryScanner | None = None) -> None:
+        self.scanner = scanner or LocalMemoryScanner()
+        self._sessions: dict[str, MemoryScanSession] = {}
+        self._session_lock = threading.Lock()
+
+    def search_and_apply(self, pid: int, current_gold: int, target_gold: int = 99999999) -> dict[str, Any]:
+        """Perform first-pass scan and automatically apply if candidate count is small."""
+        session_id = f"smart_gold_{pid}_{int(time.time() * 1000)}"
+        session = self.scanner.start_scan(
+            session_id=session_id,
+            pid=int(pid),
+            process_name="Game",
+            value=int(current_gold),
+            value_type="int32",
+        )
+
+        with self._session_lock:
+            self._sessions[session_id] = session
+
+        count = len(session.addresses)
+        if count == 0:
+            return {
+                "ok": False,
+                "error": f"在游戏内存中未找到当前数值 {current_gold}，请核对游戏内数值是否正确后重试。",
+            }
+
+        # If candidates are few (<= 8), apply target_gold directly to all of them!
+        if count <= 8:
+            success_count = 0
+            for addr in list(session.addresses):
+                try:
+                    self.scanner.write_value(session, addr, int(target_gold))
+                    success_count += 1
+                except Exception:
+                    pass
+
+            if success_count > 0:
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "count": success_count,
+                    "targetGold": target_gold,
+                    "message": f"一键智能定位成功！已自动修改 {success_count} 处内存，金币已修改为 {target_gold}！",
+                }
+
+        # Candidates are more than 8, need one fast refinement step
+        return {
+            "ok": True,
+            "applied": False,
+            "count": count,
+            "sessionId": session_id,
+            "currentGold": current_gold,
+            "targetGold": target_gold,
+            "message": f"初步锁定 {count} 个候选内存地址。请在游戏中让金币变动一下（如买卖道具），然后输入新金币并点击【确认变动】。",
+        }
+
+    def refine_and_apply(self, session_id: str, new_gold: int, target_gold: int = 99999999) -> dict[str, Any]:
+        """Filter cached candidates using new value and immediately apply target value."""
+        with self._session_lock:
+            session = self._sessions.get(session_id)
+        if not session:
+            return {
+                "ok": False,
+                "error": "搜索会话已过期，请重新输入当前金币开始搜索。",
+            }
+
+        session = self.scanner.refine_scan(session, int(new_gold))
+        count = len(session.addresses)
+        if count == 0:
+            return {
+                "ok": False,
+                "error": f"在之前的候选地址中未匹配到新数值 {new_gold}。请确认数值是否正确，或重新从当前金币搜索。",
+            }
+
+        success_count = 0
+        for addr in list(session.addresses):
+            try:
+                self.scanner.write_value(session, addr, int(target_gold))
+                success_count += 1
+            except Exception:
+                pass
+
+        if success_count > 0:
+            return {
+                "ok": True,
+                "applied": True,
+                "count": success_count,
+                "targetGold": target_gold,
+                "message": f"精确定位成功！已自动修改 {success_count} 处内存，金币已成功修改为 {target_gold}！",
+            }
+        return {
+            "ok": False,
+            "error": "目标地址写入失败，可能受到游戏写入保护。",
+        }
+
+
+_GLOBAL_SMART_GOLD: SmartGoldModifier | None = None
+
+
+def get_smart_gold_modifier() -> SmartGoldModifier:
+    global _GLOBAL_SMART_GOLD
+    if _GLOBAL_SMART_GOLD is None:
+        _GLOBAL_SMART_GOLD = SmartGoldModifier()
+    return _GLOBAL_SMART_GOLD
+

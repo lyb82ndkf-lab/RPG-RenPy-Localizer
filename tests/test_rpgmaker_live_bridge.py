@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import subprocess
@@ -816,3 +816,279 @@ def test_save_preview_hides_switches_and_variables(tmp_path: Path) -> None:
     assert "switches" not in preview
     assert "variables" not in preview
     assert preview["party"]["_gold"] == 10
+
+
+def test_troops_extraction_and_apply(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    troops_data = [
+        None,
+        {
+            "id": 1,
+            "name": "Goblin Squad",
+            "pages": [
+                {
+                    "conditions": {},
+                    "list": [
+                        {"code": 101, "parameters": ["", 0, 0, 2, "Goblin Leader"]},
+                        {"code": 401, "parameters": ["Surrender or perish!"]},
+                        {"code": 102, "parameters": [["Fight", "Flee"], 0, 0, 2, 0]},
+                        {"code": 0, "parameters": []}
+                    ]
+                }
+            ]
+        }
+    ]
+    (data / "Troops.json").write_text(json.dumps(troops_data), encoding="utf-8")
+    service = RPGMakerService(project)
+    entries = service.extract_translations()
+    sources = {e.source for e in entries}
+    assert "Goblin Squad" in sources
+    assert "Surrender or perish!" in sources
+    assert "Fight" in sources
+    assert "Flee" in sources
+
+    # Test applying translation
+    trans_map = {
+        e.entry_id: TranslationEntry(entry_id=e.entry_id, source=e.source, file=e.file, context=e.context, category=e.category, target=f"[{e.source}_ZH]")
+        for e in entries
+    }
+    updated = service.apply_translations(trans_map)
+    assert updated >= 4
+    updated_troops = json.loads((data / "Troops.json").read_text(encoding="utf-8"))
+    assert updated_troops[1]["name"] == "[Goblin Squad_ZH]"
+    assert updated_troops[1]["pages"][0]["list"][1]["parameters"][0] == "[Surrender or perish!_ZH]"
+    assert updated_troops[1]["pages"][0]["list"][2]["parameters"][0][0] == "[Fight_ZH]"
+
+
+def test_system_terms_extraction_and_apply(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    data = project.data_dir
+    assert data is not None
+    system_data = {
+        "gameTitle": "Epic Adventure",
+        "currencyUnit": "Gold",
+        "terms": {
+            "basic": ["Level", "HP", "MP"],
+            "commands": ["Fight", "Escape", "Attack", "Item"],
+            "params": ["Max HP", "Attack", "Defense"],
+            "messages": {
+                "victory": "Victory!",
+                "defeat": "Defeat!"
+            }
+        },
+        "elements": ["", "Physical", "Fire", "Ice"],
+        "equipTypes": ["", "Weapon", "Shield"],
+        "skillTypes": ["", "Magic", "Special"],
+        "weaponTypes": ["", "Sword", "Bow"],
+        "armorTypes": ["", "Light Armor", "Heavy Armor"]
+    }
+    (data / "System.json").write_text(json.dumps(system_data), encoding="utf-8")
+    service = RPGMakerService(project)
+    # Default extraction excludes system
+    entries_default = service.extract_translations(include_system=False)
+    assert not any(e.file == "System.json" for e in entries_default)
+
+    # Full extraction includes system terms
+    entries_sys = service.extract_translations(include_system=True)
+    sys_sources = {e.source for e in entries_sys if e.file == "System.json"}
+    assert "Epic Adventure" in sys_sources
+    assert "Gold" in sys_sources
+    assert "Fight" in sys_sources
+    assert "Victory!" in sys_sources
+    assert "Fire" in sys_sources
+    assert "Sword" in sys_sources
+
+    # Test applying system translations
+    trans_map = {
+        e.entry_id: TranslationEntry(entry_id=e.entry_id, source=e.source, file=e.file, context=e.context, category=e.category, target=f"{e.source}_CN")
+        for e in entries_sys
+    }
+    updated = service.apply_translations(trans_map)
+    assert updated > 10
+    updated_sys = json.loads((data / "System.json").read_text(encoding="utf-8"))
+    assert updated_sys["gameTitle"] == "Epic Adventure_CN"
+    assert updated_sys["currencyUnit"] == "Gold_CN"
+    assert updated_sys["terms"]["commands"][0] == "Fight_CN"
+    assert updated_sys["terms"]["messages"]["victory"] == "Victory!_CN"
+    assert updated_sys["elements"][2] == "Fire_CN"
+
+
+def test_runtime_bridge_mtool_cheats(tmp_path: Path) -> None:
+    from toolkit.rpgmaker import RUNTIME_BRIDGE_SOURCE
+    source_path = tmp_path / "bridge.js"
+    harness_path = tmp_path / "harness.js"
+    source_path.write_text(RUNTIME_BRIDGE_SOURCE, encoding="utf-8")
+    harness = r"""
+      const fs = require('fs');
+      global.window = global;
+      global.Input = { isPressed: () => false };
+      global.Graphics = {};
+      global.SceneManager = { _scene: null };
+      global.TouchInput = { isTriggered: () => false, x: 0, y: 0 };
+      global.DataManager = { saveGame: () => {} };
+      global.$dataSystem = { switches: ['', 'Switch1', 'CG_回想_01', 'NormalSwitch'], variables: [] };
+      global.$dataMap = { events: [] };
+      global.$dataCommonEvents = [];
+      global.$dataMapInfos = [];
+      global.$dataItems = [null, {id: 1, name: 'Potion'}, {id: 2, name: 'Elixir'}];
+      global.$dataWeapons = [null, {id: 1, name: 'Sword'}];
+      global.$dataArmors = [null, {id: 1, name: 'Shield'}];
+
+      const switchValues = {};
+      global.$gameSwitches = {
+        value: id => !!switchValues[id],
+        setValue: (id, val) => { switchValues[id] = !!val; }
+      };
+      global.$gameVariables = { value: () => 0, setValue: () => {} };
+      global.$gameParty = {
+        _items: {},
+        _weapons: {},
+        _armors: {},
+        _gold: 0,
+        gold: () => $gameParty._gold,
+        steps: () => 0,
+        members: () => [actor1],
+        gainItem: (item, qty) => { $gameParty._items[item.id] = ($gameParty._items[item.id] || 0) + qty; }
+      };
+      global.$gameMap = { mapId: () => 1, requestRefresh: () => {}, canvasToMapX: x => x, canvasToMapY: y => y };
+
+      function Game_BattlerBase() { this._hp = 100; this.mhp = 100; this._mp = 50; this.mmp = 50; }
+      Game_BattlerBase.prototype.refresh = function() {};
+      Game_BattlerBase.prototype.isActor = function() { return this === actor1; };
+      Game_BattlerBase.prototype.actorId = function() { return 1; };
+      Game_BattlerBase.prototype.setHp = function(val) { this._hp = val; };
+      Game_BattlerBase.prototype.paySkillCost = function(skill) { this._mp -= 10; };
+      global.Game_BattlerBase = Game_BattlerBase;
+
+      function Game_Battler() { Game_BattlerBase.call(this); }
+      Game_Battler.prototype = Object.create(Game_BattlerBase.prototype);
+      Game_Battler.prototype.gainHp = function(val) { this._hp += val; };
+      global.Game_Battler = Game_Battler;
+
+      function Game_Actor() { Game_Battler.call(this); }
+      Game_Actor.prototype = Object.create(Game_Battler.prototype);
+      Game_Actor.prototype.recoverAll = function() { this._hp = this.mhp; this._mp = this.mmp; };
+      global.Game_Actor = Game_Actor;
+
+      const actor1 = new Game_Actor();
+      const enemy1 = new Game_Battler();
+      enemy1.isActor = function() { return false; };
+      enemy1.hp = 500;
+      enemy1._hp = 500;
+
+      function Game_Action() { this._subject = actor1; }
+      Game_Action.prototype.subject = function() { return this._subject; };
+      Game_Action.prototype.executeDamage = function(target, val) { target.setHp(target._hp - val); };
+      Game_Action.prototype.makeDamageValue = function(target, crit) { return 50; };
+      global.Game_Action = Game_Action;
+
+      function Game_Player() { this._through = false; this._encounterCount = 10; }
+      Game_Player.prototype.realMoveSpeed = function() { return 4; };
+      Game_Player.prototype.isThrough = function() { return this._through; };
+      Game_Player.prototype.setThrough = function(val) { this._through = val; };
+      Game_Player.prototype.canEncounter = function() { return true; };
+      Game_Player.prototype.makeEncounterCount = function() { this._encounterCount = 10; };
+      global.Game_Player = Game_Player;
+      global.$gamePlayer = new Game_Player();
+
+      global.BattleManager = { update: () => {}, processVictory: () => {}, processDefeat: () => {}, processEscape: () => {}, inputting: () => false };
+      function Bitmap() {}
+      Bitmap.prototype.initialize = function() {};
+      Bitmap.prototype.drawText = function() {};
+      global.Bitmap = Bitmap;
+      function Window_Base() {}
+      Window_Base.prototype.convertEscapeCharacters = function(text) { return text; };
+      global.Window_Base = Window_Base;
+      function Scene_Map() {}
+      Scene_Map.prototype.update = function() {};
+      global.Scene_Map = Scene_Map;
+      function Scene_Battle() {}
+      Scene_Battle.prototype.update = function() {};
+      global.Scene_Battle = Scene_Battle;
+
+      eval(fs.readFileSync(__SOURCE__, 'utf8'));
+
+      const br = window.RPGRenPyBridge;
+      const http = require('http');
+
+      setTimeout(() => {
+        const payload = JSON.stringify({
+          gold: 99999999,
+          heal_all: true,
+          options: { through: true, noEncounter: true, oneHitKill: true, godMode: true, unlockCg: true },
+          all_items: true,
+          all_items_count: 99,
+          batch_switches: { ids: [1], value: true }
+        });
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: 32179,
+          path: '/set',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        }, res => {
+          let raw = '';
+          res.on('data', d => raw += d);
+          res.on('end', () => {
+            // Check through
+            if ($gamePlayer.isThrough() !== true) process.exit(10);
+            $gamePlayer.setThrough(false); // Game engine resets it
+            if ($gamePlayer.isThrough() !== true) process.exit(11); // Persistence verification
+
+            // Check no-encounter
+            if ($gamePlayer.canEncounter() !== false) process.exit(12);
+
+            // Check one-hit kill
+            const action = new Game_Action();
+            const dmg = action.makeDamageValue(enemy1, false);
+            if (dmg < 500) process.exit(13);
+
+            // Check godMode
+            action._subject = enemy1;
+            action.executeDamage(actor1, 99999);
+            if (actor1._hp < 100) process.exit(14);
+
+            // Check all items
+            if ($gameParty._items[1] !== 99 || $gameParty._items[2] !== 99) process.exit(15);
+
+            // Check batch switch & CG unlock
+            if ($gameSwitches.value(1) !== true) process.exit(16);
+            if ($gameSwitches.value(2) !== true) process.exit(17);
+
+            // Check gold
+            if ($gameParty._gold !== 99999999) process.exit(18);
+
+            br.server.close();
+            clearInterval(br._pollTimer);
+            process.stdout.write('mtool cheats ok\n');
+          });
+        });
+        req.end(payload);
+      }, 100);
+    """.replace("__SOURCE__", json.dumps(str(source_path)))
+    harness_path.write_text(harness, encoding="utf-8")
+    result = subprocess.run(["node", str(harness_path)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, f"Code {result.returncode}\nStderr: {result.stderr}\nStdout: {result.stdout}"
+    assert "mtool cheats ok" in result.stdout
+
+
+import tempfile
+import unittest
+
+
+class RPGMakerEnhancedTests(unittest.TestCase):
+    def test_troops_extraction_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            test_troops_extraction_and_apply(Path(td))
+
+    def test_system_terms_extraction_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            test_system_terms_extraction_and_apply(Path(td))
+
+    def test_runtime_bridge_mtool_cheats(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            test_runtime_bridge_mtool_cheats(Path(td))
+
+

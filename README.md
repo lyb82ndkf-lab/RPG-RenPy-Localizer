@@ -2,14 +2,22 @@
 
 面向 Windows 单机游戏的本地化工作台。它将游戏检测、文本提取、翻译编辑、导出与写回聚合到一个 PC 桌面应用中。
 
-当前版本：**3.2.0（PC 桌面版）**
+当前版本：**3.3.0（PC 桌面版）**
 
 - 桌面端：Electron + Vue 3 + Python 本地服务
-- 覆盖格式：RPG Maker MV/MZ、Ren'Py、Wolf RPG Editor、Unity、UE4/UE5 与常见 Galgame 脚本
+- 覆盖格式：RPG Maker MV/MZ、Ren'Py、Wolf RPG Editor、Unity、UE4/UE5、Bakin、SRPG Studio、TyranoScript、Kirikiri、RGSS 与常见 Galgame 脚本
 - 处理原则：在游戏目录旁创建隔离副本，保留原始文件与可回滚的翻译数据。
 
 桌面版入口：[Electron 打包说明](./ELECTRON_README.md)
 后端 API 说明：[API 文档](./API.md)
+
+## 3.3.0 版本更新（深度对标 MTool 与作弊架构增强）
+
+- **字体替换与字号相对偏移控制**：解决对话框文字爆框、下沿截断与 CJK 乱码，支持游戏内 `F8` HUD 动态微调与快捷键实时增减字号。
+- **冷门引擎 MTool 即玩补丁联动**：自动探测本机 MTool 安装与 loaders，为 Bakin、Wolf RPG、SRPG Studio、TyranoScript、Kirikiri、RGSS 等一键生成标准 `翻译文件.json`、引擎配置与即玩/还原脚本。
+- **存档自动安全快照与防坏档安全回滚**：存档写入磁盘前自动静默备份快照，支持快照抽屉随时一键回滚；提供画面与事件解卡应急功能（清除卡死图片 `$gameScreen.clearPictures()`、重置天气滤镜、消除卡死阻塞事件）。
+- **AI 批译控制符/占位符保护体系**：智能提取与防御性纠偏 MTool 参数模板、RPG Maker 与 Ren'Py 变量占位符，防止大语言模型译文错乱导致游戏崩溃。
+- **持久穿墙与无敌秒杀作弊**：底层持久锁定穿墙、锁血免死、致命秒杀、暗雷不遇敌、全员回满、全物品/装备 99、全回想/CG 深度解锁。
 
 ## 3.2.1 版本更新（翻译稳定性）
 
@@ -223,7 +231,7 @@ RPG Maker XP、VX 和 VX Ace 只能识别部分资源，不保证实时组件、
 ### PC端 (Windows)
 
 1. 打开 [Releases](https://github.com/lyb82ndkf-lab/RPG-RenPy-Localizer/releases)。
-2. 下载最新的 `RPGRenPyLocalizer Setup 3.2.0.exe`（安装版）或 `RPGRenPyLocalizer 3.2.0.exe`（免安装便携版）。
+2. 下载最新的 `RPGRenPyLocalizer Setup 3.3.0.exe`（安装版）或 `RPGRenPyLocalizer 3.3.0.exe`（免安装便携版）。
 3. 安装版按提示安装；便携版解压即用。
 4. 从桌面或开始菜单启动 RPGRenPyLocalizer。
 

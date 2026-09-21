@@ -94,6 +94,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }
     }
     private val editorUndoStack = ArrayList<String>()
+    private var reloadReceiver: android.content.BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -241,6 +242,29 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }, 1200)
 
         Toast.makeText(this, "正在通过 Wine + Box64 启动：$gameTitle", Toast.LENGTH_LONG).show()
+
+        // 注册热重载广播接收器
+        reloadReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                renpyLiveTranslationService?.reloadTranslationDict()
+                runtimeBridge.injectTranslations()
+                android.widget.Toast.makeText(this@WineDisplayActivity, "已触发翻译热重载注入", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this).registerReceiver(
+            reloadReceiver!!,
+            android.content.IntentFilter("com.rpgrtl.RELOAD_TRANSLATIONS")
+        )
+
+        // 发送游戏运行状态广播
+        androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this).sendBroadcast(
+            android.content.Intent("com.rpgrtl.GAME_STATE").apply {
+                putExtra("running", true)
+                putExtra("game_dir", gameWorkDir)
+                putExtra("game_exe", gameExePath)
+                putExtra("game_title", gameTitle)
+            }
+        )
     }
 
     private fun startBundledWineRuntimeInstall() {
@@ -1022,7 +1046,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
             "live_log" -> toggleLiveLogPanel()
             "runtime" -> openToolPage("runtime")
             "translate" -> openToolPage("translate")
-            "data" -> openToolPage("data")
+            "data", "trainer" -> openToolPage("trainer")
             "keyboard" -> AppUtils.showKeyboard(this)
             "controls" -> showControlsEditorMenu()
             "touch" -> applyInputMode(directTap = !directTapMode, announce = true)
@@ -1083,8 +1107,9 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
             }
             return
         }
-        val root = gameWorkDir.takeIf { it.isNotBlank() }?.let { File(it) }
+        val baseDir = gameWorkDir.takeIf { it.isNotBlank() }?.let { File(it) }
             ?: resolveLaunchFile(gameExePath).parentFile
+        val root = baseDir?.let { findRenPyProjectRoot(it) ?: it }
         if (root == null || !root.isDirectory) {
             if (announce) Toast.makeText(this, "未找到游戏目录，无法开启实时汉化", Toast.LENGTH_SHORT).show()
             return
@@ -1227,7 +1252,6 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }
         startActivity(intent)
     }
-
     /**
      * Input mode:
      * - directTap=true  → 直接点: hide cursor, finger position = click target
@@ -1260,14 +1284,38 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        AppUtils.hideSystemUI(this)
+        val isPortrait = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT
+        ShellLog.info(this, "Screen rotation detected: ${if (isPortrait) "PORTRAIT" else "LANDSCAPE"}")
+        displayRoot?.post {
+            AppUtils.hideSystemUI(this)
+            try {
+                inputControlsView.profile?.let { p ->
+                    p.loadElements(inputControlsView)
+                    inputControlsView.invalidate()
+                }
+            } catch (t: Throwable) {
+                ShellLog.error(this, "Failed to reload controls on rotation", t)
+            }
+            xServerView.queueEvent {
+                xServerView.requestRender()
+            }
+        }
+    }
+
     private fun toggleOrientation() {
         val current = resources.configuration.orientation
         requestedOrientation = if (current == Configuration.ORIENTATION_LANDSCAPE) {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         } else {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
-        toolbar?.postDelayed({ AppUtils.hideSystemUI(this) }, 450)
+        toolbar?.postDelayed({
+            AppUtils.hideSystemUI(this)
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        }, 1500)
     }
 
     override fun onBackPressed() {
@@ -1529,6 +1577,15 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
     override fun onDestroy() {
         val containerId = runCatching { container?.id ?: -1 }.getOrDefault(-1)
         try {
+            reloadReceiver?.let {
+                androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this).unregisterReceiver(it)
+            }
+            reloadReceiver = null
+            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this).sendBroadcast(
+                android.content.Intent("com.rpgrtl.GAME_STATE").apply {
+                    putExtra("running", false)
+                }
+            )
             if (containerId >= 0) activeRuntimeBridges.remove(containerId)
             stopGame()
             ShellLog.info(this, "WineDisplayActivity onDestroy containerId=$containerId")
@@ -2063,3 +2120,5 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }
     }
 }
+
+

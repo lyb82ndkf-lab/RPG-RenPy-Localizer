@@ -949,12 +949,273 @@ def _apply_wolf_mps_translations(path: Path, entries: list[TranslationEntry]) ->
     return len(applied_offsets)
 
 
+SRPG_RUNTIME_PLUGIN_SOURCE = r"""/*:
+ * @plugindesc RPGRenPyLocalizer runtime hook for SRPG Studio.
+ * Auto-loads 翻译文件.json / translations.json and supports F9 bilingual toggle.
+ * @author RPGRenPyLocalizer
+ */
+(function() {
+    var fs = typeof require === "function" ? require("fs") : null;
+    var path = typeof require === "function" ? require("path") : null;
+    var bridge = window.RPGRenPyBridge = window.RPGRenPyBridge || {};
+    bridge.enabled = true;
+    bridge.translations = {};
+
+    function loadTable() {
+        if (!fs || !path) return;
+        var root = process.cwd ? process.cwd() : "";
+        var candidates = [
+            path.join(root, "翻译文件.json"),
+            path.join(root, "translations.json"),
+            path.join(root, "ManualTransFile.json")
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+            try {
+                if (fs.existsSync(candidates[i])) {
+                    var raw = fs.readFileSync(candidates[i], "utf8");
+                    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                    var parsed = JSON.parse(raw);
+                    bridge.translations = parsed && parsed.translations ? parsed.translations : parsed;
+                    return;
+                }
+            } catch(e) {}
+        }
+    }
+    loadTable();
+
+    window.addEventListener("keydown", function(e) {
+        if (e.key === "F9" || e.code === "F9") {
+            bridge.enabled = !bridge.enabled;
+        }
+    });
+
+    if (typeof TextRenderer !== "undefined" && TextRenderer.drawText) {
+        var _origDrawText = TextRenderer.drawText;
+        TextRenderer.drawText = function(x, y, text, length, color, font) {
+            var tr = (bridge.enabled && bridge.translations && bridge.translations[text]) ? bridge.translations[text] : text;
+            return _origDrawText.call(this, x, y, tr, length, color, font);
+        };
+    }
+})();
+"""
+
+KIRIKIRI_PATCH_TJS_SOURCE = r"""// RPGRenPyLocalizer patch.tjs for Kirikiri 2/Z
+// Automatically loads 翻译文件.json or translations.json on game launch
+(function() {
+    var transEnabled = true;
+    var transMap = %[];
+
+    function loadJsonTable(filename) {
+        try {
+            if (Storages.isExistentStorage(filename)) {
+                var lines = [];
+                lines.load(filename);
+                var text = lines.join("\n");
+                var reg = /"((?:\\.|[^"\\])*)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+                var match;
+                while ((match = reg.exec(text)) !== null) {
+                    transMap[match[1]] = match[2];
+                }
+                return true;
+            }
+        } catch(e) {}
+        return false;
+    }
+    loadJsonTable("翻译文件.json") || loadJsonTable("translations.json");
+})();
+"""
+
+RGSS_RUNTIME_HOOK_SOURCE = r"""# RPGRenPyLocalizer RGSS Runtime Hook for RPG Maker XP / VX / VX Ace
+# Automatically loads translations.json or 翻译文件.json with F9 toggle support
+module RPGRenPyLocalizer
+  @enabled = true
+  @table = {}
+
+  def self.load_translations
+    ['translations.json', '翻译文件.json', 'ManualTransFile.json'].each do |file|
+      if File.exist?(file)
+        begin
+          content = File.read(file)
+          content.scan(/"([^"]+)"\s*:\s*"([^"]+)"/) do |src, tgt|
+            @table[src] = tgt
+          end
+          break if !@table.empty?
+        rescue
+        end
+      end
+    end
+  end
+
+  def self.translate(text)
+    return text unless @enabled && text.is_a?(String)
+    @table[text] || text
+  end
+
+  def self.toggle
+    @enabled = !@enabled
+  end
+end
+
+RPGRenPyLocalizer.load_translations
+
+class Bitmap
+  alias_method :rpgrtl_orig_draw_text, :draw_text unless method_defined?(:rpgrtl_orig_draw_text)
+  def draw_text(*args)
+    if args[0].is_a?(Rect)
+      args[1] = RPGRenPyLocalizer.translate(args[1]) if args[1].is_a?(String)
+    elsif args.length >= 5 && args[4].is_a?(String)
+      args[4] = RPGRenPyLocalizer.translate(args[4])
+    end
+    rpgrtl_orig_draw_text(*args)
+  end
+end
+"""
+
+TYRANO_RUNTIME_PLUGIN_SOURCE = r"""/*:
+ * @plugindesc RPGRenPyLocalizer Runtime Hook for TyranoBuilder / TyranoScript.
+ * Auto-loads 翻译文件.json / translations.json, supports F9/Ctrl+T instant bilingual toggle,
+ * F10 reload, and HUD Toast notification.
+ * @author RPGRenPyLocalizer
+ */
+(function() {
+    var bridge = window.RPGRenPyTyranoBridge = window.RPGRenPyTyranoBridge || {};
+    bridge.enabled = true;
+    bridge.translations = {};
+
+    function showToast(message, isError) {
+        var id = "rpgrtl-tyrano-hud-toast";
+        var toast = document.getElementById(id);
+        if (!toast) {
+            toast = document.createElement("div");
+            toast.id = id;
+            toast.style.position = "fixed";
+            toast.style.top = "16px";
+            toast.style.left = "50%";
+            toast.style.transform = "translateX(-50%)";
+            toast.style.padding = "8px 18px";
+            toast.style.borderRadius = "8px";
+            toast.style.fontFamily = "sans-serif";
+            toast.style.fontSize = "13px";
+            toast.style.fontWeight = "bold";
+            toast.style.zIndex = "999999";
+            toast.style.pointerEvents = "none";
+            toast.style.transition = "all 0.25s ease-out";
+            document.body.appendChild(toast);
+        }
+        toast.textContent = message;
+        toast.style.background = isError ? "rgba(220, 38, 38, 0.9)" : "rgba(15, 23, 42, 0.88)";
+        toast.style.color = "#ffffff";
+        toast.style.opacity = "1";
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(function() {
+            toast.style.opacity = "0";
+        }, 2200);
+    }
+
+    function loadDictionary() {
+        var candidates = ["翻译文件.json", "translations.json", "ManualTransFile.json", "data/翻译文件.json"];
+        var fs = typeof require === "function" ? require("fs") : null;
+        var path = typeof require === "function" ? require("path") : null;
+        if (fs && path) {
+            var root = process.cwd ? process.cwd() : "";
+            for (var i = 0; i < candidates.length; i++) {
+                try {
+                    var fullPath = path.resolve(root, candidates[i]);
+                    if (fs.existsSync(fullPath)) {
+                        var raw = fs.readFileSync(fullPath, "utf8");
+                        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                        var parsed = JSON.parse(raw);
+                        bridge.translations = (parsed && parsed.translations) ? parsed.translations : parsed;
+                        return true;
+                    }
+                } catch(e) {}
+            }
+        } else if (typeof fetch === "function") {
+            fetch("翻译文件.json").then(function(r) { return r.json(); }).then(function(data) {
+                bridge.translations = (data && data.translations) ? data.translations : data;
+            }).catch(function() {});
+        }
+        return false;
+    }
+
+    loadDictionary();
+
+    function hookTyrano() {
+        if (typeof TYRANO === "undefined" || !TYRANO.kag || !TYRANO.kag.tag) {
+            setTimeout(hookTyrano, 200);
+            return;
+        }
+        var kag = TYRANO.kag;
+        if (kag.tag.text && kag.tag.text.start && !kag.tag.text._rpgrtl_hooked) {
+            var origTextStart = kag.tag.text.start;
+            kag.tag.text.start = function(pm) {
+                if (bridge.enabled && pm && pm.val && bridge.translations[pm.val]) {
+                    pm._orig_val = pm.val;
+                    pm.val = bridge.translations[pm.val];
+                }
+                return origTextStart.call(this, pm);
+            };
+            kag.tag.text._rpgrtl_hooked = true;
+        }
+        if (kag.tag.glink && kag.tag.glink.start && !kag.tag.glink._rpgrtl_hooked) {
+            var origGlinkStart = kag.tag.glink.start;
+            kag.tag.glink.start = function(pm) {
+                if (bridge.enabled && pm && pm.text && bridge.translations[pm.text]) {
+                    pm._orig_text = pm.text;
+                    pm.text = bridge.translations[pm.text];
+                }
+                return origGlinkStart.call(this, pm);
+            };
+            kag.tag.glink._rpgrtl_hooked = true;
+        }
+    }
+    hookTyrano();
+
+    window.addEventListener("keydown", function(e) {
+        if (e.key === "F9" || e.code === "F9" || (e.ctrlKey && (e.key === "t" || e.key === "T"))) {
+            bridge.enabled = !bridge.enabled;
+            showToast(bridge.enabled ? "[RPGRenPyLocalizer] Tyrano 译文已启用" : "[RPGRenPyLocalizer] Tyrano 已切回原文");
+        } else if (e.key === "F10" || e.code === "F10") {
+            loadDictionary();
+            showToast("[RPGRenPyLocalizer] 翻译字典已重新加载");
+        }
+    });
+})();
+"""
+
+BAKIN_LAUNCHER_BAT_SOURCE = r"""@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+echo =======================================================
+echo   RPG Ren'Py Localizer - Bakin Game Runtime Launcher
+echo =======================================================
+if not exist "翻译文件.json" (
+    echo {} > "翻译文件.json"
+)
+if exist "data" (
+    echo ..\翻译文件.json > "data\lastLoadedTrsFile"
+    if not exist "data\fixFontName" echo Microsoft YaHei > "data\fixFontName"
+    if not exist "data\fixFontSizeOffBakin" echo -3 > "data\fixFontSizeOffBakin"
+)
+for %%f in (*.exe) do (
+    if /i not "%%~nxf"=="unins000.exe" (
+        start "" "%%~nxf"
+        goto :started
+    )
+)
+:started
+echo Bakin process started.
+"""
+
+
 def _apply_mtool_translation_map(runtime_root: Path, entries: list[TranslationEntry]) -> int:
-    """Update MTool's source-to-target map in an isolated Wolf runtime copy."""
+    """Update MTool/cold engines' source-to-target map in an isolated runtime copy."""
+    has_existing = (runtime_root / "翻译文件.json").is_file()
     updates = {
         entry.source: entry.target
         for entry in entries
-        if entry.entry_id.startswith("mtool::") and entry.source.strip() and entry.target.strip()
+        if (has_existing or entry.entry_id.startswith(("mtool::", "bakin::", "tyrano::", "agtk::")))
+        and entry.source.strip() and entry.target.strip()
         and entry.source != entry.target
     }
     if not updates:
@@ -967,7 +1228,7 @@ def _apply_mtool_translation_map(runtime_root: Path, entries: list[TranslationEn
             if isinstance(loaded, dict):
                 payload = {str(key): str(value) for key, value in loaded.items()}
         except (OSError, UnicodeDecodeError, ValueError, TypeError):
-            return 0
+            payload = {}
     payload.update(updates)
     try:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
@@ -1153,6 +1414,52 @@ class UnknownGameService:
                 ],
                 "required_tools": ["内置 Unity Localization / Polyglot 适配器", "可选 AssetRipper/AssetStudio 资源分析器"],
             }
+        if engine == "RPG Developer Bakin":
+            return {
+                "engine": engine,
+                "confidence": 0.95,
+                "extraction_plan": [
+                    "扫描 翻译文件.json、translations.json 及 MTool 地图/事件缓存",
+                    "扫描游戏目录中的文本和配置字典",
+                    "提取角色对话、事件说明与地图名称",
+                ],
+                "translation_scope": ["游戏对白、地图名称、选项与系统消息", "过滤非文本资源与程序集元数据"],
+                "runtime_plan": [
+                    "配置 data/lastLoadedTrsFile 指向根目录 翻译文件.json",
+                    "自动设置 fixFontName 为系统中文黑体并应用 -3 字号偏移",
+                    "生成便捷启动脚本并支持 F9 双语切换",
+                ],
+                "risks": ["未解包的 .rbpack 需要运行时 Hook 动态加载翻译字典"],
+                "required_tools": ["内置 Bakin 字典适配器", "MTool 兼容启动器与字体补丁"],
+            }
+        if engine == "TyranoBuilder":
+            return {
+                "engine": engine,
+                "confidence": 0.95,
+                "extraction_plan": [
+                    "解析 data/scenario/*.ks 剧本文件",
+                    "提取对白、角色名(#)与 [glink] 选项分支",
+                    "过滤底层宏与转跳标签",
+                ],
+                "translation_scope": ["场景对白、角色名称、选项文字", "保留 [l], [r], [p] 等排版控制符"],
+                "runtime_plan": [
+                    "生成 RPGRenPyLocalizer_Tyrano.js 运行时插件",
+                    "Hook TYRANO.kag.tag.text 与 glink 选项",
+                    "支持游戏内 F9 即时双语切换与 HUD 提示",
+                ],
+                "risks": ["复杂的自定义 JS 宏需要保持原始参数名"],
+                "required_tools": ["内置 TyranoScript KS 剧本解析器", "Tyrano 运行时插件生成器"],
+            }
+        if engine == "Pixel Game Maker MV":
+            return {
+                "engine": engine,
+                "confidence": 0.92,
+                "extraction_plan": ["解析 project.json 中的文本资源与事件描述", "按对象与分支建立稳定上下文"],
+                "translation_scope": ["动作事件文本、玩家提示、UI 资源文字"],
+                "runtime_plan": ["生成翻译字典并支持项目数据替换"],
+                "risks": ["注意保持 project.json 的 JSON 结构完整与数据类型"],
+                "required_tools": ["内置 Agtk JSON 适配器"],
+            }
         return {
             "engine": engine,
             "confidence": 0.65 if engine != "Unknown" else 0.35,
@@ -1214,6 +1521,16 @@ class UnknownGameService:
             mtool_entries = self._extract_mtool_dump_translations(limit=limit)
             if mtool_entries:
                 return mtool_entries
+        if self.project.engine == "RPG Developer Bakin":
+            return self._extract_bakin_translations(limit=max(limit, 100000))
+        if self.project.engine == "TyranoBuilder":
+            tyrano_entries = self._extract_tyrano_translations(limit=limit)
+            if tyrano_entries:
+                return tyrano_entries
+        if self.project.engine == "Pixel Game Maker MV":
+            agtk_entries = self._extract_agtk_translations(limit=limit)
+            if agtk_entries:
+                return agtk_entries
         paths = list(self._iter_files(limit=16000))
         if self.project.engine == "Wolf RPG Editor":
             # Put player-facing map/event resources ahead of CommonEvent.dat,
@@ -1575,6 +1892,174 @@ class UnknownGameService:
                                 return entries
         return entries
 
+    def _extract_bakin_translations(self, limit: int = 100000) -> list[TranslationEntry]:
+        entries: list[TranslationEntry] = []
+        seen: set[str] = set()
+        root = self.project.root
+        dict_names = ["翻译文件.json", "translations.json", "ManualTransFile.json"]
+        folders = [root, root / "data"]
+        try:
+            for sub in root.iterdir():
+                if sub.is_dir() and sub not in folders:
+                    sub_name = sub.name.lower()
+                    if "翻译" in sub.name or "patch" in sub_name or "trans" in sub_name or "mtool" in sub_name:
+                        folders.append(sub)
+        except OSError:
+            pass
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            for dname in dict_names:
+                dpath = folder / dname
+                if dpath.is_file():
+                    try:
+                        loaded = json.loads(dpath.read_text(encoding="utf-8-sig"))
+                        mapping = loaded.get("translations", loaded) if isinstance(loaded, dict) else {}
+                        rel = str(dpath.relative_to(root)).replace("\\", "/")
+                        for src, tgt in mapping.items():
+                            src_str = str(src).strip()
+                            if src_str and src_str not in seen:
+                                seen.add(src_str)
+                                entries.append(TranslationEntry(
+                                    entry_id=f"bakin::dict::{len(entries)}::{hashlib.sha1(src_str.encode('utf-8')).hexdigest()[:8]}",
+                                    source=src_str,
+                                    target=str(tgt).strip() if tgt else "",
+                                    file=rel,
+                                    context=f"bakin-dict;file={rel}",
+                                    category="bakin_dialogue",
+                                ))
+                                if len(entries) >= limit:
+                                    return entries
+                    except (OSError, UnicodeDecodeError, ValueError):
+                        pass
+        for folder in [root, root / "data"]:
+            if not folder.is_dir():
+                continue
+            for cpath in folder.glob("MTool_MapBasicListCache_*.json"):
+                try:
+                    data = json.loads(cpath.read_text(encoding="utf-8-sig"))
+                    if isinstance(data, list):
+                        rel = str(cpath.relative_to(root)).replace("\\", "/")
+                        for item in data:
+                            if isinstance(item, dict):
+                                name = str(item.get("name") or "").strip()
+                                if name and name not in seen:
+                                    seen.add(name)
+                                    entries.append(TranslationEntry(
+                                        entry_id=f"bakin::map::{item.get('guId', len(entries))}",
+                                        source=name,
+                                        file=rel,
+                                        context=f"bakin-map;guid={item.get('guId')};cat={item.get('category')}",
+                                        category="bakin_map_name",
+                                    ))
+                                    if len(entries) >= limit:
+                                        return entries
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
+        return entries
+
+    def _extract_tyrano_translations(self, limit: int = 30000) -> list[TranslationEntry]:
+        entries: list[TranslationEntry] = []
+        seen: set[tuple[str, str]] = set()
+        root = self.project.root
+        scenario_dir = root / "data" / "scenario"
+        search_dirs = [scenario_dir] if scenario_dir.is_dir() else [root]
+        ks_files: list[Path] = []
+        for sdir in search_dirs:
+            ks_files.extend(sdir.rglob("*.ks"))
+
+        for kpath in sorted(ks_files, key=lambda p: p.name.lower()):
+            rel = str(kpath.relative_to(root)).replace("\\", "/")
+            try:
+                content = _decode_bytes(kpath.read_bytes())
+            except (OSError, UnicodeError):
+                continue
+
+            speaker = ""
+            for idx, line in enumerate(content.splitlines(), start=1):
+                raw_line = line.strip()
+                if not raw_line or raw_line.startswith(";"):
+                    continue
+                if raw_line.startswith("#"):
+                    speaker = raw_line[1:].strip()
+                    continue
+                if "glink" in raw_line:
+                    m = re.search(r'text=["\']([^"\']+)["\']', raw_line)
+                    if m:
+                        choice_text = m.group(1).strip()
+                        marker = (rel, choice_text)
+                        if choice_text and marker not in seen:
+                            seen.add(marker)
+                            entries.append(TranslationEntry(
+                                entry_id=f"tyrano::choice::{rel}::{idx}",
+                                source=choice_text,
+                                file=rel,
+                                context=f"tyrano-glink;file={rel};line={idx}",
+                                category="tyrano_choice",
+                            ))
+                            if len(entries) >= limit:
+                                return entries
+                if raw_line.startswith("@"):
+                    continue
+                cleaned = re.sub(r"\[[^\]]+\]", "", raw_line).strip()
+                if cleaned and (any("\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" for ch in cleaned) or (len(cleaned) >= 2 and any(ch.isalpha() for ch in cleaned))):
+                    marker = (rel, cleaned)
+                    if marker not in seen:
+                        seen.add(marker)
+                        ctx = f"tyrano-dialogue;file={rel};line={idx}"
+                        if speaker:
+                            ctx += f";speaker={speaker}"
+                        entries.append(TranslationEntry(
+                            entry_id=f"tyrano::dialogue::{rel}::{idx}",
+                            source=cleaned,
+                            file=rel,
+                            context=ctx,
+                            category="tyrano_dialogue",
+                        ))
+                        if len(entries) >= limit:
+                            return entries
+        return entries
+
+    def _extract_agtk_translations(self, limit: int = 30000) -> list[TranslationEntry]:
+        entries: list[TranslationEntry] = []
+        seen: set[str] = set()
+        root = self.project.root
+        project_json = root / "project.json"
+        if not project_json.is_file():
+            project_json = root / "data" / "project.json"
+        if not project_json.is_file():
+            return []
+        rel = str(project_json.relative_to(root)).replace("\\", "/")
+        try:
+            payload = json.loads(project_json.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return []
+
+        def walk(obj: Any, path_str: str):
+            if len(entries) >= limit:
+                return
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    walk(v, f"{path_str}.{k}")
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj):
+                    walk(v, f"{path_str}[{i}]")
+            elif isinstance(obj, str):
+                s = obj.strip()
+                if s and s not in seen:
+                    if any("\u4e00" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" for ch in s) or (len(s) >= 4 and not PATH_LIKE.match(s)):
+                        seen.add(s)
+                        entries.append(TranslationEntry(
+                            entry_id=f"agtk::{len(entries)}::{hashlib.sha1(s.encode('utf-8')).hexdigest()[:8]}",
+                            source=s,
+                            file=rel,
+                            context=f"agtk-json;path={path_str[:60]}",
+                            category="agtk_text",
+                        ))
+
+        walk(payload, "root")
+        return entries
+
     def build_runtime_copy(self, translations: dict[str, TranslationEntry], version_id: str = "current") -> tuple[Path, Path | None, int]:
         workspace = self.project.root / ".rpgrtl_workspace"
         safe_version = re.sub(r"[^A-Za-z0-9._-]+", "_", str(version_id or "current"))[:80] or "current"
@@ -1623,6 +2108,19 @@ class UnknownGameService:
                     changed += 1
             except (OSError, UnicodeError):
                 continue
+        # Bakin runtime files
+        if self.project.engine == "RPG Developer Bakin":
+            data_dir = runtime_root / "data" if (runtime_root / "data").is_dir() else runtime_root
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "lastLoadedTrsFile").write_text("..\\翻译文件.json\n", encoding="utf-8")
+            (data_dir / "fixFontName").write_text("Microsoft YaHei\n", encoding="utf-8")
+            (data_dir / "fixFontSizeOffBakin").write_text("-3\n", encoding="utf-8")
+        # TyranoBuilder runtime files
+        if self.project.engine == "TyranoBuilder":
+            plugin_dir = runtime_root / "data" / "others" / "plugin"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "RPGRenPyLocalizer_Tyrano.js").write_text(TYRANO_RUNTIME_PLUGIN_SOURCE, encoding="utf-8", newline="\n")
+
         launcher = None
         if self.project.launcher_path:
             try:
@@ -1634,6 +2132,106 @@ class UnknownGameService:
         manifest = runtime_root / ".rpgrtl_agent_runtime.json"
         manifest.write_text(json.dumps({"engine": self.project.engine, "sourceRoot": str(self.project.root), "changedFiles": changed, "reversible": True}, ensure_ascii=False, indent=2), encoding="utf-8")
         return runtime_root, launcher, changed
+
+    def install_runtime_bridge(self, target_dir: Path | None = None) -> Path | None:
+        """Deploy runtime hook plugin/script for engines like Bakin, Tyrano, SRPG Studio, Kirikiri, or RGSS."""
+        dest = target_dir or self.project.game_dir
+        engine = self.project.engine
+
+        if engine == "RPG Developer Bakin" or (dest / "data" / "bakinplayer.exe").is_file() or (dest / "bakinplayer.exe").is_file():
+            data_dir = dest / "data" if (dest / "data").is_dir() else dest
+            data_dir.mkdir(parents=True, exist_ok=True)
+            last_trs = data_dir / "lastLoadedTrsFile"
+            last_trs.write_text("..\\翻译文件.json\n", encoding="utf-8")
+            fix_font = data_dir / "fixFontName"
+            if not fix_font.is_file():
+                fix_font.write_text("Microsoft YaHei\n", encoding="utf-8")
+            fix_size = data_dir / "fixFontSizeOffBakin"
+            if not fix_size.is_file():
+                fix_size.write_text("-3\n", encoding="utf-8")
+            launcher_bat = dest / "RPGRenPyLocalizer_BakinLauncher.bat"
+            launcher_bat.write_text(BAKIN_LAUNCHER_BAT_SOURCE, encoding="utf-8")
+            trans_json = dest / "翻译文件.json"
+            if not trans_json.is_file():
+                trans_json.write_text("{\n}\n", encoding="utf-8")
+            return launcher_bat
+
+        if engine == "TyranoBuilder" or (dest / "tyrano" / "tyrano.js").is_file() or (dest / "data" / "scenario").is_dir():
+            plugin_dir = dest / "data" / "others" / "plugin"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            tyrano_plugin = plugin_dir / "RPGRenPyLocalizer_Tyrano.js"
+            tyrano_plugin.write_text(TYRANO_RUNTIME_PLUGIN_SOURCE, encoding="utf-8", newline="\n")
+            trans_json = dest / "翻译文件.json"
+            if not trans_json.is_file():
+                trans_json.write_text("{\n}\n", encoding="utf-8")
+            return tyrano_plugin
+
+        if engine == "SRPG Studio" or (dest / "Plugin").is_dir():
+            plugin_dir = dest / "Plugin"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            srpg_plugin = plugin_dir / "RPGRenPyLocalizer_SRPG.js"
+            srpg_plugin.write_text(SRPG_RUNTIME_PLUGIN_SOURCE, encoding="utf-8", newline="\n")
+            return srpg_plugin
+
+        if (dest / "krkr.exe").is_file() or (dest / "krkrz.exe").is_file() or any(f.suffix.lower() == ".xp3" for f in dest.glob("*.xp3")):
+            patch_tjs = dest / "patch.tjs"
+            patch_tjs.write_text(KIRIKIRI_PATCH_TJS_SOURCE, encoding="utf-8", newline="\n")
+            return patch_tjs
+
+        if engine in {"RPG Maker XP", "RPG Maker VX", "RPG Maker VX Ace"} or any(f.name.lower().startswith("rgss") for f in dest.glob("*.dll")):
+            rgss_script = dest / "RPGRenPyLocalizer_RGSS.rb"
+            rgss_script.write_text(RGSS_RUNTIME_HOOK_SOURCE, encoding="utf-8", newline="\n")
+            return rgss_script
+
+        if engine == "Smile Game Builder" or (dest / "game.kmy").is_file():
+            fix_font = dest / "fixFontName"
+            if not fix_font.is_file():
+                fix_font.write_text("Microsoft YaHei\n", encoding="utf-8")
+            fix_size = dest / "fixFontSizeOffKmy"
+            if not fix_size.is_file():
+                fix_size.write_text("-2\n", encoding="utf-8")
+            trans_json = dest / "翻译文件.json"
+            if not trans_json.is_file():
+                trans_json.write_text("{\n}\n", encoding="utf-8")
+            return trans_json
+
+        if engine == "Pixel Game Maker MV" or (dest / "agtk.exe").is_file():
+            trans_json = dest / "翻译文件.json"
+            if not trans_json.is_file():
+                trans_json.write_text("{\n}\n", encoding="utf-8")
+            return trans_json
+
+        return None
+
+    def export_translation_file(self, translations: dict[str, TranslationEntry], target_dir: Path | None = None, filename: str = "翻译文件.json") -> Path:
+        """Export translations into standard flat JSON dictionary for MTool/engine runtime loaders."""
+        dest = target_dir or self.project.root
+        path = dest / filename
+        payload = {
+            entry.source: entry.target
+            for entry in translations.values()
+            if entry.source.strip() and entry.target.strip() and entry.source != entry.target
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+        return path
+
+    def generate_mtool_patch_bundle(
+        self,
+        entries: list[TranslationEntry] | dict[str, str],
+        mtool_path: str | None = None,
+        font_name: str = "Microsoft YaHei",
+        font_size_offset: int = 0,
+        target_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Generate ready-to-play patch bundle with MTool integration."""
+        return generate_mtool_patch_bundle(
+            project=self.project,
+            entries=entries,
+            mtool_path=mtool_path,
+            font_name=font_name,
+            font_size_offset=font_size_offset,
+            target_dir=target_dir,
+        )
 
     def agent_prompt(self, sample_entries: list[TranslationEntry] | None = None) -> str:
         samples = sample_entries or self.extract_translations()[:20]
@@ -1651,21 +2249,428 @@ class UnknownGameService:
         count = 0
         ignored = set(IGNORED_DIRS)
         if self.project.engine == "Wolf RPG Editor":
-            # Translation tools often leave a huge ``dump`` tree beside a Wolf
-            # game. It is not runtime data and used to consume the scan budget
-            # before Data/MapData/*.mps was reached.
             ignored.update({"dump", "save", "savedata", "saves", "backup"})
         for current, dirnames, filenames in os.walk(self.project.root):
             dirnames[:] = [name for name in dirnames if name.lower() not in ignored]
             if self.project.engine == "Wolf RPG Editor":
                 rel_dir = Path(current).relative_to(self.project.root).parts
                 if len(rel_dir) == 1 and rel_dir[0].lower() == "data":
-                    # Runtime messages live in Data/BasicData and map events;
-                    # images/audio/cache folders can contain tens of thousands
-                    # of files and must not starve the candidate scan budget.
                     dirnames[:] = [name for name in dirnames if name.lower() in {"basicdata", "mapdata"}]
             for filename in filenames:
                 yield Path(current) / filename
                 count += 1
                 if count >= limit:
                     return
+
+
+def detect_mtool_installation(custom_path: str | None = None) -> dict[str, Any]:
+    """Detect local MTool installation across standard drives and custom paths."""
+    candidates: list[Path] = []
+    if custom_path and str(custom_path).strip():
+        candidates.append(Path(str(custom_path).strip()))
+    for env_var in ("MTOOL_HOME", "MTOOL_PATH", "MTOOL_DIR"):
+        val = os.environ.get(env_var)
+        if val and val.strip():
+            candidates.append(Path(val.strip()))
+    for drive in ("E", "D", "C", "F", "G"):
+        candidates.append(Path(f"{drive}:\\MTool"))
+        candidates.append(Path(f"{drive}:\\mtool"))
+
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        loaders_dir = candidate / "Tool" / "loaders"
+        if loaders_dir.is_dir():
+            available = [f.name for f in loaders_dir.iterdir() if f.is_file()]
+            return {
+                "installed": True,
+                "path": str(candidate),
+                "loaders_dir": str(loaders_dir),
+                "available_loaders": available,
+            }
+        if (candidate / "loaders").is_dir():
+            loaders_dir = candidate / "loaders"
+            available = [f.name for f in loaders_dir.iterdir() if f.is_file()]
+            return {
+                "installed": True,
+                "path": str(candidate),
+                "loaders_dir": str(loaders_dir),
+                "available_loaders": available,
+            }
+    return {
+        "installed": False,
+        "path": "",
+        "loaders_dir": "",
+        "available_loaders": [],
+    }
+
+
+def generate_mtool_patch_bundle(
+    project: ProjectInfo,
+    entries: list[TranslationEntry] | dict[str, str],
+    mtool_path: str | None = None,
+    font_name: str = "Microsoft YaHei",
+    font_size_offset: int = 0,
+    target_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Generate ready-to-play patch files with MTool loaders and batch scripts."""
+    dest = target_dir or project.game_dir
+    dest.mkdir(parents=True, exist_ok=True)
+    generated_files: list[str] = []
+
+    # 1. 导出 翻译文件.json
+    trans_payload: dict[str, str] = {}
+    if isinstance(entries, dict):
+        trans_payload = {str(k): str(v) for k, v in entries.items() if str(k).strip() and str(v).strip() and str(k) != str(v)}
+    elif isinstance(entries, list):
+        for e in entries:
+            src = getattr(e, "source", "") if hasattr(e, "source") else str(e.get("source", "") if isinstance(e, dict) else "")
+            tgt = getattr(e, "target", "") if hasattr(e, "target") else str(e.get("target", "") if isinstance(e, dict) else "")
+            if src.strip() and tgt.strip() and src != tgt:
+                trans_payload[src] = tgt
+
+    trans_file = dest / "翻译文件.json"
+    trans_file.write_text(json.dumps(trans_payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+    generated_files.append("翻译文件.json")
+
+    # 2. 探测 MTool 安装状态
+    mtool_info = detect_mtool_installation(mtool_path)
+    loaders_dir = Path(mtool_info["loaders_dir"]) if mtool_info["installed"] else None
+
+    engine = project.engine
+
+    # 3. 针对不同引擎注入钩子与配置
+    if engine == "RPG Developer Bakin" or (dest / "data" / "bakinplayer.exe").is_file() or (dest / "bakinplayer.exe").is_file():
+        data_dir = dest / "data" if (dest / "data").is_dir() else dest
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "lastLoadedTrsFile").write_text("..\\翻译文件.json\n", encoding="utf-8")
+        generated_files.append(str((data_dir / "lastLoadedTrsFile").relative_to(dest)))
+
+        fix_font = font_name or "Microsoft YaHei"
+        (data_dir / "fixFontName").write_text(f"{fix_font}\n", encoding="utf-8")
+        generated_files.append(str((data_dir / "fixFontName").relative_to(dest)))
+
+        offset_val = font_size_offset if font_size_offset != 0 else -3
+        (data_dir / "fixFontSizeOffBakin").write_text(f"{offset_val}\n", encoding="utf-8")
+        generated_files.append(str((data_dir / "fixFontSizeOffBakin").relative_to(dest)))
+
+        if loaders_dir:
+            for bfile in ("BakinLauncher.exe", "BakinPlayerWrapper.exe"):
+                src = loaders_dir / bfile
+                if src.is_file():
+                    shutil.copy2(src, dest / bfile)
+                    generated_files.append(bfile)
+    elif engine == "Wolf RPG Editor" or any(dest.glob("*.wolf")) or (dest / "Data" / "BasicData").is_dir():
+        if loaders_dir:
+            for wfile in ("wolfHook.dll", "wolfHook3.dll"):
+                src = loaders_dir / wfile
+                if src.is_file():
+                    shutil.copy2(src, dest / wfile)
+                    generated_files.append(wfile)
+            pct = 100 + (font_size_offset * 2)
+            (dest / "wolfFontSizePercent").write_text(f"{pct}\n", encoding="utf-8")
+            generated_files.append("wolfFontSizePercent")
+    elif engine == "SRPG Studio" or (dest / "Plugin").is_dir():
+        plugin_dir = dest / "Plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        srpg_plugin = plugin_dir / "RPGRenPyLocalizer_SRPG.js"
+        srpg_plugin.write_text(SRPG_RUNTIME_PLUGIN_SOURCE, encoding="utf-8", newline="\n")
+        generated_files.append("Plugin/RPGRenPyLocalizer_SRPG.js")
+        if loaders_dir:
+            src = loaders_dir / "SRPGHook.dll"
+            if src.is_file():
+                shutil.copy2(src, dest / "SRPGHook.dll")
+                generated_files.append("SRPGHook.dll")
+            if (loaders_dir / "fontSizeSRPG").is_file():
+                shutil.copy2(loaders_dir / "fontSizeSRPG", dest / "fontSizeSRPG")
+                generated_files.append("fontSizeSRPG")
+    elif engine == "TyranoBuilder" or (dest / "tyrano" / "tyrano.js").is_file() or (dest / "data" / "scenario").is_dir():
+        plugin_dir = dest / "data" / "others" / "plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        tyrano_plugin = plugin_dir / "RPGRenPyLocalizer_Tyrano.js"
+        tyrano_plugin.write_text(TYRANO_RUNTIME_PLUGIN_SOURCE, encoding="utf-8", newline="\n")
+        generated_files.append("data/others/plugin/RPGRenPyLocalizer_Tyrano.js")
+    elif engine == "Pixel Game Maker MV" or (dest / "agtk.exe").is_file():
+        if loaders_dir and (loaders_dir / "AgtkHook.dll").is_file():
+            shutil.copy2(loaders_dir / "AgtkHook.dll", dest / "AgtkHook.dll")
+            generated_files.append("AgtkHook.dll")
+    elif engine == "Smile Game Builder" or (dest / "game.kmy").is_file():
+        (dest / "fixFontName").write_text(f"{font_name or 'Microsoft YaHei'}\n", encoding="utf-8")
+        (dest / "fixFontSizeOffKmy").write_text(f"{font_size_offset or -2}\n", encoding="utf-8")
+        generated_files.extend(["fixFontName", "fixFontSizeOffKmy"])
+        if loaders_dir and (loaders_dir / "kmyHook.exe").is_file():
+            shutil.copy2(loaders_dir / "kmyHook.exe", dest / "kmyHook.exe")
+            generated_files.append("kmyHook.exe")
+    elif (dest / "krkr.exe").is_file() or (dest / "krkrz.exe").is_file() or any(f.suffix.lower() == ".xp3" for f in dest.glob("*.xp3")):
+        (dest / "patch.tjs").write_text(KIRIKIRI_PATCH_TJS_SOURCE, encoding="utf-8", newline="\n")
+        generated_files.append("patch.tjs")
+        if loaders_dir:
+            for kfile in ("krkrzHook32.dll", "krkrzHook64.dll", "fontSizeKRKR2"):
+                src = loaders_dir / kfile
+                if src.is_file():
+                    shutil.copy2(src, dest / kfile)
+                    generated_files.append(kfile)
+    elif engine in {"RPG Maker XP", "RPG Maker VX", "RPG Maker VX Ace"} or any(f.name.lower().startswith("rgss") for f in dest.glob("*.dll")):
+        (dest / "RPGRenPyLocalizer_RGSS.rb").write_text(RGSS_RUNTIME_HOOK_SOURCE, encoding="utf-8", newline="\n")
+        generated_files.append("RPGRenPyLocalizer_RGSS.rb")
+        if loaders_dir:
+            for rfile in ("RGSSHook.dll", "RGSSHook64.dll", "rgssFixFontOff"):
+                src = loaders_dir / rfile
+                if src.is_file():
+                    shutil.copy2(src, dest / rfile)
+                    generated_files.append(rfile)
+
+    # 4. 生成 与工具一同启动.bat
+    launcher_bat = dest / "与工具一同启动.bat"
+    launcher_content = f"""@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+echo =======================================================
+echo   RPG Ren'Py Localizer - [{engine}] 即玩汉化补丁启动器
+echo =======================================================
+"""
+    if engine == "RPG Developer Bakin":
+        launcher_content += """if exist "BakinLauncher.exe" (
+    start "" "BakinLauncher.exe"
+    goto :done
+)
+if exist "data\\BakinLauncher.exe" (
+    start "" "data\\BakinLauncher.exe"
+    goto :done
+)
+"""
+    launcher_content += """for %%f in (*.exe) do (
+    if /i not "%%~nxf"=="unins000.exe" if /i not "%%~nxf"=="config.exe" (
+        start "" "%%~nxf"
+        goto :done
+    )
+)
+:done
+echo 游戏已启动，汉化与字体优化已就绪。
+"""
+    launcher_bat.write_text(launcher_content, encoding="utf-8")
+    generated_files.append("与工具一同启动.bat")
+
+    # 5. 生成 从游戏中移除工具文件.bat
+    cleaner_bat = dest / "从游戏中移除工具文件.bat"
+    cleaner_content = """@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+echo =======================================================
+echo   RPG Ren'Py Localizer - 即玩补丁清理还原脚本
+echo =======================================================
+echo 正在清理本地化注入文件与临时配置...
+if exist "翻译文件.json" del /f /q "翻译文件.json"
+if exist "与工具一同启动.bat" del /f /q "与工具一同启动.bat"
+if exist "BakinLauncher.exe" del /f /q "BakinLauncher.exe"
+if exist "BakinPlayerWrapper.exe" del /f /q "BakinPlayerWrapper.exe"
+if exist "wolfHook.dll" del /f /q "wolfHook.dll"
+if exist "wolfHook3.dll" del /f /q "wolfHook3.dll"
+if exist "wolfFontSizePercent" del /f /q "wolfFontSizePercent"
+if exist "SRPGHook.dll" del /f /q "SRPGHook.dll"
+if exist "fontSizeSRPG" del /f /q "fontSizeSRPG"
+if exist "AgtkHook.dll" del /f /q "AgtkHook.dll"
+if exist "kmyHook.exe" del /f /q "kmyHook.exe"
+if exist "fixFontName" del /f /q "fixFontName"
+if exist "fixFontSizeOffBakin" del /f /q "fixFontSizeOffBakin"
+if exist "fixFontSizeOffKmy" del /f /q "fixFontSizeOffKmy"
+if exist "krkrzHook32.dll" del /f /q "krkrzHook32.dll"
+if exist "krkrzHook64.dll" del /f /q "krkrzHook64.dll"
+if exist "fontSizeKRKR2" del /f /q "fontSizeKRKR2"
+if exist "RGSSHook.dll" del /f /q "RGSSHook.dll"
+if exist "RGSSHook64.dll" del /f /q "RGSSHook64.dll"
+if exist "rgssFixFontOff" del /f /q "rgssFixFontOff"
+if exist "patch.tjs" del /f /q "patch.tjs"
+if exist "RPGRenPyLocalizer_RGSS.rb" del /f /q "RPGRenPyLocalizer_RGSS.rb"
+if exist "RPGRenPyLocalizer_BakinLauncher.bat" del /f /q "RPGRenPyLocalizer_BakinLauncher.bat"
+if exist "Plugin\\RPGRenPyLocalizer_SRPG.js" del /f /q "Plugin\\RPGRenPyLocalizer_SRPG.js"
+if exist "data\\others\\plugin\\RPGRenPyLocalizer_Tyrano.js" del /f /q "data\\others\\plugin\\RPGRenPyLocalizer_Tyrano.js"
+if exist "data\\lastLoadedTrsFile" del /f /q "data\\lastLoadedTrsFile"
+if exist "data\\fixFontName" del /f /q "data\\fixFontName"
+if exist "data\\fixFontSizeOffBakin" del /f /q "data\\fixFontSizeOffBakin"
+echo 清理完成，游戏已恢复原始纯净状态！
+pause
+(goto) 2>nul & del "%~f0"
+"""
+    cleaner_bat.write_text(cleaner_content, encoding="utf-8")
+    generated_files.append("从游戏中移除工具文件.bat")
+
+    return {
+        "ok": True,
+        "engine": engine,
+        "target_dir": str(dest),
+        "entry_count": len(trans_payload),
+        "mtool_linked": mtool_info["installed"],
+        "mtool_path": mtool_info["path"],
+        "generated_files": generated_files,
+    }
+
+
+def list_unknown_save_slots(project: ProjectInfo) -> list[dict[str, Any]]:
+    """Scan and list save files for Wolf RPG Editor and other custom engines."""
+    candidates = [project.game_dir, project.root]
+    sub_save_names = ["Save", "SaveData", "savedata", "save", "Save_MTool", "存档"]
+    for root_cand in [project.game_dir, project.root]:
+        for sub in sub_save_names:
+            p = root_cand / sub
+            if p.is_dir() and p not in candidates:
+                candidates.append(p)
+
+    found_files: dict[str, Path] = {}
+    save_patterns = [
+        "SaveData*.sav", "SaveData*.dat", "Save*.sav", "Save*.dat",
+        "System.sav", "*.rpgsave", "*.save",
+    ]
+
+    for search_dir in candidates:
+        if not search_dir.is_dir():
+            continue
+        for pat in save_patterns:
+            for f in search_dir.glob(pat):
+                if not f.is_file():
+                    continue
+                name_lower = f.name.lower()
+                # Exclude database files and non-save files
+                if name_lower in {"game.dat", "system.dat", "sysdatabase.dat", "data.dat"}:
+                    continue
+                found_files[str(f.resolve())] = f
+
+    slots: list[dict[str, Any]] = []
+    for f in sorted(found_files.values(), key=lambda x: x.name.lower()):
+        stat = f.stat()
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+        size_kb = round(stat.st_size / 1024, 1)
+        
+        # Extract slot number if present
+        m = re.search(r"(\d+)", f.stem)
+        slot_num = int(m.group(1)) if m else 0
+        
+        if "system" in f.stem.lower():
+            label = f"系统存档 · {f.name}"
+        elif slot_num > 0:
+            label = f"存档 {slot_num:02d} · {f.name}"
+        else:
+            label = f"存档 · {f.name}"
+
+        slots.append({
+            "slot_id": slot_num,
+            "name": f.name,
+            "path": str(f),
+            "label": label,
+            "modified_at": mtime,
+            "size": f"{size_kb} KB",
+            "size_bytes": stat.st_size,
+        })
+
+    # Sort slots: slot 1, 2, 3... system last
+    slots.sort(key=lambda s: (s["slot_id"] == 0, s["slot_id"], s["name"]))
+    return slots
+
+
+def list_unknown_save_snapshots(project: ProjectInfo) -> list[dict[str, Any]]:
+    """List safe save snapshots for Wolf RPG and custom engines."""
+    backup_dir = project.root / ".rpgrtl_workspace" / "save_backups"
+    if not backup_dir.is_dir():
+        return []
+    results = []
+    for snap_dir in sorted(backup_dir.iterdir(), reverse=True):
+        if not snap_dir.is_dir():
+            continue
+        meta_file = snap_dir / "meta.json"
+        if meta_file.is_file():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                results.append(meta)
+                continue
+            except Exception:
+                pass
+        results.append({
+            "id": snap_dir.name,
+            "label": snap_dir.name,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap_dir.stat().st_mtime)),
+            "file_count": len([f for f in snap_dir.iterdir() if f.is_file() and f.name != "meta.json"]),
+            "path": str(snap_dir),
+        })
+    return results
+
+
+def create_unknown_save_snapshot(project: ProjectInfo, label: str = "") -> dict[str, Any]:
+    """Create a backup snapshot of all active save files for Wolf RPG or other engines."""
+    slots = list_unknown_save_slots(project)
+    if not slots:
+        return {"ok": False, "error": "当前未扫描到任何可备份的存档文件"}
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    slug = re.sub(r"[^\w\-]", "_", label.strip())[:20] if label else "manual"
+    snap_id = f"snap_{stamp}_{slug}"
+    snap_dir = project.root / ".rpgrtl_workspace" / "save_backups" / snap_id
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_files = []
+    for s in slots:
+        src = Path(s["path"])
+        if src.is_file():
+            dest = snap_dir / src.name
+            shutil.copy2(src, dest)
+            copied_files.append({
+                "name": src.name,
+                "orig_path": str(src),
+                "size": src.stat().st_size,
+            })
+
+    meta = {
+        "id": snap_id,
+        "label": label or f"快照 {stamp}",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "file_count": len(copied_files),
+        "files": copied_files,
+        "path": str(snap_dir),
+    }
+    (snap_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # Rotation: Keep at most 30 snapshots
+    all_snaps = list_unknown_save_snapshots(project)
+    if len(all_snaps) > 30:
+        for old_snap in all_snaps[30:]:
+            old_dir = Path(old_snap.get("path", ""))
+            if old_dir.is_dir():
+                shutil.rmtree(old_dir, ignore_errors=True)
+
+    return {"ok": True, "snapshot": meta}
+
+
+def restore_unknown_save_snapshot(project: ProjectInfo, snapshot_id: str) -> dict[str, Any]:
+    """Restore pristine save files from a selected snapshot."""
+    snap_dir = project.root / ".rpgrtl_workspace" / "save_backups" / snapshot_id
+    if not snap_dir.is_dir():
+        return {"ok": False, "error": "指定的备份快照不存在"}
+
+    meta_file = snap_dir / "meta.json"
+    restored = []
+    if meta_file.is_file():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            for item in meta.get("files", []):
+                if isinstance(item, dict) and "orig_path" in item:
+                    src = snap_dir / item["name"]
+                    target = Path(item["orig_path"])
+                    if src.is_file():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, target)
+                        restored.append(target.name)
+        except Exception:
+            pass
+
+    # Fallback if meta didn't specify orig_path: restore into game_dir or Save/
+    if not restored:
+        target_dir = project.game_dir
+        if (project.game_dir / "Save").is_dir():
+            target_dir = project.game_dir / "Save"
+        for f in snap_dir.iterdir():
+            if f.is_file() and f.name != "meta.json":
+                shutil.copy2(f, target_dir / f.name)
+                restored.append(f.name)
+
+    return {"ok": True, "restored_count": len(restored), "files": restored, "restored": restored}
+
+

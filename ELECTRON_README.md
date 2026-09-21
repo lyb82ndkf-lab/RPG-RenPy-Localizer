@@ -31,8 +31,8 @@ powershell -ExecutionPolicy Bypass -File .\build_electron_release.ps1
 
 ```text
 release-electron/
-├─ RPGRenPyLocalizer Setup 3.2.0.exe   # 标准安装包
-├─ RPGRenPyLocalizer 3.2.0.exe         # 可选 portable 单 exe（运行 npm run portable 生成）
+├─ RPGRenPyLocalizer Setup 3.3.0.exe   # 标准安装包
+├─ RPGRenPyLocalizer 3.3.0.exe         # 可选 portable 单 exe（运行 npm run portable 生成）
 └─ win-unpacked/                       # 目录版，可直接运行 RPGRenPyLocalizer.exe
 ```
 
@@ -63,12 +63,20 @@ npm run portable
 
 新界面调用的是现有 Python 核心逻辑，因此底层能力与旧工具一致；旧 `main.py` / `launcher.py` 仍可继续运行，方便回退。
 
-## 3.2.0 桌面版新增能力
+## 3.3.0 桌面版新增能力（深度对标 MTool）
 
-- 游戏识别与翻译提取扩展至 Wolf RPG Editor、Unity 本地化表、UE4/UE5 archive JSON 与 Galgame / Visual Novel 脚本。
-- 左侧导航包含 CE 修改器：选进程、首次搜索、值变化后继续筛选、选中地址并写入新值。
-- 当前打包版本号为 `3.2.0`，产物输出到 `release-electron/`。
+- **字体替换与字号相对偏移控制**：解决文本爆框、下沿截断与 CJK 缺字乱码，支持游戏内 `F8` HUD 动态微调。
+- **冷门引擎 MTool 即玩补丁联动**：自动探测本机 MTool 安装与各引擎 Loader，支持 Bakin / Wolf RPG / SRPG Studio / TyranoScript / Kirikiri / RGSS 一键打包输出标准 `翻译文件.json` 与即玩/清理脚本。
+- **存档自动安全快照与防坏档安全回滚**：写入存档前自动静默建立快照，支持随时还原；新增画面与事件解卡工具（清除卡死图片 `$gameScreen.clearPictures()`、重置滤镜天气、消除阻塞事件）。
+- **AI 批译控制符/占位符保护体系**：智能提取与防御性纠偏 MTool 参数、RPG Maker 与 Ren'Py 变量占位符。
+- **持久穿墙与作弊架构增强**：底层锁定穿墙、锁血无敌、致命秒杀、暗雷不遇敌、全员回满、全物品/装备 99、全回想/CG 深度解锁。
+- 当前打包版本号为 `3.3.0`，产物输出到 `release-electron/`。
 
 ## 3.2.1 翻译预检
 
 对多引擎翻译工作台，在启动隔离副本前执行“翻译预检”：统计覆盖率、标记缺失的译文及提示未经结构化定位的文本条目。
+
+## 3.2.0 桌面版新增能力
+
+- 游戏识别与翻译提取扩展至 Wolf RPG Editor、Unity 本地化表、UE4/UE5 archive JSON 与 Galgame / Visual Novel 脚本。
+- 左侧导航包含 CE 修改器：选进程、首次搜索、值变化后继续筛选、选中地址并写入新值。

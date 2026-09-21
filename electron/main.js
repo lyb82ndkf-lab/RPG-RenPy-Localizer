@@ -1,4 +1,4 @@
-﻿const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -23,12 +23,13 @@ function projectRoot() {
 function findPython() {
   const root = projectRoot();
   const candidates = [
+    'C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python312\\python.exe',
     path.join(root, '.venv', 'Scripts', 'python.exe'),
     path.join(app.getAppPath(), '.venv', 'Scripts', 'python.exe'),
-    'python',
-    'py'
+    'py',
+    'python'
   ];
-  return candidates.find((candidate) => candidate === 'python' || candidate === 'py' || fs.existsSync(candidate)) || 'python';
+  return candidates.find((candidate) => fs.existsSync(candidate) || candidate === 'py' || candidate === 'python') || 'py';
 }
 
 function backendExecutable() {

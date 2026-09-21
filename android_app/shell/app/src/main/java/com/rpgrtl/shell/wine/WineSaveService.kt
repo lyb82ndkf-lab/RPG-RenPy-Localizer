@@ -47,7 +47,7 @@ class WineSaveService(private val context: Context) {
     fun createBackup(containerId: Int, gamePath: String): JSONObject {
         val container = findContainer(containerId) ?: return error("Wine container not found.")
         val saveDir = detectSaveDir(container, gamePath) ?: return error("Wine save directory not found.")
-        val backupDir = File(saveDir, "mtool/backup/save").apply { mkdirs() }
+        val backupDir = File(saveDir, ".rpgrtl_backup").apply { mkdirs() }
         var copied = 0
         saveDir.listFiles()
             ?.filter { it.isFile && SAVE_FILE_REGEX.matches(it.name) }
@@ -66,8 +66,8 @@ class WineSaveService(private val context: Context) {
         val container = findContainer(containerId) ?: return error("Wine container not found.")
         val saveDir = detectSaveDir(container, gamePath)
         val backupDirs = listOfNotNull(
-            saveDir?.let { File(it, "mtool/backup/save") },
-            saveDir?.let { File(it, ".rpgrtl_backup") }
+            saveDir?.let { File(it, ".rpgrtl_backup") },
+            saveDir?.let { File(it, "backup/saves") }
         )
         val backups = JSONArray()
         backupDirs.forEach { backupDir ->

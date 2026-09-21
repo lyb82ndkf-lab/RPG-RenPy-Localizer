@@ -12,7 +12,7 @@
       <div class="game-card" v-if="selectedEntry" data-tour="current-game">
         <div class="game-card-label">当前游戏</div>
         <div class="game-card-name">{{ selectedEntry.name || '未命名' }}</div>
-        <div class="game-card-engine">{{ selectedEntry.engine || '未知引擎' }}</div>
+        <div v-if="selectedEntry.engine && selectedEntry.engine !== selectedEntry.name" class="game-card-engine">{{ selectedEntry.engine }}</div>
         <el-tag v-if="gameRunning" class="running-tag" size="small" type="success" effect="dark">游戏运行中</el-tag>
         <div class="game-card-path">{{ selectedEntry.path }}</div>
         <div class="game-card-actions">
@@ -52,12 +52,11 @@
         <div>
           <div class="eyebrow">{{ viewMeta.eyebrow }}</div>
           <h1>{{ viewMeta.title }}</h1>
-          <div class="subtitle">{{ viewMeta.subtitle }}</div>
         </div>
 
         <div class="top-actions">
           <el-tag v-if="gameRunning" type="success" effect="dark">游戏运行中</el-tag>
-          <el-tag v-else-if="selectedEntry" effect="plain">{{ selectedEntry.engine || 'Game' }}</el-tag>
+          <el-tag v-else-if="selectedEntry" :type="engineTagType(selectedEntry.engine)" effect="plain">{{ selectedEntry.engine || 'Game' }}</el-tag>
           <el-button v-if="selectedEntry" :icon="Refresh" @click="reloadCurrentView" :loading="busy.reload">刷新当前页</el-button>
           <el-button v-if="!selectedEntry && currentView !== 'library'" type="warning" plain @click="currentView = 'library'">先去游戏库</el-button>
         </div>
@@ -67,7 +66,7 @@
         <div class="game-strip-left">
           <span class="game-strip-label">当前游戏</span>
           <strong>{{ selectedEntry ? (selectedEntry.name || '未命名') : '未选择游戏' }}</strong>
-          <span class="game-strip-meta">{{ selectedEntry ? (selectedEntry.engine || '未知引擎') : '先去游戏库选择一个游戏再回来。' }}</span>
+          <span v-if="selectedEntry?.engine && selectedEntry.engine !== selectedEntry.name" class="game-strip-meta">{{ selectedEntry.engine }}</span>
         </div>
         <div class="game-strip-actions">
           <el-button size="small" @click="currentView = 'library'" :disabled="gameRunning">{{ gameRunning ? '游戏运行中' : '切换游戏' }}</el-button>
@@ -87,6 +86,24 @@
           <el-button v-else-if="currentView === 'data'" size="small" :disabled="!selectedEntry" @click="loadData(true)">载入数据</el-button>
           <el-button v-else-if="currentView === 'saves'" size="small" :disabled="!selectedEntry" @click="loadSaveSlots">载入存档</el-button>
           <el-button v-else-if="currentView === 'maps'" size="small" :disabled="!selectedEntry" @click="loadMaps">载入地图</el-button>
+        </div>
+      </div>
+
+      <div v-if="runtimeConnected && isRpgMakerSelected" class="quick-cheats-bar">
+        <div class="quick-cheats-left">
+          <span class="quick-cheats-label">快捷辅助</span>
+          <div class="quick-cheats-toggles">
+            <el-check-tag :checked="runtimeForm.through" @change="toggleQuickThrough">穿墙</el-check-tag>
+            <el-check-tag :checked="runtimeForm.godMode" @change="toggleQuickGodMode">无敌</el-check-tag>
+            <el-check-tag :checked="runtimeForm.noEncounter" @change="toggleQuickNoEncounter">不遇敌</el-check-tag>
+            <el-check-tag :checked="runtimeForm.oneHitKill" @change="toggleQuickOneHitKill">秒杀</el-check-tag>
+          </div>
+        </div>
+        <div class="quick-cheats-actions">
+          <el-button size="small" type="success" plain @click="quickHealAll">全员回满</el-button>
+          <el-button size="small" type="warning" plain @click="quickMaxGold">金币最大</el-button>
+          <el-button size="small" type="primary" plain @click="quickAllItems">全物品 99</el-button>
+          <el-button size="small" type="info" plain @click="quickUnlockCg">解锁全 CG</el-button>
         </div>
       </div>
 
@@ -186,6 +203,7 @@
                     <el-dropdown-menu>
                       <el-dropdown-item command="import">导入翻译包</el-dropdown-item>
                       <el-dropdown-item command="export">导出翻译包</el-dropdown-item>
+                      <el-dropdown-item command="mtool-patch" divided>生成即玩补丁</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -243,6 +261,7 @@
         </el-card>
       </section>
 
+      <!-- 未知游戏 Agent 功能暂未完善，暂时注释此视图
       <section v-else-if="currentView === 'agent'" class="view-shell feature-shell">
         <el-card shadow="never" class="section-card full-card">
           <template #header>
@@ -318,6 +337,7 @@
           </el-card>
         </el-card>
       </section>
+      -->
 
       <section v-else-if="currentView === 'data'" class="view-shell feature-shell" data-tour="data-editor">
         <el-card shadow="never" class="section-card full-card">
@@ -374,24 +394,75 @@
             <div v-else class="split-layout data-body runtime-data-body">
               <div class="left-pane">
                 <div v-if="!runtimeConnected" class="runtime-required"><strong>需要连接运行中的游戏</strong><span>先启动 RPGMaker 游戏，桥接组件会自动连接；连接后这里会显示当前游戏数据。</span><el-button type="primary" @click="currentView = 'runtime'">前往实时修改</el-button></div>
-                <el-table v-else :data="runtimeDataRows" height="100%" highlight-current-row @row-click="selectRuntimeDataRow">
-                  <el-table-column prop="id" label="ID" width="72" />
-                  <el-table-column prop="name" label="名称" min-width="180" />
-                  <el-table-column v-if="['items','armors','weapons'].includes(dataSection)" prop="count" label="持有数量" width="110" />
-                  <el-table-column v-if="dataSection === 'actors'" prop="level" label="等级" width="90" />
-                  <el-table-column v-if="dataSection === 'actors'" prop="hp" label="HP" width="90" />
-                  <el-table-column v-if="dataSection === 'switches'" label="状态" width="90"><template #default="{ row }"><el-tag :type="row.value ? 'success' : 'info'">{{ row.value ? 'ON' : 'OFF' }}</el-tag></template></el-table-column>
-                  <el-table-column v-if="dataSection === 'variables'" prop="value" label="当前值" min-width="150" />
-                </el-table>
+                <div v-else class="runtime-table-wrap">
+                  <div class="runtime-table-toolbar">
+                    <el-input v-model="runtimeSearch" class="search-inline" size="small" placeholder="搜索 ID 或名称..." clearable :prefix-icon="Search" />
+                    <el-checkbox v-if="['switches', 'variables'].includes(dataSection)" v-model="runtimeHideEmpty" size="small">隐藏未命名</el-checkbox>
+                    <template v-if="['items', 'armors', 'weapons'].includes(dataSection)">
+                      <el-button size="small" type="primary" plain @click="quickAllItemsCount(dataSection, 99)">全部设为99</el-button>
+                      <el-button size="small" type="danger" plain @click="clearCategoryItems(dataSection)">清空背包</el-button>
+                    </template>
+                    <template v-if="dataSection === 'switches'">
+                      <el-button size="small" type="success" plain @click="batchToggleFilteredSwitches(true)">开启筛选</el-button>
+                      <el-button size="small" type="info" plain @click="batchToggleFilteredSwitches(false)">关闭筛选</el-button>
+                    </template>
+                  </div>
+                  <el-table :data="filteredRuntimeDataRows" height="100%" highlight-current-row @row-click="selectRuntimeDataRow">
+                    <el-table-column prop="id" label="ID" width="72" />
+                    <el-table-column prop="name" label="名称" min-width="180">
+                      <template #default="{ row }">
+                        <span>{{ row.name || '(未命名)' }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column v-if="['items','armors','weapons'].includes(dataSection)" prop="count" label="持有数量" width="110" />
+                    <el-table-column v-if="dataSection === 'actors'" prop="level" label="等级" width="90" />
+                    <el-table-column v-if="dataSection === 'actors'" prop="hp" label="HP" width="90" />
+                    <el-table-column v-if="dataSection === 'switches'" label="状态" width="90"><template #default="{ row }"><el-tag :type="row.value ? 'success' : 'info'">{{ row.value ? 'ON' : 'OFF' }}</el-tag></template></el-table-column>
+                    <el-table-column v-if="dataSection === 'variables'" prop="value" label="当前值" min-width="150" />
+                  </el-table>
+                </div>
               </div>
               <div class="right-pane">
                 <div v-if="selectedRuntimeData" class="editor-stack">
                   <div class="editor-title">{{ selectedRuntimeData.name || `#${selectedRuntimeData.id}` }}</div>
                   <div class="mini-info">{{ runtimeDataSectionLabel }} #{{ selectedRuntimeData.id }} · 实时修改立即生效</div>
-                  <template v-if="['items','armors','weapons'].includes(dataSection)"><el-input v-model="runtimeDataForm.count" type="number"><template #prepend>数量</template></el-input><el-button type="primary" @click="saveRuntimeDataRow">设置持有数量</el-button></template>
-                  <template v-else-if="dataSection === 'actors'"><el-input v-model="runtimeDataForm.level" type="number"><template #prepend>等级</template></el-input><div class="actor-gauges"><el-input v-model="runtimeDataForm.hp" type="number"><template #prepend>HP</template></el-input><el-input v-model="runtimeDataForm.mp" type="number"><template #prepend>MP</template></el-input><el-input v-model="runtimeDataForm.tp" type="number"><template #prepend>TP</template></el-input></div><el-button type="primary" @click="saveRuntimeDataRow">应用角色数值</el-button></template>
-                  <template v-else-if="dataSection === 'switches'"><el-switch v-model="runtimeDataForm.switchValue" active-text="ON" inactive-text="OFF" /><el-button type="primary" @click="saveRuntimeDataRow">应用开关状态</el-button></template>
-                  <template v-else-if="dataSection === 'variables'"><el-input v-model="runtimeDataForm.variableValue" placeholder="变量值" /><el-button type="primary" @click="saveRuntimeDataRow">应用变量值</el-button></template>
+                  <template v-if="['items','armors','weapons'].includes(dataSection)">
+                    <el-input v-model="runtimeDataForm.count" type="number"><template #prepend>数量</template></el-input>
+                    <div class="quick-btn-row">
+                      <el-button size="small" @click="setRuntimeCountPreset(0)">0</el-button>
+                      <el-button size="small" @click="setRuntimeCountPreset(1)">1</el-button>
+                      <el-button size="small" @click="setRuntimeCountPreset(10)">10</el-button>
+                      <el-button size="small" type="primary" plain @click="setRuntimeCountPreset(99)">99</el-button>
+                      <el-button size="small" type="warning" plain @click="setRuntimeCountPreset(999)">999</el-button>
+                    </div>
+                    <el-button type="primary" @click="saveRuntimeDataRow">设置持有数量</el-button>
+                  </template>
+                  <template v-else-if="dataSection === 'actors'">
+                    <el-input v-model="runtimeDataForm.level" type="number"><template #prepend>等级</template></el-input>
+                    <div class="quick-btn-row">
+                      <el-button size="small" type="primary" plain @click="setRuntimeActorLevelPreset(99)">直接满级(99)</el-button>
+                    </div>
+                    <div class="actor-gauges">
+                      <el-input v-model="runtimeDataForm.hp" type="number"><template #prepend>HP</template></el-input>
+                      <el-input v-model="runtimeDataForm.mp" type="number"><template #prepend>MP</template></el-input>
+                      <el-input v-model="runtimeDataForm.tp" type="number"><template #prepend>TP</template></el-input>
+                    </div>
+                    <el-button type="primary" @click="saveRuntimeDataRow">应用角色数值</el-button>
+                  </template>
+                  <template v-else-if="dataSection === 'switches'">
+                    <el-switch v-model="runtimeDataForm.switchValue" active-text="ON" inactive-text="OFF" />
+                    <el-button type="primary" @click="saveRuntimeDataRow">应用开关状态</el-button>
+                  </template>
+                  <template v-else-if="dataSection === 'variables'">
+                    <el-input v-model="runtimeDataForm.variableValue" placeholder="变量值" />
+                    <div class="quick-btn-row">
+                      <el-button size="small" @click="setRuntimeVariablePreset('0')">0</el-button>
+                      <el-button size="small" @click="setRuntimeVariablePreset('1')">1</el-button>
+                      <el-button size="small" @click="setRuntimeVariablePreset('99')">99</el-button>
+                      <el-button size="small" @click="setRuntimeVariablePreset('9999')">9999</el-button>
+                    </div>
+                    <el-button type="primary" @click="saveRuntimeDataRow">应用变量值</el-button>
+                  </template>
                 </div>
                 <el-empty v-else description="选择左侧条目进行修改" />
               </div>
@@ -407,6 +478,7 @@
               <strong>存档修改</strong>
               <div class="card-head-right wrap">
                 <el-button size="small" :icon="Refresh" @click="loadSaveSlots" :loading="busy.saves">刷新</el-button>
+                <el-button size="small" :icon="Camera" @click="openSaveSnapshots">存档快照管理</el-button>
                 <el-button size="small" type="primary" @click="writeSave">写回存档</el-button>
               </div>
             </div>
@@ -437,23 +509,39 @@
                   <div><div class="editor-title">当前存档</div><div class="mini-info selectable">{{ selectedSavePath }}</div></div>
                   <el-button size="small" @click="saveDataDialogVisible = true">查看完整数据</el-button>
                 </div>
-                <div class="save-summary-grid">
-                  <div class="info-box"><span>金钱</span><div>{{ saveSummary.gold ?? 0 }}</div></div>
-                  <div class="info-box"><span>步数</span><div>{{ saveSummary.steps ?? 0 }}</div></div>
-                  <div class="info-box"><span>角色数</span><div>{{ saveSummary.actor_count ?? 0 }}</div></div>
-                </div>
+                <template v-if="isRpgMakerSelected">
+                  <div class="save-summary-grid">
+                    <div class="info-box"><span>金钱</span><div>{{ saveSummary.gold ?? 0 }}</div></div>
+                    <div class="info-box"><span>步数</span><div>{{ saveSummary.steps ?? 0 }}</div></div>
+                    <div class="info-box"><span>角色数</span><div>{{ saveSummary.actor_count ?? 0 }}</div></div>
+                  </div>
 
-                <div class="save-tools-grid">
-                  <section class="save-tool-group">
-                    <strong>资源</strong>
-                    <div class="compact-action"><el-input v-model="saveForm.gold" type="number" placeholder="金钱" /><el-button @click="setSaveGold">设置金钱</el-button></div>
-                    <div class="compact-action three"><el-input v-model="saveForm.itemId" type="number" placeholder="物品ID" /><el-input v-model="saveForm.itemCount" type="number" placeholder="数量" /><el-button @click="setSaveItem">设置物品</el-button></div>
-                  </section>
-                  <section class="save-tool-group">
-                    <strong>角色</strong>
-                    <div class="compact-action three"><el-input v-model="saveForm.actorId" type="number" placeholder="角色ID" /><el-input v-model="saveForm.actorLevel" type="number" placeholder="等级" /><el-button @click="setActorLevel">设置等级</el-button></div>
-                  </section>
-                </div>
+                  <div class="save-tools-grid">
+                    <section class="save-tool-group">
+                      <strong>资源</strong>
+                      <div class="compact-action"><el-input v-model="saveForm.gold" type="number" placeholder="金钱" /><el-button @click="setSaveGold">设置金钱</el-button></div>
+                      <div class="compact-action three"><el-input v-model="saveForm.itemId" type="number" placeholder="物品ID" /><el-input v-model="saveForm.itemCount" type="number" placeholder="数量" /><el-button @click="setSaveItem">设置物品</el-button></div>
+                    </section>
+                    <section class="save-tool-group">
+                      <strong>角色</strong>
+                      <div class="compact-action three"><el-input v-model="saveForm.actorId" type="number" placeholder="角色ID" /><el-input v-model="saveForm.actorLevel" type="number" placeholder="等级" /><el-button @click="setActorLevel">设置等级</el-button></div>
+                    </section>
+                  </div>
+                </template>
+                <template v-else>
+                  <div class="save-summary-grid">
+                    <div class="info-box"><span>文件大小</span><div>{{ saveSummary.size || '—' }}</div></div>
+                    <div class="info-box"><span>修改时间</span><div>{{ saveSummary.modified_at || '—' }}</div></div>
+                    <div class="info-box"><span>引擎</span><div>{{ saveSummary.engine || selectedEntry?.engine || '未知' }}</div></div>
+                  </div>
+                  <div class="unknown-save-card" style="margin-top: 14px; padding: 14px; border-radius: 8px; background: rgba(255, 255, 255, 0.015); border: 1px solid rgba(255, 255, 255, 0.05);">
+                    <div style="font-size: 13px; font-weight: 600; margin-bottom: 10px;">存档保护与数值修改</div>
+                    <div style="display: flex; gap: 10px;">
+                      <el-button type="primary" @click="currentView = 'runtime'">前往实时修改工作台</el-button>
+                      <el-button :icon="Camera" @click="openSaveSnapshots">备份快照</el-button>
+                    </div>
+                  </div>
+                </template>
               </div>
               <el-empty v-else description="先选择一个存档槽" />
             </div>
@@ -578,7 +666,122 @@
       </section>
 
       <section v-else-if="currentView === 'runtime'" class="view-shell feature-shell">
-        <el-card shadow="never" class="section-card full-card">
+        <!-- 1. Wolf RPG Dedicated Workbench -->
+        <el-card v-if="isWolfSelected" shadow="never" class="section-card full-card">
+          <template #header>
+            <div class="card-head">
+              <strong>Wolf RPG 运行时修改</strong>
+              <div class="card-head-right wrap">
+                <el-tag :type="wolfState.connected ? 'success' : 'info'" effect="plain">
+                  {{ wolfState.connected ? '扩展组件已连接' : '未连接扩展组件' }}
+                </el-tag>
+                <el-button size="small" type="primary" :icon="Refresh" @click="loadRuntimeState(false)">刷新状态</el-button>
+              </div>
+            </div>
+          </template>
+          <div class="runtime-page">
+            <div class="runtime-summary">
+              <div class="info-box"><span>当前所持金</span><div>{{ wolfState.gold ?? 0 }}</div></div>
+              <div class="info-box"><span>游戏倍速</span><div>{{ wolfState.speed ?? 1 }}x</div></div>
+              <div class="info-box"><span>穿墙模式</span><div>{{ wolfState.noclip ? '已开启' : '关闭' }}</div></div>
+              <div class="info-box"><span>变量组数</span><div>{{ wolfState.groupCount || 0 }} (共 {{ wolfState.totalVars || 0 }} 项)</div></div>
+            </div>
+
+            <div class="runtime-groups">
+              <section class="runtime-group">
+                <h3>金币修改</h3>
+                <div class="form-row">
+                  <span>目标金币</span>
+                  <el-input v-model="wolfForm.gold" type="number" placeholder="输入金币数值" />
+                  <el-button type="primary" @click="setWolfGold(wolfForm.gold)">应用修改</el-button>
+                </div>
+                <div class="quick-btn-row">
+                  <el-button size="small" @click="quickAddWolfGold(100000)">+10万</el-button>
+                  <el-button size="small" @click="quickAddWolfGold(1000000)">+100万</el-button>
+                  <el-button size="small" type="warning" plain @click="setWolfGold(99999999)">最大 99999999</el-button>
+                </div>
+              </section>
+
+              <section class="runtime-group">
+                <h3>游戏速度与辅助</h3>
+                <div class="form-row">
+                  <span>游戏倍速 (1x ~ 10x)</span>
+                  <el-input v-model="wolfForm.speed" type="number" style="width: 120px;" />
+                  <el-button @click="setWolfSpeed(wolfForm.speed)">应用倍速</el-button>
+                </div>
+                <div class="quick-btn-row">
+                  <el-button size="small" @click="setWolfSpeed(1.0)">1.0x 正常</el-button>
+                  <el-button size="small" @click="setWolfSpeed(2.0)">2.0x 快捷</el-button>
+                  <el-button size="small" @click="setWolfSpeed(5.0)">5.0x 极速</el-button>
+                  <el-button size="small" type="warning" plain @click="setWolfSpeed(10.0)">10.0x 最大</el-button>
+                </div>
+                <div class="form-row" style="margin-top: 14px;">
+                  <span>穿墙模式 (NoClip)</span>
+                  <el-switch :model-value="wolfState.noclip" @change="toggleWolfNoclip" />
+                </div>
+              </section>
+
+              <section class="runtime-group full-width-group">
+                <h3>智能金币修改</h3>
+                <div class="smart-gold-box">
+                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <span style="font-size: 13px;">当前金币：</span>
+                    <el-input v-model="smartGoldForm.currentGold" placeholder="游戏内当前数值" style="width: 180px;" />
+                    <span style="font-size: 13px;">改至：</span>
+                    <el-input v-model="smartGoldForm.targetGold" placeholder="目标金币" style="width: 150px;" />
+                    <el-button type="primary" @click="runSmartGoldSearch">修改金币</el-button>
+                    <el-button v-if="smartGoldForm.status !== 'idle'" @click="resetSmartGold">重置</el-button>
+                  </div>
+                  <div v-if="smartGoldForm.status === 'need_refine'" style="margin-top: 12px; padding: 10px; border-radius: 6px; background: rgba(234, 179, 8, 0.08); border: 1px solid rgba(234, 179, 8, 0.2);">
+                    <div style="font-size: 13px; color: var(--el-color-warning); margin-bottom: 8px;">
+                      {{ smartGoldForm.hint }}
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                      <span style="font-size: 13px;">变动后新数值：</span>
+                      <el-input v-model="smartGoldForm.newGold" placeholder="输入变动后的新金币" style="width: 180px;" />
+                      <el-button type="success" @click="runSmartGoldRefine">确认变动并写入</el-button>
+                    </div>
+                  </div>
+                  <div v-else-if="smartGoldForm.hint" style="margin-top: 8px; font-size: 13px; color: var(--el-color-success);">
+                    {{ smartGoldForm.hint }}
+                  </div>
+                </div>
+              </section>
+
+              <section v-if="wolfGroups.length" class="runtime-group full-width-group">
+                <h3>全局变量修改</h3>
+                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 12px;">
+                  <span style="font-size: 13px;">选择变量分组：</span>
+                  <el-select v-model="wolfSelectedGroupId" style="width: 260px;">
+                    <el-option v-for="grp in wolfGroups" :key="grp.groupId" :label="`${grp.name} (${grp.count} 项)`" :value="grp.groupId" />
+                  </el-select>
+                  <el-button size="small" @click="loadWolfVars(false)">刷新列表</el-button>
+                </div>
+                <el-table :data="currentWolfGroupVariables" height="260" stripe border size="small">
+                  <el-table-column prop="id" label="变量 ID" width="90">
+                    <template #default="{ row }">#{{ row.id }}</template>
+                  </el-table-column>
+                  <el-table-column prop="value" label="当前数值" width="140">
+                    <template #default="{ row }">
+                      <strong style="color: var(--el-color-primary);">{{ row.value }}</strong>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="修改数值" min-width="200">
+                    <template #default="{ row }">
+                      <div style="display: flex; gap: 6px; align-items: center;">
+                        <el-input v-model="row.draftValue" size="small" type="number" style="width: 140px;" />
+                        <el-button size="small" type="primary" plain @click="saveWolfVariable(wolfSelectedGroupId, row.id, row.draftValue !== undefined ? row.draftValue : row.value)">写回</el-button>
+                      </div>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </section>
+            </div>
+          </div>
+        </el-card>
+
+        <!-- 2. RPG Maker MV/MZ Original Workbench -->
+        <el-card v-else-if="isRpgMakerSelected" shadow="never" class="section-card full-card">
           <template #header>
             <div class="card-head">
               <strong>游戏实时修改</strong>
@@ -599,26 +802,120 @@
               <section class="runtime-group">
                 <h3>玩家与资源</h3>
                 <div class="form-row"><span>金币</span><el-input v-model="runtimeForm.gold" type="number" /><el-button type="primary" @click="setRuntimeGold">应用</el-button></div>
-                <div class="form-row"><span>穿墙</span><el-switch v-model="runtimeForm.through" @change="setRuntimeThrough" /></div>
+                <div class="quick-btn-row">
+                  <el-button size="small" @click="addRuntimeGold(100000)">+10万</el-button>
+                  <el-button size="small" @click="addRuntimeGold(1000000)">+100万</el-button>
+                  <el-button size="small" type="warning" plain @click="setRuntimeGoldMax">最大 99999999</el-button>
+                </div>
+                <div class="form-row"><span>穿墙模式 (持久锁定)</span><el-switch v-model="runtimeForm.through" @change="setRuntimeThrough" /></div>
+                <div class="form-row"><span>不遇敌模式</span><el-switch v-model="runtimeForm.noEncounter" @change="setRuntimeAdvancedOptions" /></div>
                 <div class="form-row"><span>点击传送</span><el-switch v-model="runtimeForm.clickTeleport" @change="setRuntimeOptions" /></div>
                 <div class="form-row"><span>自动存档（分钟）</span><el-input v-model="runtimeForm.autoSaveMinutes" type="number" /><el-button @click="setRuntimeOptions">应用</el-button></div>
                 <div class="form-row teleport-row"><span>传送坐标</span><el-input v-model="runtimeForm.x" type="number" placeholder="X" /><el-input v-model="runtimeForm.y" type="number" placeholder="Y" /><el-button @click="teleportToTile(runtimeForm.x, runtimeForm.y)">传送</el-button></div>
               </section>
               <section class="runtime-group">
-                <h3>角色状态</h3>
-                <el-select v-model="runtimeForm.actorId" placeholder="选择角色" @change="syncRuntimeActorForm"><el-option v-for="actor in runtimeState?.actors || []" :key="actor.id" :label="`${actor.name} #${actor.id}`" :value="actor.id" /></el-select>
+                <h3>队伍与角色</h3>
+                <div class="team-quick-actions">
+                  <div class="mini-title">全队一键快捷操作</div>
+                  <div class="button-wrap-grid">
+                    <el-button size="small" type="success" @click="quickHealAll">全员完全回复</el-button>
+                    <el-button size="small" type="primary" plain @click="quickMaxAllLevel">全员满级(99)</el-button>
+                    <el-button size="small" type="warning" plain @click="quickAllItems">全物品 99</el-button>
+                    <el-button size="small" type="warning" plain @click="quickAllWeapons">全武器 99</el-button>
+                    <el-button size="small" type="warning" plain @click="quickAllArmors">全防具 99</el-button>
+                    <el-button size="small" type="info" plain @click="quickUnlockCg">解锁全 CG / 回想</el-button>
+                  </div>
+                </div>
+                <el-divider style="margin: 12px 0;" />
+                <el-select v-model="runtimeForm.actorId" placeholder="选择单个角色调节" @change="syncRuntimeActorForm"><el-option v-for="actor in runtimeState?.actors || []" :key="actor.id" :label="`${actor.name} #${actor.id}`" :value="actor.id" /></el-select>
                 <div class="actor-gauges"><el-input v-model="runtimeForm.hp" type="number"><template #prepend>HP</template></el-input><el-input v-model="runtimeForm.mp" type="number"><template #prepend>MP</template></el-input><el-input v-model="runtimeForm.tp" type="number"><template #prepend>TP</template></el-input></div>
                 <el-button type="primary" @click="setRuntimeActor">应用角色数值</el-button>
                 <div class="lock-row"><el-checkbox v-model="runtimeForm.lockHp">锁定 HP</el-checkbox><el-checkbox v-model="runtimeForm.lockMp">锁定 MP</el-checkbox><el-checkbox v-model="runtimeForm.lockTp">锁定 TP</el-checkbox><el-button @click="setRuntimeLocks">应用锁定</el-button></div>
               </section>
               <section class="runtime-group">
-                <h3>战斗与速度</h3>
-                <div class="battle-actions"><el-button type="default" @click="setBattleResult('win')">直接胜利</el-button><el-button type="default" @click="setBattleResult('escape')">立即逃跑</el-button><el-button type="default" @click="setBattleResult('lose')">直接失败</el-button></div>
-                <div class="form-row"><span>游戏速度</span><el-input v-model="runtimeForm.gameSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
-                <div class="form-row"><span>战斗速度</span><el-input v-model="runtimeForm.battleSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
-                <div class="form-row"><span>移动速度增加</span><el-input v-model="runtimeForm.moveSpeedIncrease" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <h3>战斗与辅助</h3>
+                <div class="battle-actions"><el-button type="success" plain @click="setBattleResult('win')">直接胜利</el-button><el-button type="warning" plain @click="setBattleResult('escape')">立即逃跑</el-button><el-button type="danger" plain @click="setBattleResult('lose')">直接失败</el-button></div>
+                <div class="form-row"><span>秒杀模式 (One-Hit Kill)</span><el-switch v-model="runtimeForm.oneHitKill" @change="setRuntimeAdvancedOptions" /></div>
+                <div class="form-row"><span>上帝模式 (伤害免疫/零耗蓝)</span><el-switch v-model="runtimeForm.godMode" @change="setRuntimeAdvancedOptions" /></div>
                 <div class="form-row"><span>自动战斗</span><el-switch v-model="runtimeForm.autoBattle" @change="setRuntimeAdvancedOptions" /></div>
-                <div class="form-row"><span>上帝模式</span><el-switch v-model="runtimeForm.godMode" @change="setRuntimeAdvancedOptions" /></div>
+                <div class="form-row"><span>游戏速度 (倍速)</span><el-input v-model="runtimeForm.gameSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <div class="form-row"><span>战斗速度 (倍速)</span><el-input v-model="runtimeForm.battleSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <div class="form-row"><span>移动速度增加 (+0~+6)</span><el-input v-model="runtimeForm.moveSpeedIncrease" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
+              </section>
+              <section class="runtime-group">
+                <h3>字体控制与画面恢复</h3>
+                <div class="form-row">
+                  <span>字号相对偏移 (-12 ~ +12)</span>
+                  <el-slider v-model="runtimeForm.fontSizeOffset" :min="-12" :max="12" :step="1" show-input @change="setRuntimeFontSize" />
+                </div>
+                <div class="form-row">
+                  <span>自定义字体 (fontFamily)</span>
+                  <el-input v-model="runtimeForm.fontFamily" placeholder="如 Microsoft YaHei, SimHei" />
+                  <el-button @click="setRuntimeFontFamily">应用字体</el-button>
+                </div>
+                <el-divider style="margin: 12px 0;" />
+                <div class="mini-title">画面与事件防卡死应急工具</div>
+                <div class="button-wrap-grid">
+                  <el-button size="small" type="danger" plain @click="clearRuntimePictures">清除残留图片</el-button>
+                  <el-button size="small" type="warning" plain @click="clearRuntimeEffects">重置天气滤镜</el-button>
+                  <el-button size="small" type="danger" @click="eraseRuntimeCurrentEvent">消除当前阻塞事件</el-button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </el-card>
+
+        <!-- 3. Cold Engines (Bakin, SRPG Studio, Tyrano, etc.) Smart Workbench -->
+        <el-card v-else shadow="never" class="section-card full-card">
+          <template #header>
+            <div class="card-head">
+              <strong>{{ selectedEntry?.engine || '游戏' }} 运行时修改</strong>
+              <div class="card-head-right wrap">
+                <el-button size="small" :icon="Refresh" @click="loadMemoryProcesses">刷新进程</el-button>
+              </div>
+            </div>
+          </template>
+          <div class="runtime-page">
+            <div class="runtime-groups">
+              <section class="runtime-group full-width-group">
+                <h3>金币数值修改</h3>
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;">
+                  <span style="font-size: 13px;">目标游戏进程：</span>
+                  <el-select v-model="smartGoldForm.pid" placeholder="选择游戏进程" style="width: 260px;">
+                    <el-option v-for="proc in memoryProcesses" :key="proc.pid" :label="`${proc.name} (PID: ${proc.pid})`" :value="proc.pid" />
+                  </el-select>
+                </div>
+                <div class="smart-gold-box">
+                  <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <span style="font-size: 13px;">当前金币数值：</span>
+                    <el-input v-model="smartGoldForm.currentGold" placeholder="输入游戏内当前数值" style="width: 180px;" />
+                    <span style="font-size: 13px;">改至：</span>
+                    <el-input v-model="smartGoldForm.targetGold" placeholder="目标金币" style="width: 150px;" />
+                    <el-button type="primary" @click="runSmartGoldSearch">修改金币</el-button>
+                    <el-button v-if="smartGoldForm.status !== 'idle'" @click="resetSmartGold">重置</el-button>
+                  </div>
+                  <div v-if="smartGoldForm.status === 'need_refine'" style="margin-top: 12px; padding: 10px; border-radius: 6px; background: rgba(234, 179, 8, 0.08); border: 1px solid rgba(234, 179, 8, 0.2);">
+                    <div style="font-size: 13px; color: var(--el-color-warning); margin-bottom: 8px;">
+                      {{ smartGoldForm.hint }}
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                      <span style="font-size: 13px;">变动后新数值：</span>
+                      <el-input v-model="smartGoldForm.newGold" placeholder="输入变动后的新数值" style="width: 180px;" />
+                      <el-button type="success" @click="runSmartGoldRefine">确认变动并写入</el-button>
+                    </div>
+                  </div>
+                  <div v-else-if="smartGoldForm.hint" style="margin-top: 8px; font-size: 13px; color: var(--el-color-success);">
+                    {{ smartGoldForm.hint }}
+                  </div>
+                </div>
+              </section>
+
+              <section class="runtime-group full-width-group">
+                <h3>补丁与存档</h3>
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                  <el-button type="primary" plain @click="openMtoolPatchDialog">生成即玩汉化补丁</el-button>
+                  <el-button :icon="Camera" @click="openSaveSnapshots">存档快照管理</el-button>
+                </div>
               </section>
             </div>
           </div>
@@ -857,6 +1154,86 @@
         </div>
       </el-dialog>
 
+      <el-drawer v-model="saveSnapshotDrawerVisible" title="存档快照管理" size="500px">
+        <div class="snapshot-drawer-content">
+          <div class="snapshot-create-box">
+            <el-input v-model="newSnapshotLabel" placeholder="新快照备注 (如：改数值前)" clearable />
+            <el-button type="primary" :loading="busy.snapshotCreate" @click="createManualSnapshot">创建快照</el-button>
+          </div>
+          <el-divider style="margin: 16px 0;" />
+          <div class="snapshot-header-row">
+            <strong>历史备份快照 ({{ saveSnapshots.length }})</strong>
+            <el-button size="small" :icon="Refresh" @click="loadSaveSnapshots" :loading="busy.snapshots">刷新</el-button>
+          </div>
+          <div v-if="saveSnapshots.length" class="snapshot-list" style="margin-top: 12px;">
+            <div v-for="snap in saveSnapshots" :key="snap.id" class="snapshot-card">
+              <div class="snapshot-card-info">
+                <strong>{{ snap.label || snap.id }}</strong>
+                <div class="snapshot-card-meta">
+                  <span>{{ snap.created_at }}</span>
+                  <span>文件数: {{ snap.file_count || (snap.files ? snap.files.length : 0) }}</span>
+                </div>
+              </div>
+              <el-popconfirm title="确定回滚到该快照吗？当前游戏目录存档将被覆盖。" confirm-button-text="确定回滚" cancel-button-text="取消" @confirm="restoreSnapshot(snap.id)">
+                <template #reference>
+                  <el-button size="small" type="danger" plain :loading="busy.snapshotRestore">还原回滚</el-button>
+                </template>
+              </el-popconfirm>
+            </div>
+          </div>
+          <el-empty v-else description="暂无快照备份记录" />
+        </div>
+      </el-drawer>
+
+      <el-dialog v-model="mtoolPatchDialogVisible" title="生成即玩汉化补丁" width="580px">
+        <div class="mtool-patch-form">
+          <el-alert
+            v-if="mtoolEnv.installed"
+            type="success"
+            :title="`已检测到组件目录：${mtoolEnv.path}`"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 16px;"
+          />
+          <el-alert
+            v-else
+            type="info"
+            title="未检测到外部组件目录"
+            description="将生成标准翻译文件与启动/还原脚本。可在下方指定组件路径。"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 16px;"
+          />
+          <div class="form-row">
+            <span>组件目录</span>
+            <el-input v-model="mtoolCustomPath" placeholder="如 E:\Loaders" clearable @change="detectMToolEnv" />
+            <el-button size="small" @click="detectMToolEnv">检测</el-button>
+          </div>
+          <div class="form-row">
+            <span>内嵌中文字体</span>
+            <el-input v-model="mtoolFontName" placeholder="默认 Microsoft YaHei" />
+          </div>
+          <div class="form-row">
+            <span>字号相对偏移</span>
+            <el-input-number v-model="mtoolFontSizeOffset" :min="-12" :max="12" />
+          </div>
+          <div v-if="mtoolPatchResult" class="patch-result-box" style="margin-top: 16px; background: var(--bg-tertiary); padding: 14px; border-radius: 8px; border: 1px solid var(--border);">
+            <div style="font-weight: 600; color: var(--success); margin-bottom: 6px;">即玩补丁包生成就绪</div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">游戏引擎：{{ mtoolPatchResult.engine }}</div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">输出目录：{{ mtoolPatchResult.target_dir }}</div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">包含条目：{{ mtoolPatchResult.entry_count }} 条</div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-top: 6px;">生成补丁与启动文件：</div>
+            <ul style="margin: 4px 0 0 18px; font-size: 12px; color: var(--text-muted); max-height: 120px; overflow-y: auto;">
+              <li v-for="f in mtoolPatchResult.generated_files" :key="f">{{ f }}</li>
+            </ul>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="mtoolPatchDialogVisible = false">关闭</el-button>
+          <el-button type="primary" :loading="busy.mtoolPatch" @click="generateMToolPatch">立即生成补丁</el-button>
+        </template>
+      </el-dialog>
+
       <el-tour
         v-model="tutorialOpen"
         v-model:current="tutorialCurrent"
@@ -885,13 +1262,13 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ArrowDown, Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen } from '@element-plus/icons-vue';
+import { ArrowDown, Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen, Camera } from '@element-plus/icons-vue';
 import logoUrl from './assets/app-logo.png';
 
 const navItems = [
   { key: 'library', label: '游戏库', icon: Reading },
   { key: 'translations', label: '翻译', icon: Notebook },
-  { key: 'agent', label: '未知游戏 Agent', icon: MagicStick },
+  // { key: 'agent', label: '未知游戏 Agent', icon: MagicStick },
   { key: 'memory', label: 'CE \u4fee\u6539\u5668', icon: Coin },
   { key: 'data', label: '数据修改', icon: EditPen },
   { key: 'saves', label: '存档', icon: Coin },
@@ -925,7 +1302,7 @@ const entries = ref([]);
 const librarySearch = ref('');
 const selectedPath = ref('');
 const loadedProjectPath = ref('');
-const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, memory: false, models: false, aiTest: false, agent: false, update: false });
+const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, memory: false, models: false, aiTest: false, agent: false, update: false, snapshots: false, snapshotCreate: false, snapshotRestore: false, mtoolPatch: false });
 const viewLoading = ref(false);
 const gameStatus = ref({ running: false, activePath: '', games: [] });
 let gameStatusTimer = null;
@@ -967,6 +1344,16 @@ const saveSummary = ref(null);
 const savePreview = ref('');
 const saveDataDialogVisible = ref(false);
 const saveForm = reactive({ gold: 0, itemId: 1, itemCount: 1, actorId: 1, actorLevel: 1, switchId: 1, switchValue: true, variableId: 1, variableValue: '' });
+const saveSnapshotDrawerVisible = ref(false);
+const saveSnapshots = ref([]);
+const newSnapshotLabel = ref('');
+
+const mtoolPatchDialogVisible = ref(false);
+const mtoolCustomPath = ref('');
+const mtoolFontName = ref('Microsoft YaHei');
+const mtoolFontSizeOffset = ref(-3);
+const mtoolEnv = ref({ installed: false, path: '', available_loaders: [] });
+const mtoolPatchResult = ref(null);
 
 const maps = ref([]);
 const selectedMapId = ref(0);
@@ -987,8 +1374,17 @@ const memoryForm = reactive({ pid: null, valueType: 'int32', initialValue: '', c
 
 const runtimeState = ref(null);
 const runtimeConnected = ref(false);
-const runtimeForm = reactive({ gold: 0, actorId: null, hp: 0, mp: 0, tp: 0, lockHp: false, lockMp: false, lockTp: false, through: false, clickTeleport: false, autoSaveMinutes: 0, x: 0, y: 0, gameSpeed: 1, battleSpeed: 1, moveSpeedIncrease: 0, autoBattle: false, godMode: false });
+const runtimeForm = reactive({ gold: 0, actorId: null, hp: 0, mp: 0, tp: 0, lockHp: false, lockMp: false, lockTp: false, through: false, clickTeleport: false, autoSaveMinutes: 0, x: 0, y: 0, gameSpeed: 1, battleSpeed: 1, moveSpeedIncrease: 0, autoBattle: false, godMode: false, noEncounter: false, oneHitKill: false, unlockCg: false, fontSizeOffset: 0, fontFamily: '' });
+const runtimeSearch = ref('');
+const runtimeHideEmpty = ref(false);
 let runtimePollTimer = null;
+
+const wolfState = ref({ connected: false, engine: 'WOLF', version: 'v2', gold: 0, speed: 1.0, noclip: false, groupCount: 0, totalVars: 0 });
+const wolfGroups = ref([]);
+const wolfSelectedGroupId = ref(0);
+const wolfForm = reactive({ gold: 99999999, speed: 1.0, noclip: false });
+const smartGoldForm = reactive({ pid: null, currentGold: '', newGold: '', targetGold: 99999999, status: 'idle', sessionId: '', hint: '', count: 0 });
+
 
 const liveStatus = ref({ running: false, connected: false, queue_count: 0, worker: { running: false, state: 'stopped', translated: 0, failures: 0, lastError: '' }, recentEvents: [] });
 const liveSource = ref('');
@@ -1139,19 +1535,21 @@ const pageLoading = computed(() => {
   })[currentView.value] || false;
 });
 const visibleNavItems = computed(() => navItems.filter((item) => {
+  if (item.key === 'agent') return false;
   if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(item.key)) return false;
   if (isRpgMakerSelected.value && item.key === 'live') return false;
-  if (!isUnknownSelected.value && item.key === 'agent') return false;
-  if (isUnknownSelected.value && ['data', 'saves', 'maps', 'runtime', 'live'].includes(item.key)) return false;
+  if (isUnknownSelected.value && ['data', 'maps', 'live'].includes(item.key)) return false;
   return true;
-}).map((item) => {
-  if (item.key !== 'agent') return item;
-  if (isWolfSelected.value) return { ...item, label: 'Wolf RPG 翻译' };
-  if (isUnitySelected.value) return { ...item, label: 'Unity 翻译' };
-  if (isUnrealSelected.value) return { ...item, label: 'UE4/UE5 翻译' };
-  if (isGalgameSelected.value) return { ...item, label: 'Galgame 翻译' };
-  return item;
 }));
+const currentWolfGroupVariables = computed(() => {
+  const grp = wolfGroups.value.find((g) => g.groupId === wolfSelectedGroupId.value);
+  if (!grp || !grp.variables) return [];
+  return grp.variables.map((v) => ({
+    id: v.id,
+    value: v.value,
+    draftValue: v.draftValue !== undefined ? v.draftValue : v.value,
+  }));
+});
 const rpgMakerMissingTranslations = computed(() => translations.value.filter((item) => needsTranslationRepair(item)).length);
 const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([name, config]) => ({
   name,
@@ -1163,7 +1561,7 @@ const viewMeta = computed(() => {
   if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity 翻译工作台', subtitle: '自动识别 Unity Localization、Polyglot CSV/TSV 与可编辑 JSON 本地化表。' };
   if (currentView.value === 'agent' && isUnrealSelected.value) return { eyebrow: 'Unreal', title: 'UE4/UE5 翻译工作台', subtitle: '读取 UE4/UE5 Localization Archive 的 Source/Translation 字段，保留可写回的定位信息。' };
   if (currentView.value === 'agent' && isGalgameSelected.value) return { eyebrow: 'Galgame', title: 'Galgame 翻译工作台', subtitle: '支持 Kirikiri/KAG、NScripter/ONScripter 与 GalTransl 兼容 JSON 的剧本翻译流程。' };
-  if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG 翻译工作台', subtitle: '优先解析 MTool 导出翻译包和可识别的 MPS 事件文本，所有写回都在隔离副本中进行。' };
+  if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG 翻译工作台', subtitle: '解析翻译包和 MPS 事件文本，所有写回都在隔离副本中进行。' };
   return viewMetaMap[currentView.value] || viewMetaMap.library;
 });
 const filteredLibrary = computed(() => {
@@ -1221,6 +1619,20 @@ const filteredData = computed(() => {
 });
 const selectedData = computed(() => dataRecords.value.find((item) => item.record_id === selectedDataId.value) || null);
 const runtimeDataRows = computed(() => runtimeState.value?.[dataSection.value] || []);
+const filteredRuntimeDataRows = computed(() => {
+  const rows = runtimeDataRows.value || [];
+  const q = runtimeSearch.value.trim().toLowerCase();
+  const hideEmpty = runtimeHideEmpty.value;
+  return rows.filter((item) => {
+    if (hideEmpty && ['switches', 'variables'].includes(dataSection.value)) {
+      if (!item.name || !String(item.name).trim()) return false;
+    }
+    if (!q) return true;
+    const matchId = String(item.id ?? '').toLowerCase().includes(q);
+    const matchName = String(item.name ?? '').toLowerCase().includes(q);
+    return matchId || matchName;
+  });
+});
 const selectedRuntimeData = computed(() => runtimeDataRows.value.find((item) => Number(item.id) === Number(selectedRuntimeDataId.value)) || null);
 const runtimeDataSectionLabel = computed(() => ({ items: '物品', armors: '装备', weapons: '武器', actors: '角色', switches: '开关', variables: '变量' })[dataSection.value] || '数据');
 const mapCanvasWidth = computed(() => Math.max(1, Number(mapDetail.value?.record?.width || 1)) * mapTileSize);
@@ -1329,7 +1741,15 @@ function clearProjectScopedState() {
 function onLibraryRowClick(row) { if (gameRunning.value && row.path !== gameStatus.value.activePath) return toast('游戏运行中，暂时不能切换其他游戏', 'warning'); selectedPath.value = row.path; }
 function onLibraryRowDoubleClick(row) { onLibraryRowClick(row); if (row.path === selectedPath.value) launchSelected(); }
 function libraryRowClassName({ row }) { return [row.path === selectedPath.value ? 'selected-row' : '', gameRunning.value && row.path !== gameStatus.value.activePath ? 'locked-row' : ''].filter(Boolean).join(' '); }
-function engineTagType(engine) { if (String(engine || '').includes('RPG Maker')) return 'success'; if (String(engine || '').includes('Ren')) return 'warning'; return 'info'; }
+function engineTagType(engine) {
+  const eng = String(engine || '').toLowerCase();
+  if (eng.includes('rpg maker') || eng.includes('rgss') || eng.includes('srpg')) return 'success';
+  if (eng.includes('bakin')) return 'primary';
+  if (eng.includes('wolf') || eng.includes('tyrano') || eng.includes('ren') || eng.includes('galgame') || eng.includes('visual novel') || eng.includes('kirikiri') || eng.includes('krkr')) return 'warning';
+  if (eng.includes('unity') || eng.includes('unreal') || eng.includes('ue4') || eng.includes('ue5') || eng.includes('pixel game') || eng.includes('agtk')) return 'primary';
+  if (!eng || eng.includes('未知') || eng.includes('unknown')) return 'info';
+  return 'primary';
+}
 function isMissingGameError(error) {
   const message = String(error?.message || error || '');
   return /找不到游戏启动文件|游戏库中找不到该游戏|未找到游戏启动文件|launcher|executable|not found/i.test(message);
@@ -1547,6 +1967,45 @@ async function handleTranslationCommand(command) {
   if (command === 'replace-translated') return replaceTranslationMode('translated');
   if (command === 'replace-original') return replaceTranslationMode('original');
   if (command === 'apply') return applyTranslations();
+  if (command === 'mtool-patch') return openMToolPatchDialog();
+}
+async function openMToolPatchDialog() {
+  if (!requireGameSelected()) return;
+  mtoolPatchResult.value = null;
+  await detectMToolEnv();
+  mtoolPatchDialogVisible.value = true;
+}
+async function detectMToolEnv() {
+  try {
+    const query = mtoolCustomPath.value ? `?path=${encodeURIComponent(mtoolCustomPath.value)}` : '';
+    mtoolEnv.value = await api(`/mtool/detect-env${query}`);
+    if (mtoolEnv.value.path && !mtoolCustomPath.value) {
+      mtoolCustomPath.value = mtoolEnv.value.path;
+    }
+  } catch (err) {
+    mtoolEnv.value = { installed: false, path: '', available_loaders: [] };
+  }
+}
+async function generateMToolPatch() {
+  if (!requireGameSelected()) return;
+  busy.mtoolPatch = true;
+  try {
+    const res = await api('/cold/generate-mtool-patch', {
+      body: {
+        mtoolPath: mtoolCustomPath.value,
+        fontName: mtoolFontName.value,
+        fontSizeOffset: mtoolFontSizeOffset.value,
+      }
+    });
+    if (res.ok) {
+      mtoolPatchResult.value = res;
+      toast(`即玩补丁包已成功生成（导出 ${res.entry_count} 条翻译文本）`);
+    }
+  } catch (err) {
+    toast('生成补丁失败：' + (err.message || err), 'error');
+  } finally {
+    busy.mtoolPatch = false;
+  }
 }
 function openTranslationDetail(row) { selectedTranslationId.value = row.entry_id; syncTranslationDraft(); translationDialogVisible.value = true; }
 function syncTranslationDraft() { const item = selectedTranslation.value; translationDraft.source = item?.source || ''; translationDraft.target = item?.target || ''; translationMeta.value = item ? (item.file || '') + ' · ' + (item.context || item.category || '') + ' · ' + item.entry_id : ''; }
@@ -1946,6 +2405,42 @@ async function saveRuntimeDataRow() {
   else if (dataSection.value === 'variables') payload = { variables: { [row.id]: parseRuntimeValue(runtimeDataForm.variableValue) } };
   if (await setRuntimePayload(payload)) { selectRuntimeDataRow((runtimeState.value?.[dataSection.value] || []).find((item) => Number(item.id) === Number(row.id)) || row); toast(`${runtimeDataSectionLabel.value}已更新`); }
 }
+function setRuntimeCountPreset(count) {
+  runtimeDataForm.count = count;
+}
+function setRuntimeActorLevelPreset(level) {
+  runtimeDataForm.level = level;
+}
+function setRuntimeVariablePreset(val) {
+  runtimeDataForm.variableValue = String(val);
+}
+async function quickAllItemsCount(section, count = 99) {
+  const key = section === 'weapons' ? 'all_weapons' : (section === 'armors' ? 'all_armors' : 'all_items');
+  const countKey = section === 'weapons' ? 'all_weapons_count' : (section === 'armors' ? 'all_armors_count' : 'all_items_count');
+  const ok = await setRuntimePayload({ [key]: true, [countKey]: Number(count || 99) });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast(`已将所有${runtimeDataSectionLabel.value}设为 ${count}`);
+  }
+}
+async function clearCategoryItems(section) {
+  const key = section === 'weapons' ? 'clear_weapons' : (section === 'armors' ? 'clear_armors' : 'clear_items');
+  const ok = await setRuntimePayload({ [key]: true });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast(`已清空全部${runtimeDataSectionLabel.value}`);
+  }
+}
+async function batchToggleFilteredSwitches(value) {
+  const rows = filteredRuntimeDataRows.value || [];
+  if (!rows.length) return toast('当前没有筛选出任何开关', 'warning');
+  const ids = rows.map((r) => Number(r.id)).filter(Boolean);
+  const ok = await setRuntimePayload({ batch_switches: { ids, value: Boolean(value) } });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast(`已将 ${ids.length} 个开关批量设为 ${value ? 'ON' : 'OFF'}`);
+  }
+}
 async function loadSaveSlots() {
   if (!(await ensureProjectLoaded())) return;
   busy.saves = true;
@@ -1957,9 +2452,60 @@ async function loadSaveSlots() {
   } finally { busy.saves = false; }
 }
 async function loadSave(path) { selectedSavePath.value = path; const data = await api('/saves/load', { body: { path: path } }); saveSummary.value = data.summary || null; savePreview.value = JSON.stringify(data.payload || {}, null, 2); if (data.summary?.gold !== undefined) saveForm.gold = data.summary.gold; }
-function saveFileName(path) { return String(path || '').split(/[\\/]/).pop() || '存档'; }
-async function writeSave() { if (!requireGameSelected() || !selectedSavePath.value) return; await api('/saves/write', { body: { path: selectedSavePath.value } }); toast('存档已写回'); }
-async function setSaveGold() { const data = await api('/saves/mutate', { body: { op: 'gold', value: saveForm.gold } }); saveSummary.value = data.summary || saveSummary.value; savePreview.value = JSON.stringify(data.payload || {}, null, 2); }
+async function writeSave() {
+  if (!requireGameSelected() || !selectedSavePath.value) return;
+  await api('/saves/write', { body: { path: selectedSavePath.value } });
+  toast('存档已写回（已自动生成写前安全快照）');
+  await loadSaveSnapshots();
+}
+async function loadSaveSnapshots() {
+  if (!selectedEntry.value) return;
+  busy.snapshots = true;
+  try {
+    const res = await api('/saves/snapshot/list');
+    saveSnapshots.value = res.snapshots || [];
+  } catch (err) {
+    saveSnapshots.value = [];
+  } finally {
+    busy.snapshots = false;
+  }
+}
+async function openSaveSnapshots() {
+  if (!requireGameSelected()) return;
+  await loadSaveSnapshots();
+  saveSnapshotDrawerVisible.value = true;
+}
+async function createManualSnapshot() {
+  if (!requireGameSelected()) return;
+  busy.snapshotCreate = true;
+  try {
+    const res = await api('/saves/snapshot/create', { body: { label: newSnapshotLabel.value } });
+    if (res.ok) {
+      toast('存档快照备份成功');
+      newSnapshotLabel.value = '';
+      await loadSaveSnapshots();
+    }
+  } catch (err) {
+    toast('备份快照失败：' + (err.message || err), 'error');
+  } finally {
+    busy.snapshotCreate = false;
+  }
+}
+async function restoreSnapshot(snapshotId) {
+  if (!requireGameSelected()) return;
+  busy.snapshotRestore = true;
+  try {
+    const res = await api('/saves/snapshot/restore', { body: { snapshotId } });
+    if (res.ok) {
+      toast(`已成功回滚快照（恢复了 ${res.restored_count} 个存档文件）`);
+      await loadSaveSlots();
+    }
+  } catch (err) {
+    toast('回滚快照失败：' + (err.message || err), 'error');
+  } finally {
+    busy.snapshotRestore = false;
+  }
+}
 async function setSaveItem() { const data = await api('/saves/mutate', { body: { op: 'item', kind: 'items', itemId: saveForm.itemId, value: saveForm.itemCount } }); saveSummary.value = data.summary || saveSummary.value; savePreview.value = JSON.stringify(data.payload || {}, null, 2); }
 async function setActorLevel() { const data = await api('/saves/mutate', { body: { op: 'actorLevel', actorId: saveForm.actorId, value: saveForm.actorLevel } }); saveSummary.value = data.summary || saveSummary.value; savePreview.value = JSON.stringify(data.payload || {}, null, 2); }
 async function setSwitch() { const data = await api('/saves/mutate', { body: { op: 'switch', switchId: saveForm.switchId, value: saveForm.switchValue } }); saveSummary.value = data.summary || saveSummary.value; savePreview.value = JSON.stringify(data.payload || {}, null, 2); }
@@ -2103,8 +2649,167 @@ async function writeMemoryValue() {
   }
 }
 
+async function loadWolfStatus(silent = false) {
+  try {
+    const data = await api('/wolf/status');
+    if (data.ok) {
+      wolfState.value = data;
+      if (data.gold) wolfForm.gold = data.gold;
+      if (data.speed) wolfForm.speed = data.speed;
+      wolfForm.noclip = !!data.noclip;
+    }
+  } catch (error) {
+    if (!silent) toast(error.message || '获取 Wolf 状态失败', 'warning');
+  }
+}
+
+async function loadWolfVars(silent = false) {
+  try {
+    const data = await api('/wolf/vars');
+    if (data.ok && data.groups) {
+      wolfGroups.value = data.groups;
+      if (wolfGroups.value.length > 0 && !wolfGroups.value.some((g) => g.groupId === wolfSelectedGroupId.value)) {
+        wolfSelectedGroupId.value = wolfGroups.value[0].groupId;
+      }
+    }
+  } catch (error) {
+    if (!silent) toast(error.message || '获取 Wolf 变量失败', 'warning');
+  }
+}
+
+async function setWolfGold(amount) {
+  const target = amount !== undefined ? Number(amount) : Number(wolfForm.gold || 0);
+  try {
+    const data = await api('/wolf/gold', { body: { gold: target } });
+    if (data.ok) {
+      toast(`Wolf RPG 金币已成功设置为 ${data.gold}`);
+      wolfForm.gold = data.gold;
+      await loadWolfStatus(true);
+    }
+  } catch (error) {
+    toast('修改金币失败：' + error.message, 'error');
+  }
+}
+
+async function quickAddWolfGold(delta) {
+  const cur = Number(wolfState.value.gold || wolfForm.gold || 0);
+  await setWolfGold(cur + delta);
+}
+
+async function setWolfSpeed(speed) {
+  try {
+    const data = await api('/wolf/speed', { body: { speed: Number(speed || 1) } });
+    if (data.ok) {
+      toast(`游戏倍速已设置为 ${data.speed}x`);
+      wolfState.value.speed = data.speed;
+      wolfForm.speed = data.speed;
+    }
+  } catch (error) {
+    toast('设置游戏倍速失败：' + error.message, 'error');
+  }
+}
+
+async function toggleWolfNoclip() {
+  try {
+    const target = !wolfState.value.noclip;
+    const data = await api('/wolf/noclip', { body: { enabled: target } });
+    if (data.ok) {
+      toast(data.noclip ? '已开启穿墙模式' : '已关闭穿墙模式');
+      wolfState.value.noclip = data.noclip;
+    }
+  } catch (error) {
+    toast('切换穿墙失败：' + error.message, 'error');
+  }
+}
+
+async function saveWolfVariable(group, varId, val) {
+  try {
+    const data = await api('/wolf/set_var', { body: { group, varId, value: Number(val) } });
+    if (data.ok) {
+      toast(`变量 [组${group} ID#${varId}] 已成功修改为 ${data.value}`);
+      await loadWolfVars(true);
+    }
+  } catch (error) {
+    toast('修改变量失败：' + error.message, 'error');
+  }
+}
+
+async function runSmartGoldSearch() {
+  if (smartGoldForm.currentGold === '' || smartGoldForm.currentGold === null) {
+    return toast('请输入当前游戏内的金币数值', 'warning');
+  }
+  try {
+    const data = await api('/runtime/smart_gold', {
+      body: {
+        pid: smartGoldForm.pid,
+        currentGold: Number(smartGoldForm.currentGold),
+        targetGold: Number(smartGoldForm.targetGold || 99999999),
+      },
+    });
+    if (data.ok) {
+      if (data.applied) {
+        toast(data.message || '金币修改成功！', 'success');
+        smartGoldForm.status = 'success';
+        smartGoldForm.hint = data.message;
+      } else {
+        smartGoldForm.status = 'need_refine';
+        smartGoldForm.sessionId = data.sessionId;
+        smartGoldForm.count = data.count;
+        smartGoldForm.hint = data.message;
+        toast('已初步定位候选内存，请在游戏内变动金币后继续', 'info');
+      }
+    }
+  } catch (error) {
+    toast('智能搜索失败：' + error.message, 'error');
+  }
+}
+
+async function runSmartGoldRefine() {
+  if (smartGoldForm.newGold === '' || smartGoldForm.newGold === null) {
+    return toast('请输入变动后的新金币数值', 'warning');
+  }
+  try {
+    const data = await api('/runtime/smart_gold_refine', {
+      body: {
+        sessionId: smartGoldForm.sessionId,
+        newGold: Number(smartGoldForm.newGold),
+        targetGold: Number(smartGoldForm.targetGold || 99999999),
+      },
+    });
+    if (data.ok && data.applied) {
+      toast(data.message || '精确定位并修改成功！', 'success');
+      smartGoldForm.status = 'success';
+      smartGoldForm.hint = data.message;
+    }
+  } catch (error) {
+    toast('二次定位失败：' + error.message, 'error');
+  }
+}
+
+function resetSmartGold() {
+  smartGoldForm.status = 'idle';
+  smartGoldForm.sessionId = '';
+  smartGoldForm.hint = '';
+  smartGoldForm.count = 0;
+  smartGoldForm.currentGold = '';
+  smartGoldForm.newGold = '';
+}
+
 async function loadRuntimeState(silent = false) {
   if (!(await ensureProjectLoaded())) return;
+  if (isWolfSelected.value) {
+    await loadWolfStatus(silent);
+    if (wolfState.value.connected) {
+      await loadWolfVars(true);
+    }
+    return;
+  }
+  if (!isRpgMakerSelected.value) {
+    if (currentView.value === 'runtime') {
+      await loadMemoryProcesses();
+    }
+    return;
+  }
   try {
     const state = await api('/runtime/state');
     if (state.connected === false) { runtimeConnected.value = false; if (!silent) toast(state.error || '游戏尚未连接', 'warning'); return; }
@@ -2118,20 +2823,155 @@ async function loadRuntimeState(silent = false) {
 }
 function syncRuntimeForm() {
   const state = runtimeState.value; if (!state) return;
-  runtimeForm.gold = state.gold ?? 0; runtimeForm.through = Boolean(state.map?.through); runtimeForm.clickTeleport = Boolean(state.options?.clickTeleport); runtimeForm.autoSaveMinutes = Number(state.options?.autoSaveInterval || 0) / 60; runtimeForm.x = state.map?.x ?? 0; runtimeForm.y = state.map?.y ?? 0; runtimeForm.gameSpeed = state.options?.gameSpeed ?? 1; runtimeForm.battleSpeed = state.options?.battleSpeed ?? 1; runtimeForm.moveSpeedIncrease = state.options?.moveSpeedIncrease ?? 0; runtimeForm.autoBattle = Boolean(state.options?.autoBattle); runtimeForm.godMode = Boolean(state.options?.godMode);
+  runtimeForm.gold = state.gold ?? 0;
+  runtimeForm.through = Boolean(state.options?.through || state.map?.through);
+  runtimeForm.clickTeleport = Boolean(state.options?.clickTeleport);
+  runtimeForm.autoSaveMinutes = Number(state.options?.autoSaveInterval || 0) / 60;
+  runtimeForm.x = state.map?.x ?? 0;
+  runtimeForm.y = state.map?.y ?? 0;
+  runtimeForm.gameSpeed = state.options?.gameSpeed ?? 1;
+  runtimeForm.battleSpeed = state.options?.battleSpeed ?? 1;
+  runtimeForm.moveSpeedIncrease = state.options?.moveSpeedIncrease ?? 0;
+  runtimeForm.autoBattle = Boolean(state.options?.autoBattle);
+  runtimeForm.godMode = Boolean(state.options?.godMode);
+  runtimeForm.noEncounter = Boolean(state.options?.noEncounter);
+  runtimeForm.oneHitKill = Boolean(state.options?.oneHitKill);
+  runtimeForm.unlockCg = Boolean(state.options?.unlockCg);
+  runtimeForm.fontSizeOffset = Number(state.options?.fontSizeOffset || 0);
+  runtimeForm.fontFamily = String(state.options?.fontFamily || '');
   if (!runtimeForm.actorId && state.actors?.length) runtimeForm.actorId = state.actors[0].id;
   syncRuntimeActorForm();
 }
 function syncRuntimeActorForm() { const actor = (runtimeState.value?.actors || []).find((item) => Number(item.id) === Number(runtimeForm.actorId)); if (!actor) return; runtimeForm.hp = actor.hp ?? 0; runtimeForm.mp = actor.mp ?? 0; runtimeForm.tp = actor.tp ?? 0; const locks = runtimeState.value?.locks?.[String(actor.id)] || {}; runtimeForm.lockHp = locks.hp !== undefined; runtimeForm.lockMp = locks.mp !== undefined; runtimeForm.lockTp = locks.tp !== undefined; }
 async function setRuntimePayload(payload) { try { runtimeState.value = await api('/runtime/set', { body: payload }); runtimeConnected.value = true; if (currentView.value === 'maps') drawMap(); return true; } catch (error) { runtimeConnected.value = false; toast(error.message, 'warning'); return false; } }
 async function setRuntimeGold() { await setRuntimePayload({ gold: Number(runtimeForm.gold || 0) }); }
-async function setRuntimeThrough() { await setRuntimePayload({ player: { through: runtimeForm.through } }); }
+async function setRuntimeThrough() { await setRuntimePayload({ player: { through: runtimeForm.through }, options: { through: runtimeForm.through } }); }
 async function setRuntimeOptions() { await setRuntimePayload({ options: { clickTeleport: runtimeForm.clickTeleport, autoSaveInterval: Math.max(0, Number(runtimeForm.autoSaveMinutes || 0)) * 60 } }); }
 async function teleportToTile(x, y) { const ok = await setRuntimePayload({ player: { teleport: { x: Number(x), y: Number(y) } } }); if (ok) toast(`已传送到 (${Number(x)}, ${Number(y)})`); }
 async function setRuntimeActor() { if (!runtimeForm.actorId) return; await setRuntimePayload({ actors: { [runtimeForm.actorId]: { hp: Number(runtimeForm.hp || 0), mp: Number(runtimeForm.mp || 0), tp: Number(runtimeForm.tp || 0) } } }); }
 async function setRuntimeLocks() { if (!runtimeForm.actorId) return; const locks = {}; if (runtimeForm.lockHp) locks.hp = Number(runtimeForm.hp || 0); if (runtimeForm.lockMp) locks.mp = Number(runtimeForm.mp || 0); if (runtimeForm.lockTp) locks.tp = Number(runtimeForm.tp || 0); await setRuntimePayload({ locks: { [runtimeForm.actorId]: locks } }); }
 async function setBattleResult(result) { if (await setRuntimePayload({ battle: result })) toast(({ win: '已触发战斗胜利', lose: '已触发战斗失败', escape: '已触发战斗逃跑' })[result]); }
-async function setRuntimeAdvancedOptions() { await setRuntimePayload({ options: { gameSpeed: Number(runtimeForm.gameSpeed || 1), battleSpeed: Number(runtimeForm.battleSpeed || 1), moveSpeedIncrease: Number(runtimeForm.moveSpeedIncrease || 0), autoBattle: runtimeForm.autoBattle, godMode: runtimeForm.godMode } }); }
+async function setRuntimeAdvancedOptions() {
+  await setRuntimePayload({
+    options: {
+      gameSpeed: Number(runtimeForm.gameSpeed || 1),
+      battleSpeed: Number(runtimeForm.battleSpeed || 1),
+      moveSpeedIncrease: Number(runtimeForm.moveSpeedIncrease || 0),
+      autoBattle: runtimeForm.autoBattle,
+      godMode: runtimeForm.godMode,
+      noEncounter: runtimeForm.noEncounter,
+      oneHitKill: runtimeForm.oneHitKill,
+      through: runtimeForm.through,
+      unlockCg: runtimeForm.unlockCg
+    }
+  });
+}
+async function toggleQuickThrough(val) {
+  runtimeForm.through = val;
+  await setRuntimeThrough();
+}
+async function toggleQuickGodMode(val) {
+  runtimeForm.godMode = val;
+  await setRuntimeAdvancedOptions();
+}
+async function toggleQuickNoEncounter(val) {
+  runtimeForm.noEncounter = val;
+  await setRuntimeAdvancedOptions();
+}
+async function toggleQuickOneHitKill(val) {
+  runtimeForm.oneHitKill = val;
+  await setRuntimeAdvancedOptions();
+}
+async function setRuntimeFontSize() {
+  await setRuntimePayload({
+    options: { fontSizeOffset: Number(runtimeForm.fontSizeOffset || 0) }
+  });
+}
+async function setRuntimeFontFamily() {
+  await setRuntimePayload({
+    options: { fontFamily: String(runtimeForm.fontFamily || '').trim() }
+  });
+  toast('已应用自定义字体');
+}
+async function clearRuntimePictures() {
+  if (await setRuntimePayload({ clear_pictures: true })) {
+    toast('已清除全部卡死图片 ($gameScreen.clearPictures)');
+  }
+}
+async function clearRuntimeEffects() {
+  if (await setRuntimePayload({ clear_screen_effects: true })) {
+    toast('已重置屏幕天气、色调与闪烁滤镜');
+  }
+}
+async function eraseRuntimeCurrentEvent() {
+  if (await setRuntimePayload({ erase_current_event: true })) {
+    toast('已消除当前卡死阻塞事件');
+  }
+}
+async function quickHealAll() {
+  const ok = await setRuntimePayload({ heal_all: true });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast('全员状态已完全恢复（HP/MP回满，清除异常）');
+  }
+}
+async function quickMaxGold() {
+  const ok = await setRuntimePayload({ gold: 99999999 });
+  if (ok) {
+    runtimeForm.gold = 99999999;
+    await loadRuntimeState(true);
+    toast('金币已充能至 99,999,999');
+  }
+}
+async function addRuntimeGold(delta) {
+  const current = Number(runtimeState.value?.gold ?? runtimeForm.gold ?? 0);
+  const target = Math.max(0, Math.min(99999999, current + Number(delta || 0)));
+  const ok = await setRuntimePayload({ gold: target });
+  if (ok) {
+    runtimeForm.gold = target;
+    await loadRuntimeState(true);
+    toast(`金币已变更为 ${target.toLocaleString()}`);
+  }
+}
+async function setRuntimeGoldMax() {
+  await quickMaxGold();
+}
+async function quickAllItems() {
+  const ok = await setRuntimePayload({ all_items: true, all_items_count: 99 });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast('已将游戏内所有道具物品设为 99 个');
+  }
+}
+async function quickAllWeapons() {
+  const ok = await setRuntimePayload({ all_weapons: true, all_weapons_count: 99 });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast('已将游戏内所有武器装备设为 99 个');
+  }
+}
+async function quickAllArmors() {
+  const ok = await setRuntimePayload({ all_armors: true, all_armors_count: 99 });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast('已将游戏内所有防具装备设为 99 个');
+  }
+}
+async function quickMaxAllLevel() {
+  const ok = await setRuntimePayload({ all_actors_level: 99 });
+  if (ok) {
+    await loadRuntimeState(true);
+    toast('队伍全员等级已提升至 99 级');
+  }
+}
+async function quickUnlockCg() {
+  const ok = await setRuntimePayload({ options: { unlockCg: true } });
+  if (ok) {
+    runtimeForm.unlockCg = true;
+    await loadRuntimeState(true);
+    toast('全 CG 画廊与全回想开关已解锁');
+  }
+}
 async function loadLiveStatus(silent = false) { if (!(await ensureProjectLoaded())) return; try { liveStatus.value = await api('/live/status'); } catch (error) { if (!silent) toast(error.message, 'warning'); } }
 async function startLive() {
   if (!(await ensureProjectLoaded())) return false;
@@ -2452,7 +3292,7 @@ watch(selectedPath, async () => {
   loadedViewKeys.clear();
   clearProjectScopedState();
   try {
-    if ((isRenPySelected.value || isUnknownSelected.value) && ['saves', 'maps', 'runtime', 'live'].includes(currentView.value)) currentView.value = isUnknownSelected.value ? 'agent' : 'translations';
+    if ((isRenPySelected.value || isUnknownSelected.value) && ['saves', 'maps', 'runtime', 'live'].includes(currentView.value)) currentView.value = 'translations';
     if (isRpgMakerSelected.value && currentView.value === 'live') currentView.value = 'translations';
     if (currentView.value !== 'library' && selectedEntry.value) await loadViewData(currentView.value);
   } finally {

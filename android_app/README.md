@@ -1,176 +1,99 @@
-# RPGRenPyLocalizer — Android App
+# RPGRenPyLocalizer — Android App (Material 3 Compose + Winlator)
 
-Android 端 RPG Maker MV/MZ / Ren'Py 翻译与辅助工具。基于 WebView 壳 + UniApp H5 前端。
+基于 **Google 官方 Material3 Compose** 与 **Accompanist** 组件库全面重置的现代化原生 Android 应用。
+内核采用 **Winlator 64 位 Wine 兼容层**，深度支持与 PC 端 `RPGRenPyLocalizer` 翻译文件及 API 双向联动。
 
-## 项目结构
+---
+
+## 核心特性
+
+### 1. 现代化原生 UI (Jetpack Compose)
+- **Google 官方 Material3 Compose**：
+  - 遵循 **Compose Material 3 Catalog** 现代设计规范，全面支持 Material You 动态色彩（Android 12+ 自适应系统壁纸色调）。
+  - 精准现代排版、全套圆角与柔和过渡动画，适配完整深色/浅色模式。
+  - 界面风格极致精简专业，剔除冗余说明文本、粗糙边框与杂乱 emoji，打造现代化游戏控制中心。
+- **Accompanist 配套组件**：
+  - `accompanist-systemuicontroller`: 全面屏边到边沉浸式透明状态栏与导航栏管理。
+  - `accompanist-permissions`: Android 13/14+ 存储与媒体权限优雅请求。
+  - `accompanist-swiperefresh`: 现代下拉刷新手势交互。
+
+### 2. Winlator 64 位运行内核深度集成
+- **ARM64-v8a 高性能架构**：集成 Winlator 原生 prebuilt libraries（`libwinlator.so`、`libvirglrenderer.so`、`libhook_impl.so` 等）。
+- **容器与驱动精细化调节**：
+  - **Box64 模式**：性能模式 (Performance)、兼容模式 (Compatibility)、安全模式 (Safe)。
+  - **图形渲染驱动**：Turnip + DXVK 2.2、Turnip + Zink、VirGL。
+  - **分辨率与控制**：支持 1280x720、960x540、1920x1080 预设，内置全套虚拟触摸手柄覆盖层。
+- **即玩与盘符挂载**：
+  - 采用直接挂载机制，无需跨磁盘复制整个数十 GB 游戏目录。
+  - 启动前自动检查并部署 `翻译文件.json`、WolfHook、BakinLauncher 等运行补丁，拉起 `WineDisplayActivity` 进行硬件加速渲染。
+
+### 3. PC 端翻译文件深度联动
+- **标准翻译字典格式兼容**：
+  - 直接原生读写游戏目录下的 `翻译文件.json`（标准 UTF-8/UTF-8-SIG JSON 字典格式 `{ "原文": "译文" }`）。
+- **智能变量控制符防护**：
+  - 实时校验 `\V[n]`、`\C[n]`、`[[VAR_...]]`、`{0}`、`%s` 等占位符，防止翻译修改时误删变量导致游戏闪退，并提供“一键自动补齐”。
+- **专属 PC 联动中心 (PC Link)**：
+  - **连接测试**：自动探测或指定局域网 PC IP 与端口（默认 `35420`）。
+  - **一键拉取 (Pull from PC)**：将 PC 端当前打开的游戏翻译字典一键无线拉取至手机，即时保存为本地 `翻译文件.json`。
+  - **推送到 PC (Push to PC)**：将手机端编辑好的翻译条目无线回传给 PC 端同步保存。
+  - **无线生成即玩补丁**：远程请求 PC 端为当前游戏引擎构建注入补丁包。
+
+---
+
+## 项目架构
 
 ```
-android_app/
-├── backend/                          # Python Flask 服务 (桌面端复用)
-│   └── server.py
-├── mobile_ui/                        # UniApp H5 编译产物 (自动生成)
-│   ├── index.html
-│   └── assets/                       # JS/CSS 打包文件
-├── shell/                            # Android 原生壳 (Kotlin)
-│   ├── app/
-│   │   ├── build.gradle
-│   │   └── src/main/
-│   │       ├── AndroidManifest.xml
-│   │       ├── assets/
-│   │       │   ├── mobile_ui/        # UniApp 编译产物 (自动复制)
-│   │       │   └── scripts/          # 注入脚本 (rpgmv-cheat.js 等)
-│   │       ├── java/com/rpgrtl/shell/
-│   │       │   ├── MainActivity.kt              # 主 Activity + WebView 管理
-│   │       │   ├── AndroidRpgMakerService.kt    # RPG Maker 数据解析
-│   │       │   ├── AndroidAiTranslationService.kt # AI 翻译
-│   │       │   ├── ShellBridge.kt               # JS→Kotlin 桥接
-│   │       │   ├── ShellWebViewClient.kt        # WebView 拦截
-│   │       │   └── GameErrorBridge.kt           # JS 错误收集
-│   │       └── res/
-│   └── build_apk.ps1                 # 一键构建脚本
-├── AndroidAPP/                       # UniApp 源码目录
-│   └── AndroidAPP/                   # (嵌套的 UniApp 项目)
-│       ├── pages.json                # 路由 + Tab 配置
-│       ├── manifest.json             # 应用配置 + 权限
-│       ├── pages/                    # 页面组件
-│       │   ├── index/                # 游戏库 (首页)
-│       │   ├── translate/            # 翻译工作台
-│       │   ├── data-editor/          # 数据编辑器
-│       │   ├── maps/                 # 地图查看器
-│       │   ├── saves/                # 存档管理
-│       │   ├── settings/             # 设置 + 虚拟按键
-│       │   └── runtime/              # 作弊面板 (建设中)
-│       ├── components/               # 公共组件
-│       │   ├── GameCard.vue
-│       │   ├── TranslationItem.vue
-│       │   ├── DataTable.vue
-│       │   ├── DataEditor.vue
-│       │   ├── MapCanvas.vue
-│       │   ├── VirtualController.vue
-│       │   ├── ControlButton.vue
-│       │   └── ...
-│       ├── api/                      # API 封装
-│       └── store/                    # Pinia 状态管理
-├── dist/android/                     # 构建产物输出
-│   ├── *-universal-debug.apk         # 通用调试包
-│   ├── *-arm64-debug.apk             # arm64 调试包
-│   ├── *-armv7-debug.apk             # armeabi-v7a 调试包
-│   └── *-release-signed.apk          # 已签名 Release 包
-└── README.md
+android_app/shell/app/src/main/java/com/rpgrtl/shell/
+├── MainActivity.kt                # 纯原生 ComponentActivity，边到边沉浸与权限引导
+├── ui/
+│   ├── MainScreen.kt             # 主 Scaffold、M3 NavigationBar 与路由总览
+│   ├── theme/                    # Material 3 主题、动态色彩与字体
+│   │   ├── Color.kt
+│   │   ├── Theme.kt
+│   │   └── Type.kt
+│   ├── navigation/
+│   │   └── NavRoutes.kt          # 5 大导航 Tab (游戏库/工作台/PC联动/容器/设置)
+│   ├── library/                  # 游戏库 (卡片流、引擎徽章、一键启动、SAF 导入)
+│   │   ├── LibraryScreen.kt
+│   │   └── GameDetailSheet.kt
+│   ├── workbench/                # 翻译工作台 (单词条卡片、搜索过滤、控制符防护、即时保存)
+│   │   ├── TranslationScreen.kt
+│   │   └── TranslationItemCard.kt
+│   ├── pclink/                   # PC 局域网联动中心 (状态检测、Pull/Push、补丁传输)
+│   │   └── PcLinkScreen.kt
+│   ├── winlator/                 # Winlator 运行内核管理 (Box64/DXVK/分辨率设置)
+│   │   └── WinlatorConfigScreen.kt
+│   └── settings/                 # 全局设置 (动态色彩、本地/在线 AI 批量翻译配置)
+│       └── SettingsScreen.kt
+├── data/
+│   ├── model/Models.kt           # 游戏模型、引擎类型枚举、翻译条目模型
+│   ├── GameRepository.kt         # 游戏持久化存储与多引擎智能分析探测
+│   └── TranslationManager.kt     # 翻译文件读写引擎与控制代码保护器
+├── sync/
+│   └── PcSyncClient.kt           # 基于 OkHttp/Coroutines 的 PC 端 HTTP 联动客户端
+└── wine/                         # Winlator 核心组件与 XServer 渲染 Activity
+    ├── WinlatorBridge.kt         # 容器参数封装与 Intent 启动桥
+    ├── WineDisplayActivity.kt    # Winlator XServer 渲染窗口与虚拟手柄
+    └── ...
 ```
 
-## 构建
+---
 
-### 前置条件
+## 构建与运行
 
-- Android Studio (推荐 Hedgehog 2023.1.1+)
+### 环境要求
+- JDK 17+ (推荐 17 或 21)
 - Android SDK (API 34)
-- UniApp CLI: `npm install -g @dcloudio/uni-app-cli`
-- JDK 17+
+- Gradle 8.x / 9.x (推荐 Gradle 9.5.1)
 
-### 一键构建
-
-```powershell
-cd android_app
-.\build_all.ps1 -Version 2.3
-```
-
-或手动分步：
+### 本地编译
+在 `android_app/shell/` 目录下执行：
 
 ```powershell
-# 1. 编译 UniApp H5
-cd AndroidAPP/AndroidAPP
-npx uni-app build --platform h5
+# 编译 Kotlin 源码
+.\gradlew.bat compileDebugKotlin
 
-# 2. 复制到 shell
-Copy-Item -Recurse -Force dist/build/h5/* ../shell/app/src/main/assets/mobile_ui/
-
-# 3. Gradle 打包
-cd ../shell
-./gradlew assembleDebug    # 或 assembleRelease
+# 打包 Debug APK
+.\build_apk.ps1
 ```
-
-### APK 产物说明
-
-| 文件名 | 适用设备 | 说明 |
-|---|---|---|
-| `*-universal-*.apk` | 任何 | 兼容所有架构 |
-| `*-arm64-*.apk` | 2020 年后手机 | 体积最小 |
-| `*-armv7-*.apk` | 旧款/低端手机 | armeabi-v7a |
-| `*-release-signed.apk` | 任何 | 已签名可安装 |
-
-## 核心架构
-
-```
-┌─────────────────────────────────────────┐
-│  UniApp H5 前端                          │
-│  (Vue 3 + Pinia + vue-router)           │
-├─────────────────────────────────────────┤
-│  Kotlin Shell                           │
-│  - WebView 管理 (工具 + 游戏两个实例)     │
-│  - SAF 文件索引 + LRU 缓存               │
-│  - JS→Kotlin @JavascriptInterface 桥     │
-│  - 虚拟按键叠加层 (FrameLayout)          │
-│  - 游戏预热加载 + 崩溃恢复               │
-├─────────────────────────────────────────┤
-│  Android 系统层                          │
-│  - Storage Access Framework (SAF)        │
-│  - WebView GPU 渲染                      │
-│  - System Alert Window (悬浮窗)          │
-└─────────────────────────────────────────┘
-```
-
-## 已实现的优化
-
-### 性能
-
-- ✅ GPU 合成 + `translateZ(0)` WebView 加速
-- ✅ Tab 秒切 — `keep-alive` + `CSS containment`
-- ✅ SAF 文件索引 + 10 分钟缓存 + LRU 内容缓存
-- ✅ AI 翻译分块处理 (每 20 条一批，不阻塞 UI)
-- ✅ 冷启动打点 + FPS 检测 + PERF 日志
-- ✅ `onTrimMemory` 内存收放
-- ✅ `pauseTimers/resumeTimers` 后台不空转
-- ✅ 游戏 WebView 预热 (工具页停留 3 秒后后台预载)
-- ✅ 地图 Canvas 位图缓存
-- ✅ 数据编辑器输入框尺寸压缩 + 字号优化
-
-### 稳定性
-
-- ✅ `onRenderProcessGone` 崩溃恢复
-- ✅ 游戏背景音乐不中断 (GONE→INVISIBLE)
-- ✅ WebGL 兼容补丁 (降低黑屏/白屏)
-- ✅ JS 错误收集 (GameErrorBridge)
-- ✅ R8 + shrinkResources 压缩
-- ✅ 横竖屏 configChanges 完整配置
-
-### 用户体验
-
-- ✅ 缩放异常修复 (移除虚假 resize 注入)
-- ✅ 数据编辑器左侧显示角色名 (读取 JSON 内 `name` 字段)
-- ✅ 虚拟按键坐标对齐 (预览 = 实际位置)
-- ✅ APK 签名自动化 (Release 可直接安装)
-- ✅ ABI 分包 (arm64 / armeabi-v7a / universal)
-- ✅ 构建产物版本归档
-
-## 功能
-
-- **游戏库**: SAF 选择目录 → 自动识别 RPG Maker MV/MZ / Ren'Py
-- **翻译工作台**: 搜索 → 编辑 → AI 翻译 (DeepSeek/OpenAI)
-- **数据编辑器**: Actors/Items/Weapons/Armors/Classes/States 实时修改
-- **地图查看器**: 地图网格 + 事件标记
-- **存档管理**: 槽位列表 + 备份 + 编辑
-- **虚拟按键**: 可拖拽配置的摇杆/按钮覆盖层
-- **作弊引擎** (开发中): 穿墙/传送/战斗控制/属性锁定/加速
-
-## 技术栈
-
-| 层 | 技术 |
-|---|---|
-| 前端框架 | UniApp (Vue 3) |
-| 状态管理 | Pinia |
-| 路由 | vue-router 4 (H5 模式) |
-| UI 组件 | uni-ui (部分) |
-| 安卓壳 | Kotlin + WebView + SAF |
-| 构建 | Gradle + Vite |
-| 编译目标 | Android 7.0+ (API 24+) |
+产物将输出在 `android_app/shell/app/build/outputs/apk/debug/app-debug.apk`。

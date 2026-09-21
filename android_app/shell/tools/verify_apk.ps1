@@ -55,6 +55,49 @@ $zip = [System.IO.Compression.ZipFile]::OpenRead($ApkPath)
 try {
     $entryNames = @($zip.Entries | ForEach-Object { $_.FullName })
 
+    $rpgMakerRuntimeEntry = "assets/rpgmaker/rpgrtl_runtime.js"
+    if ($entryNames -notcontains $rpgMakerRuntimeEntry) {
+        throw "Missing RPG Maker physical-save runtime in APK: $rpgMakerRuntimeEntry"
+    }
+    $rpgMakerRuntime = Read-ZipText $zip $rpgMakerRuntimeEntry
+
+    $dashboardEntries = @(
+        "assets/mtool/mtool_overlay.html",
+        "assets/mtool/mtool_overlay.css",
+        "assets/mtool/mtool_overlay.js"
+    )
+    foreach ($dashboardEntry in $dashboardEntries) {
+        if ($entryNames -notcontains $dashboardEntry) {
+            throw "Missing full-screen MTool dashboard asset in APK: $dashboardEntry"
+        }
+    }
+    $dashboardHtml = Read-ZipText $zip "assets/mtool/mtool_overlay.html"
+    $dashboardCss = Read-ZipText $zip "assets/mtool/mtool_overlay.css"
+    $dashboardScript = Read-ZipText $zip "assets/mtool/mtool_overlay.js"
+    if (-not $dashboardHtml.Contains("RPGRenPyLocalizer")) { throw "MTool dashboard brand is incorrect." }
+    foreach ($forbidden in @("backdrop-filter", "box-shadow")) {
+        if ($dashboardCss.Contains($forbidden)) { throw "MTool dashboard contains GPU-heavy CSS: $forbidden" }
+    }
+    foreach ($scrollMarker in @("touch-action:pan-y", "-webkit-overflow-scrolling:touch", "safe-area-inset-top", "safe-area-inset-right", "@media(orientation:portrait)")) {
+        if (-not $dashboardCss.Replace(" ", "").Contains($scrollMarker)) { throw "MTool dashboard is missing touch/cutout marker: $scrollMarker" }
+    }
+    foreach ($touchShieldMarker in @("touchstart", "pointerdown", "mousedown", "stopPropagation")) {
+        if (-not $dashboardScript.Contains($touchShieldMarker)) { throw "MTool dashboard touch shield is incomplete: $touchShieldMarker" }
+    }
+    foreach ($coverageMarker in @("pointer-events:auto", "min-width:100vw", "min-height:100vh")) {
+        if (-not $dashboardCss.Replace(" ", "").Contains($coverageMarker)) { throw "MTool dashboard coverage is incomplete: $coverageMarker" }
+    }
+    foreach ($dashboardMarker in @("主页", "物品", "防具", "武器", "开关", "变量", "角色", "地图Ex", "按键设定")) {
+        if (-not $dashboardScript.Contains($dashboardMarker)) {
+            throw "MTool dashboard is incomplete; missing tab marker: $dashboardMarker"
+        }
+    }
+    foreach ($needle in @("saveSaveData", "loadSaveData", "mvFileName", ".rmmzsave", "__RPGRTL_TRAINER")) {
+        if (-not $rpgMakerRuntime.Contains($needle)) {
+            throw "RPG Maker runtime is incomplete; missing marker: $needle"
+        }
+    }
+
     foreach ($lib in $requiredLibraries) {
         $name = "lib/arm64-v8a/$lib"
         if ($entryNames -notcontains $name) { throw "Missing required Winlator engine library in APK: $name" }
@@ -123,6 +166,8 @@ try {
     [pscustomobject]@{
         Apk = $ApkPath
         ApkSizeBytes = (Get-Item $ApkPath).Length
+        RpgMakerRuntime = "OK"
+        MToolDashboard = "OK"
         RequiredEngineLibraries = $requiredLibraries.Count
         MobileUiAssets = $packagedAssets.Count
         ReachableMobileUiAssets = $neededAssets.Count
@@ -132,3 +177,8 @@ try {
 } finally {
     $zip.Dispose()
 }
+
+
+
+
+

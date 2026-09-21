@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <!-- Winlator-style: direct mount of /storage/emulated/0 game folders without copying -->
+    <!-- Winlator: 直接挂载 /storage/emulated/0 外部游戏目录无需跨盘拷贝 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -43,11 +43,9 @@
             android:alwaysRetainTaskState="true"
             android:configChanges="density|keyboard|keyboardHidden|layoutDirection|locale|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
-            android:immersive="true"
             android:launchMode="singleTop"
-            android:preferMinimalPostProcessing="true"
             android:resizeableActivity="true"
-            android:screenOrientation="sensorLandscape">
+            android:screenOrientation="unspecified">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -60,7 +58,14 @@
             android:immersive="true"
             android:preferMinimalPostProcessing="true"
             android:theme="@style/AppThemeFullscreenDark"
-            android:screenOrientation="sensorLandscape" />
+            android:screenOrientation="fullSensor" />
+        <activity
+            android:name=".rpgmaker.RpgMakerWebViewActivity"
+            android:configChanges="density|keyboard|keyboardHidden|layoutDirection|locale|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:immersive="true"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/AppThemeFullscreenDark" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.rpgrtl.shell.FileProvider"

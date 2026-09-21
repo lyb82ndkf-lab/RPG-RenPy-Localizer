@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,6 +33,7 @@ from toolkit.rpgmaker import RPGMakerService, load_json
 from toolkit.unknown_game import UnknownGameService
 from toolkit.storage import export_translation_pack, export_translation_snapshot, import_translation_pack, save_json, translation_pack_signature
 from toolkit.workspace import LibraryEntry, Workspace
+from toolkit.core.control_codes import repair_control_codes
 
 JsonDict = dict[str, Any]
 
@@ -737,6 +738,20 @@ class ToolkitApi:
                     for entry in self._filter_safe_translation_entries(self.translation_entries)
                     if entry.source.strip() and entry.target.strip()
                 })
+        if changed and self._project().engine == "RPG Developer Bakin":
+            dict_file = self._project().root / "翻译文件.json"
+            try:
+                mapping: dict[str, str] = {}
+                if dict_file.is_file():
+                    loaded = json.loads(dict_file.read_text(encoding="utf-8-sig"))
+                    if isinstance(loaded, dict):
+                        mapping = loaded
+                for entry in self._filter_safe_translation_entries(self.translation_entries):
+                    if entry.source and entry.target:
+                        mapping[entry.source] = entry.target
+                dict_file.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8-sig")
+            except Exception:
+                pass
         return {"ok": True, "changed": changed, "rejected": rejected, "version": snapshot, "translationTable": live_table, "liveApplied": live_count}
 
     def _translation_cache_path(self) -> Path:
@@ -887,35 +902,35 @@ class ToolkitApi:
         if project.engine == "Ren'Py":
             return {"dialogue", "choice"}
         if project.engine == "Wolf RPG Editor":
-            # Only entries emitted from the structured MPS Message/Choices
-            # parser carry a verified length-field location and are writable
-            # in an isolated Wolf runtime copy.
-            return {"wolf_dialogue"}
+            return {"wolf_dialogue", "wolf_choice", "dialogue", "choice", "unknown"}
+        if project.engine == "RPG Developer Bakin":
+            return {"bakin_dialogue", "bakin_map_name", "dialogue", "choice", "unknown"}
+        if project.engine == "TyranoBuilder":
+            return {"tyrano_dialogue", "dialogue", "choice", "unknown"}
+        if project.engine == "Pixel Game Maker MV":
+            return {"agtk_dialogue", "dialogue", "choice", "unknown"}
+        if project.engine == "SRPG Studio":
+            return {"srpg_dialogue", "dialogue", "choice", "unknown"}
         if project.engine == "Unity":
-            # Unity string tables keep a verified source/target cell location;
-            # prefer them over generic binary-string candidates.
-            return {"unity_localization", "unknown"}
+            return {"unity_localization", "dialogue", "unknown"}
         if project.engine == "Unreal Engine 4/5":
-            # Only archive entries contain a verified Source/Translation pair
-            # that can be changed in the isolated UE4/UE5 project copy.
-            return {"unreal_localization"}
+            return {"unreal_localization", "dialogue", "unknown"}
         if project.engine == "Visual Novel / Galgame":
-            return {"galgame_dialogue"}
-        if isinstance(self._service(), UnknownGameService):
-            return {"unknown"}
-        return set()
+            return {"galgame_dialogue", "dialogue", "unknown"}
+        return {"database", "dialogue", "choice", "unknown", "bakin_dialogue", "bakin_map_name", "wolf_dialogue", "wolf_choice", "srpg_dialogue", "tyrano_dialogue", "agtk_dialogue", "unity_localization", "unreal_localization", "galgame_dialogue"}
 
     def _is_safe_translation_entry(self, entry: TranslationEntry) -> bool:
         categories = self._safe_translation_categories()
-        return bool(entry.source and entry.category in categories)
+        return bool(entry.source and (not categories or entry.category in categories or entry.category == "unknown"))
 
     def _filter_safe_translation_entries(self, entries: list[TranslationEntry]) -> list[TranslationEntry]:
-        return [entry for entry in entries if self._is_safe_translation_entry(entry)]
+        categories = self._safe_translation_categories()
+        return [entry for entry in entries if entry.source and (not categories or entry.category in categories or entry.category == "unknown")]
 
     @staticmethod
     def _entry_write_status(entry: TranslationEntry) -> str:
         context = str(entry.context or "")
-        if context.startswith(("mtool-dump;", "wolf-field;", "unity-table;", "unity-json;", "unreal-archive;", "galtransl-json;")):
+        if context.startswith(("mtool-dump;", "wolf-field;", "unity-table;", "unity-json;", "unreal-archive;", "galtransl-json;", "bakin-dict;", "bakin-map;")):
             return "verified"
         return "text-scan"
 
@@ -1399,36 +1414,50 @@ class ToolkitApi:
 
     def save_slots(self) -> JsonDict:
         project = self._project()
-        if project.engine != "RPG Maker MV/MZ":
-            return {"count": 0, "slots": []}
-        slots = RPGMakerService(project).list_save_slots()
+        if project.engine == "RPG Maker MV/MZ":
+            slots = RPGMakerService(project).list_save_slots()
+        else:
+            from toolkit.unknown_game import list_unknown_save_slots
+            slots = list_unknown_save_slots(project)
         return {"count": len(slots), "slots": _plain(slots)}
 
     def save_load(self, body: JsonDict) -> JsonDict:
         project = self._project()
-        if project.engine != "RPG Maker MV/MZ":
-            raise ApiError("只有 RPG Maker MV/MZ 支持存档修改。")
         path = Path(str(body.get("path") or ""))
         if not path.exists():
             raise ApiError("存档文件不存在。")
-        service = RPGMakerService(project)
-        payload = service.load_save(path)
-        self.save_payload = payload
-        self.save_path = path
-        return {"ok": True, "path": str(path), "summary": service.save_summary(payload), "payload": self._save_preview(payload)}
+        if project.engine == "RPG Maker MV/MZ":
+            service = RPGMakerService(project)
+            payload = service.load_save(path)
+            self.save_payload = payload
+            self.save_path = path
+            return {"ok": True, "path": str(path), "summary": service.save_summary(payload), "payload": self._save_preview(payload)}
+        else:
+            stat = path.stat()
+            self.save_path = path
+            self.save_payload = {"filename": path.name, "size": stat.st_size}
+            summary = {
+                "name": path.name,
+                "size": f"{round(stat.st_size/1024, 1)} KB",
+                "modified_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                "engine": project.engine,
+            }
+            return {"ok": True, "path": str(path), "summary": summary, "payload": {"file": path.name, "size_bytes": stat.st_size}}
 
     def save_current(self) -> JsonDict:
         project = self._project()
-        if project.engine != "RPG Maker MV/MZ" or self.save_payload is None:
+        if self.save_payload is None:
             return {"loaded": False}
-        return {"loaded": True, "path": str(self.save_path), "summary": RPGMakerService(project).save_summary(self.save_payload), "payload": self._save_preview(self.save_payload)}
+        if project.engine == "RPG Maker MV/MZ":
+            return {"loaded": True, "path": str(self.save_path), "summary": RPGMakerService(project).save_summary(self.save_payload), "payload": self._save_preview(self.save_payload)}
+        return {"loaded": True, "path": str(self.save_path), "summary": {"name": self.save_path.name if self.save_path else "", "engine": project.engine}, "payload": self.save_payload}
 
     def save_mutate(self, body: JsonDict) -> JsonDict:
         project = self._project()
-        if project.engine != "RPG Maker MV/MZ":
-            raise ApiError("只有 RPG Maker MV/MZ 支持存档修改。")
         if self.save_payload is None:
             raise ApiError("尚未加载存档。")
+        if project.engine != "RPG Maker MV/MZ":
+            raise ApiError("当前引擎暂未支持直接修改此存档格式，建议在运行时工作台修改数值或管理安全快照。")
         service = RPGMakerService(project)
         op = str(body.get("op") or "")
         if op == "gold":
@@ -1447,12 +1476,174 @@ class ToolkitApi:
 
     def save_write(self, body: JsonDict) -> JsonDict:
         project = self._project()
-        if project.engine != "RPG Maker MV/MZ" or self.save_payload is None or self.save_path is None:
+        if self.save_payload is None or self.save_path is None:
             raise ApiError("尚未加载存档。")
         path = Path(str(body.get("path") or self.save_path))
-        RPGMakerService(project).save_save(path, self.save_payload)
+        if project.engine == "RPG Maker MV/MZ":
+            service = RPGMakerService(project)
+            try:
+                service.create_save_snapshot(label=f"写回前自动备份_{path.name}")
+            except Exception:
+                pass
+            service.save_save(path, self.save_payload)
+        else:
+            from toolkit.unknown_game import create_unknown_save_snapshot
+            try:
+                create_unknown_save_snapshot(project, label=f"写回前备份_{path.name}")
+            except Exception:
+                pass
         self.save_path = path
         return {"ok": True, "path": str(path)}
+
+    def save_snapshot_list(self) -> JsonDict:
+        project = self._project()
+        if project.engine == "RPG Maker MV/MZ":
+            return {"snapshots": RPGMakerService(project).list_save_snapshots()}
+        from toolkit.unknown_game import list_unknown_save_snapshots
+        return {"snapshots": list_unknown_save_snapshots(project)}
+
+    def save_snapshot_create(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        label = str(body.get("label") or "").strip()
+        if project.engine == "RPG Maker MV/MZ":
+            res = RPGMakerService(project).create_save_snapshot(label=label)
+        else:
+            from toolkit.unknown_game import create_unknown_save_snapshot
+            res = create_unknown_save_snapshot(project, label=label)
+        if not res.get("ok"):
+            raise ApiError(str(res.get("error") or "创建快照失败"))
+        return res
+
+    def save_snapshot_restore(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        snapshot_id = str(body.get("snapshotId") or body.get("id") or "").strip()
+        if not snapshot_id:
+            raise ApiError("未指定要回滚的快照 ID。")
+        if project.engine == "RPG Maker MV/MZ":
+            res = RPGMakerService(project).restore_save_snapshot(snapshot_id)
+        else:
+            from toolkit.unknown_game import restore_unknown_save_snapshot
+            res = restore_unknown_save_snapshot(project, snapshot_id)
+        if not res.get("ok"):
+            raise ApiError(str(res.get("error") or "回滚快照失败"))
+        self.save_payload = None
+        self.save_path = None
+        return res
+
+    def wolf_status(self) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        return {"ok": True, **bridge.get_status()}
+
+    def wolf_set_gold(self, body: JsonDict) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        if not bridge.is_connected():
+            raise ApiError("尚未连接到 WolfHook 游戏进程，请确认游戏是否已启动且加载了 wolfHook。")
+        gold = int(body.get("gold") or body.get("value") or 0)
+        ok = bridge.set_gold(gold)
+        return {"ok": ok, "gold": bridge.get_gold()}
+
+    def wolf_vars(self) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        if not bridge.is_connected():
+            return {"ok": False, "connected": False, "groups": []}
+        vars_data = bridge.refresh_variables()
+        groups = []
+        for g_idx, g_vars in enumerate(vars_data):
+            groups.append({
+                "groupId": g_idx,
+                "name": "系统变量 (SysVar)" if g_idx == 0 else f"普通变量组 {g_idx}",
+                "count": len(g_vars),
+                "variables": [{"id": v_idx, "value": val} for v_idx, val in enumerate(g_vars[:200])],
+            })
+        return {"ok": True, "connected": True, "groups": groups}
+
+    def wolf_set_var(self, body: JsonDict) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        if not bridge.is_connected():
+            raise ApiError("尚未连接到 WolfHook 游戏进程。")
+        group = int(body.get("group") or 0)
+        var_id = int(body.get("varId") or body.get("id") or 0)
+        value = int(body.get("value") or 0)
+        ok = bridge.set_variable(group, var_id, value)
+        return {"ok": ok, "group": group, "varId": var_id, "value": value}
+
+    def wolf_set_speed(self, body: JsonDict) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        if not bridge.is_connected():
+            raise ApiError("尚未连接到 WolfHook 游戏进程。")
+        speed = float(body.get("speed") or 1.0)
+        ok = bridge.set_speed(speed)
+        return {"ok": ok, "speed": speed}
+
+    def wolf_set_noclip(self, body: JsonDict) -> JsonDict:
+        from toolkit.wolf_hook import get_wolf_hook_bridge
+        bridge = get_wolf_hook_bridge()
+        if not bridge.is_connected():
+            raise ApiError("尚未连接到 WolfHook 游戏进程。")
+        enabled = bool(body.get("enabled", True))
+        ok = bridge.set_noclip(enabled)
+        return {"ok": ok, "noclip": enabled}
+
+    def runtime_smart_gold(self, body: JsonDict) -> JsonDict:
+        from toolkit.memory_editor import get_smart_gold_modifier
+        pid = int(body.get("pid") or 0)
+        if not pid:
+            procs = self.memory_processes().get("processes", [])
+            if procs:
+                pid = int(procs[0]["pid"])
+            else:
+                raise ApiError("未检测到运行中的游戏进程，请先在游戏库或外部启动游戏。")
+        current_gold = int(body.get("currentGold") or body.get("gold") or 0)
+        target_gold = int(body.get("targetGold") or 99999999)
+        modifier = get_smart_gold_modifier()
+        res = modifier.search_and_apply(pid, current_gold, target_gold)
+        if not res.get("ok"):
+            raise ApiError(str(res.get("error") or "搜索修改失败"))
+        return res
+
+    def runtime_smart_gold_refine(self, body: JsonDict) -> JsonDict:
+        from toolkit.memory_editor import get_smart_gold_modifier
+        session_id = str(body.get("sessionId") or "")
+        if not session_id:
+            raise ApiError("缺少搜索会话 ID。")
+        new_gold = int(body.get("newGold") or 0)
+        target_gold = int(body.get("targetGold") or 99999999)
+        modifier = get_smart_gold_modifier()
+        res = modifier.refine_and_apply(session_id, new_gold, target_gold)
+        if not res.get("ok"):
+            raise ApiError(str(res.get("error") or "精确定位失败"))
+        return res
+
+
+    def mtool_detect_env(self, query: JsonDict) -> JsonDict:
+        custom_path = str(query.get("path") or "").strip()
+        from toolkit.unknown_game import detect_mtool_installation
+        return detect_mtool_installation(custom_path or None)
+
+    def cold_generate_mtool_patch(self, body: JsonDict) -> JsonDict:
+        project = self._project()
+        from toolkit.unknown_game import generate_mtool_patch_bundle
+        mtool_path = str(body.get("mtoolPath") or "").strip() or None
+        font_name = str(body.get("fontName") or "Microsoft YaHei").strip()
+        font_size_offset = int(body.get("fontSizeOffset") or 0)
+        raw_entries = body.get("entries")
+        if raw_entries and isinstance(raw_entries, (dict, list)):
+            entries = raw_entries
+        else:
+            entries = self.store.list_entries(self._active_version())
+        return generate_mtool_patch_bundle(
+            project=project,
+            entries=entries,
+            mtool_path=mtool_path,
+            font_name=font_name,
+            font_size_offset=font_size_offset,
+        )
+
     def maps_get(self) -> JsonDict:
         project = self._project()
         if project.engine != "RPG Maker MV/MZ":
@@ -2210,7 +2401,7 @@ class ToolkitApi:
             content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
             if isinstance(content, list):
                 content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-        mapping = self._parse_translation_map(content, [entry["entry_id"] for entry in entries])
+        mapping = self._parse_translation_map(content, [entry["entry_id"] for entry in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": entry["entry_id"], "target": mapping.get(entry["entry_id"], "")} for entry in entries]
 
     def _translate_entries_account_bridge(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
@@ -2256,7 +2447,7 @@ class ToolkitApi:
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "订阅账号桥接执行失败").strip()
             raise ApiError(f"订阅账号桥接执行失败：{message[-500:]}", 502)
-        mapping = self._parse_translation_map(completed.stdout, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(completed.stdout, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _bridge_translation_prompt(self, entries: list[JsonDict], body: JsonDict) -> str:
@@ -2269,7 +2460,7 @@ class ToolkitApi:
 
     def _translate_entries_gemini_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
         content = self._call_google_gemini_oauth(entries, body)
-        mapping = self._parse_translation_map(content, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(content, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _translate_entries_local_agent_auto(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
@@ -2639,7 +2830,7 @@ class ToolkitApi:
             if self._looks_like_antigravity_auth_error(detail):
                 raise ApiError("Antigravity 未登录或登录态过期。请打开终端运行 agy 完成登录后再试。", 401)
             raise ApiError(f"Antigravity 没有返回内容。{detail[-300:] if detail else ''}".strip(), 502)
-        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _translate_entries_claude_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
@@ -2649,7 +2840,7 @@ class ToolkitApi:
             command.extend(["--model", model])
         command.extend(["--permission-mode", "bypassPermissions"])
         output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "Claude Code")
-        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _translate_entries_codex_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
@@ -2658,7 +2849,7 @@ class ToolkitApi:
         if model and model != "default":
             command.extend(["--model", model])
         output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "Codex CLI")
-        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _translate_entries_opencode_cli(self, entries: list[JsonDict], body: JsonDict) -> list[JsonDict]:
@@ -2667,7 +2858,7 @@ class ToolkitApi:
         if model and model != "default":
             command.extend(["-m", model])
         output = self._run_native_agent_command(command, self._bridge_translation_prompt(entries, body), "OpenCode")
-        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries])
+        mapping = self._parse_translation_map(output, [str(item["entry_id"]) for item in entries], {str(item["entry_id"]): str(item.get("source") or "") for item in entries})
         return [{"entry_id": item["entry_id"], "target": mapping.get(str(item["entry_id"]), "")} for item in entries]
 
     def _run_native_agent_command(self, command: list[str], prompt: str, name: str) -> str:
@@ -2971,7 +3162,7 @@ class ToolkitApi:
                 self._record_live_debug("api", "raw_response", {"provider": provider, "raw": raw})
             blocks = raw.get("content") or []
             content = "".join(str(item.get("text") or "") for item in blocks if isinstance(item, dict))
-            result = self._parse_translation_array(content, len(texts))
+            result = self._parse_translation_array(content, len(texts), sources=texts)
             if body.get("_debugLive"):
                 self._record_live_debug("api", "response_content", {"content": content, "translations": result})
             return result
@@ -3009,7 +3200,7 @@ class ToolkitApi:
         content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
         if isinstance(content, list):
             content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
-        result = self._parse_translation_array(content, len(texts))
+        result = self._parse_translation_array(content, len(texts), sources=texts)
         if body.get("_debugLive"):
             self._record_live_debug("api", "response_content", {"content": content, "translations": result})
         return result
@@ -3030,7 +3221,8 @@ class ToolkitApi:
             raise ApiError(f"百度翻译失败：{raw.get('error_msg') or raw.get('error_code')}")
         translated = "\n".join(item.get("dst", "") for item in raw.get("trans_result", []))
         parts = translated.split("\n")
-        return (parts + [""] * len(texts))[: len(texts)]
+        repaired = [repair_control_codes(s, t) if s and t else t for s, t in zip(texts, (parts + [""] * len(texts))[: len(texts)])]
+        return repaired
 
     def _translate_public_mt(self, texts: list[str], body: JsonDict) -> list[str]:
         provider = str(body.get("provider") or "MyMemory")
@@ -3106,14 +3298,17 @@ class ToolkitApi:
             raise last_error
         raise ValueError("empty content")
 
-    def _parse_translation_map(self, content: str, entry_ids: list[str]) -> dict[str, str]:
+    def _parse_translation_map(self, content: str, entry_ids: list[str], sources: dict[str, str] | None = None) -> dict[str, str]:
         normalized = self._native_agent_response_text(content)
         try:
             parsed = self._json_from_model_content(normalized)
         except Exception:
             fallback = normalized.strip()
             if len(entry_ids) == 1 and fallback:
-                return {entry_ids[0]: fallback}
+                res = {entry_ids[0]: fallback}
+                if sources and entry_ids[0] in sources:
+                    res[entry_ids[0]] = repair_control_codes(sources[entry_ids[0]], fallback)
+                return res
             return {}
         values: dict[str, str] = {}
         raw_translations = parsed.get("translations") if isinstance(parsed, dict) else parsed
@@ -3144,34 +3339,49 @@ class ToolkitApi:
                 if key in parsed and isinstance(parsed[key], (str, int, float)):
                     values[entry_ids[0]] = str(parsed[key])
                     break
+        if sources:
+            for entry_id in list(values.keys()):
+                src = sources.get(entry_id)
+                tgt = values.get(entry_id)
+                if src and tgt:
+                    values[entry_id] = repair_control_codes(src, tgt)
         return values
 
-    def _parse_translation_array(self, content: str, expected: int) -> list[str]:
+    def _parse_translation_array(self, content: str, expected: int, sources: list[str] | None = None) -> list[str]:
+        values: list[str] = []
         try:
             parsed = self._json_from_model_content(content)
             if isinstance(parsed, list):
                 values = [str(v) for v in parsed]
-                return (values + [""] * expected)[:expected]
-            if isinstance(parsed, dict) and isinstance(parsed.get("translations"), list):
+            elif isinstance(parsed, dict) and isinstance(parsed.get("translations"), list):
                 values = [str(v) for v in parsed["translations"]]
-                return (values + [""] * expected)[:expected]
-            if isinstance(parsed, dict) and isinstance(parsed.get("translations"), dict):
+            elif isinstance(parsed, dict) and isinstance(parsed.get("translations"), dict):
                 values = [str(value) for value in parsed["translations"].values()]
-                return (values + [""] * expected)[:expected]
-            if isinstance(parsed, dict):
-                # Common small-model variants: {"text":"..."},
-                # {"translation":"..."}, or a single {"source":"target"}
-                # mapping.  Accept the value, never the whole JSON string.
+            elif isinstance(parsed, dict):
                 for key in ("text", "translation", "target", "result", "content"):
                     if key in parsed and isinstance(parsed[key], (str, int, float)):
-                        return [str(parsed[key])] + [""] * (expected - 1)
-                scalar_values = [str(value) for value in parsed.values() if isinstance(value, (str, int, float))]
-                if scalar_values:
-                    return (scalar_values + [""] * expected)[:expected]
+                        values = [str(parsed[key])]
+                        break
+                if not values:
+                    scalar_values = [str(value) for value in parsed.values() if isinstance(value, (str, int, float))]
+                    if scalar_values:
+                        values = scalar_values
         except Exception:
             pass
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-        return (lines + [content.strip()] + [""] * expected)[:expected]
+        if not values:
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            values = (lines + [content.strip()])
+        values = (values + [""] * expected)[:expected]
+        if sources:
+            repaired: list[str] = []
+            for i, val in enumerate(values):
+                src = sources[i] if i < len(sources) else ""
+                if src and val:
+                    repaired.append(repair_control_codes(src, val))
+                else:
+                    repaired.append(val)
+            values = repaired
+        return values
 
     def _default_model(self, provider: str) -> str:
         return {
@@ -3305,10 +3515,23 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "GET" and path == "/saves/current": return api.save_current()
     if method == "POST" and path == "/saves/mutate": return api.save_mutate(body)
     if method == "POST" and path == "/saves/write": return api.save_write(body)
+    if method == "GET" and path == "/saves/snapshot/list": return api.save_snapshot_list()
+    if method == "POST" and path == "/saves/snapshot/create": return api.save_snapshot_create(body)
+    if method == "POST" and path == "/saves/snapshot/restore": return api.save_snapshot_restore(body)
+    if method == "GET" and path == "/mtool/detect-env": return api.mtool_detect_env(query)
+    if method == "POST" and path == "/cold/generate-mtool-patch": return api.cold_generate_mtool_patch(body)
     if method == "GET" and path == "/maps": return api.maps_get()
     if method == "GET" and path == "/maps/detail": return api.map_detail(query)
     if method == "GET" and path == "/runtime/state": return api.runtime_state()
     if method == "POST" and path == "/runtime/set": return api.runtime_set(body)
+    if method == "POST" and path == "/runtime/smart_gold": return api.runtime_smart_gold(body)
+    if method == "POST" and path == "/runtime/smart_gold_refine": return api.runtime_smart_gold_refine(body)
+    if method == "GET" and path == "/wolf/status": return api.wolf_status()
+    if method == "POST" and path == "/wolf/gold": return api.wolf_set_gold(body)
+    if method == "GET" and path == "/wolf/vars": return api.wolf_vars()
+    if method == "POST" and path == "/wolf/set_var": return api.wolf_set_var(body)
+    if method == "POST" and path == "/wolf/speed": return api.wolf_set_speed(body)
+    if method == "POST" and path == "/wolf/noclip": return api.wolf_set_noclip(body)
     if method == "POST" and path == "/live/start": return api.live_start(body)
     if method == "POST" and path == "/live/stop": return api.live_stop()
     if method == "GET" and path == "/live/status": return api.live_status()

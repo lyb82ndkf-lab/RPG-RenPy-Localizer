@@ -272,10 +272,10 @@ TEXT_FILES = [
 
 TRANSLATION_DATABASE_FILES = {
     "Actors.json", "Armors.json", "Classes.json", "Enemies.json", "Items.json",
-    "MapInfos.json", "Skills.json", "States.json", "Weapons.json",
+    "MapInfos.json", "Skills.json", "States.json", "Weapons.json", "Troops.json",
 }
 
-SAFE_TRANSLATION_CATEGORIES = {"database", "dialogue"}
+SAFE_TRANSLATION_CATEGORIES = {"database", "dialogue", "system"}
 
 # RPG Maker's JSON files can contain plugin metadata and arbitrary custom
 # payloads.  A recursive "name"/"description" scan is therefore unsafe: a
@@ -292,10 +292,17 @@ DATABASE_TEXT_FIELDS: dict[str, frozenset[str]] = {
     "Skills.json": frozenset({"name", "description", "message1", "message2"}),
     "States.json": frozenset({"name", "message1", "message2", "message3", "message4"}),
     "Weapons.json": frozenset({"name", "description"}),
+    "Troops.json": frozenset({"name"}),
 }
 
-def _is_safe_translation_file(file_name: str) -> bool:
-    return file_name in TRANSLATION_DATABASE_FILES or file_name == "CommonEvents.json" or (file_name.startswith("Map") and file_name.endswith(".json"))
+def _is_safe_translation_file(file_name: str, include_system: bool = True) -> bool:
+    if file_name == "System.json":
+        return include_system
+    return (
+        file_name in TRANSLATION_DATABASE_FILES
+        or file_name in {"CommonEvents.json", "Troops.json"}
+        or (file_name.startswith("Map") and file_name.endswith(".json"))
+    )
 
 EDITABLE_DB_FILES = {
     "Actors.json",
@@ -316,12 +323,13 @@ RUNTIME_BRIDGE_PORT = 32179
 
 RUNTIME_BRIDGE_SOURCE = r"""/*:
  * @target MV MZ
- * @plugindesc Local runtime bridge for single-player RPG Maker tools.
+ * @plugindesc Local runtime bridge for single-player RPG Maker tools with hot-reload & bilingual toggle.
  * @author RPGRenPyLocalizer
  *
  * @help
  * Runs a localhost-only HTTP bridge so the desktop tool can inspect and modify
- * the current single-player game state. Do not use this with online games.
+ * the current single-player game state. Supports in-game F9 toggle, auto hot-reload,
+ * HUD toast notifications, and MTool-compatible plugin patches.
  */
 (() => {
   "use strict";
@@ -344,6 +352,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   // "old translation -> new translation", which made original/uninstall
   // impossible and caused translations to get stuck after a hot switch.
   bridge.originalTextValues = bridge.originalTextValues || new WeakMap();
+  bridge.modifiedRecords = bridge.modifiedRecords || [];
   bridge.locks = bridge.locks || {};
   bridge.options = bridge.options || {
     gameSpeed: 1,
@@ -354,8 +363,13 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     autoSaveInterval: 0,
     unlockCg: false,
     fontSize: 0,
+    fontSizeOffset: 0,
+    fontFamily: "",
     fpsBoost: false,
-    clickTeleport: false
+    clickTeleport: false,
+    through: false,
+    noEncounter: false,
+    oneHitKill: false
   };
   bridge.lastAutoSaveAt = bridge.lastAutoSaveAt || 0;
   bridge.seenBatch = [];           // pending seen texts to send to tool
@@ -366,12 +380,57 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   bridge.toolPort = 32181;         // tool-side server port (for pull/poll)
   bridge.translationCount = 0;     // count of translations received
   bridge.lastPullSeq = -1;         // skip full database walks when nothing changed
+  bridge.lastFileMtime = 0;        // mtime for automatic hot-reload
   bridge._pollTimer = null;
 
+  // Lightweight in-game HUD Toast notification
+  function showToast(message, color) {
+    try {
+      if (typeof document === "undefined" || !document.body) return;
+      var id = "rpgrtl-toast-overlay";
+      var el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement("div");
+        el.id = id;
+        el.style.position = "fixed";
+        el.style.top = "18px";
+        el.style.right = "18px";
+        el.style.zIndex = "9999999";
+        el.style.pointerEvents = "none";
+        el.style.fontFamily = "system-ui, -apple-system, 'Microsoft YaHei', sans-serif";
+        el.style.fontSize = "13px";
+        el.style.lineHeight = "1.5";
+        el.style.fontWeight = "600";
+        el.style.padding = "10px 18px";
+        el.style.borderRadius = "8px";
+        el.style.boxShadow = "0 6px 20px rgba(0,0,0,0.45)";
+        el.style.transition = "opacity 0.25s ease, transform 0.25s ease";
+        document.body.appendChild(el);
+      }
+      el.textContent = message;
+      el.style.background = color || "rgba(17, 24, 39, 0.94)";
+      el.style.color = "#ffffff";
+      el.style.border = "1px solid " + (color ? "rgba(255,255,255,0.3)" : "rgba(59, 130, 246, 0.6)");
+      el.style.opacity = "1";
+      el.style.transform = "translateY(0)";
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(function() {
+        el.style.opacity = "0";
+        el.style.transform = "translateY(-8px)";
+      }, 2600);
+    } catch (_e) {}
+  }
+
+  // Ruby text / furigana cleaning for JP games (MTool PANDA Ruby compatible)
+  function cleanRuby(str) {
+    if (!str || typeof str !== "string") return str;
+    return str.replace(/\x1e?\{([^{}|]+?)\|([^{}]+?)\}/g, "$1").replace(/\\r\[([^,]+?),[^\]]+?\]/g, "$1");
+  }
+
   // The normal launch path is deliberately independent from the desktop
-  // application's HTTP server.  Load the small translation table directly
+  // application's HTTP server.  Load the translation table directly
   // from disk so an MV/MZ game starts translated even when the tool is closed.
-  // `__dirname` covers both unpacked games and NW.js www/ deployments.
+  // Supports auto-scanning candidate paths, MTool 翻译文件.json, ManualTransFile.json, etc.
   function loadLocalTranslationTable() {
     var configured = "";
     try {
@@ -379,21 +438,79 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         configured = String(PluginManager.parameters("RPGRenPyBridge").translationFile || "");
       }
     } catch (_e) {}
-    var roots = [bridge.root, path.resolve(__dirname, "../.."), path.resolve(__dirname, "../../..")];
-    var candidates = configured ? [configured] : [];
-    for (var i = 0; i < roots.length; i++) candidates.push(path.join(roots[i], ".rpgrtl_workspace", "live_translation.json"));
+    var roots = [
+      bridge.root,
+      path.resolve(__dirname, ".."),
+      path.resolve(__dirname, "../.."),
+      path.resolve(__dirname, "../../..")
+    ];
+    var candidates = [];
+    if (configured) candidates.push(configured);
+    try {
+      if (typeof localStorage !== "undefined") {
+        var last = localStorage.getItem("RPGRenPyLocalizer_lastTransFile");
+        if (last) candidates.push(last);
+      }
+    } catch (_e) {}
+    for (var r = 0; r < roots.length; r++) {
+      var rootDir = roots[r];
+      candidates.push(path.join(rootDir, ".rpgrtl_workspace", "live_translation.json"));
+      candidates.push(path.join(rootDir, "translations.json"));
+      candidates.push(path.join(rootDir, "翻译文件.json"));
+      candidates.push(path.join(rootDir, "ManualTransFile.json"));
+      candidates.push(path.join(rootDir, "RPGRenPyLocalizer_translation.json"));
+      candidates.push(path.join(rootDir, "data", "translations.json"));
+      candidates.push(path.join(rootDir, "data", "翻译文件.json"));
+      candidates.push(path.join(rootDir, "data", "ManualTransFile.json"));
+      candidates.push(path.join(rootDir, "www", "data", "translations.json"));
+      candidates.push(path.join(rootDir, "www", "data", "翻译文件.json"));
+      candidates.push(path.join(rootDir, "www", "data", "ManualTransFile.json"));
+    }
     for (var j = 0; j < candidates.length; j++) {
       try {
-        if (!candidates[j] || !fs.existsSync(candidates[j])) continue;
-        var payload = JSON.parse(fs.readFileSync(candidates[j], "utf8"));
-        var table = payload && typeof payload.translations === "object" ? payload.translations : payload;
-        if (!table || typeof table !== "object" || Array.isArray(table)) continue;
-        bridge.translations = Object.assign({}, table);
-        bridge.translationCount = Object.keys(bridge.translations).length;
+        var cPath = candidates[j];
+        if (!cPath || !fs.existsSync(cPath)) continue;
+        var stat = fs.statSync(cPath);
+        if (!stat.isFile()) continue;
+        var rawText = fs.readFileSync(cPath, "utf8");
+        if (rawText.charCodeAt(0) === 0xFEFF) rawText = rawText.slice(1);
+        var payload = JSON.parse(rawText);
+        var table = {};
+        if (payload && typeof payload.translations === "object" && !Array.isArray(payload.translations)) {
+          table = payload.translations;
+        } else if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+          table = payload;
+        } else if (Array.isArray(payload)) {
+          for (var ai = 0; ai < payload.length; ai++) {
+            var item = payload[ai];
+            if (item && item.source && item.target) table[String(item.source)] = String(item.target);
+          }
+        }
+        var flatTable = {};
+        for (var k in table) {
+          if (!Object.prototype.hasOwnProperty.call(table, k)) continue;
+          var val = table[k];
+          if (typeof val === "string") {
+            flatTable[k] = val;
+          } else if (val && typeof val === "object") {
+            for (var subKey in val) {
+              if (typeof val[subKey] === "string") flatTable[subKey] = val[subKey];
+            }
+          }
+        }
+        if (Object.keys(flatTable).length === 0) continue;
+        bridge.translations = flatTable;
+        bridge.translationCount = Object.keys(flatTable).length;
         bridge.translationEnabled = bridge.translationCount > 0;
-        bridge.translationFile = candidates[j];
+        bridge.translationFile = cPath;
+        bridge.lastFileMtime = stat.mtimeMs || (stat.mtime ? stat.mtime.getTime() : Date.now());
+        try {
+          if (typeof localStorage !== "undefined") {
+            localStorage.setItem("RPGRenPyLocalizer_lastTransFile", cPath);
+          }
+        } catch (_e) {}
         return bridge.translationCount;
-      } catch (e) { bridge.lastError = "Unable to load live translation table: " + String(e); }
+      } catch (e) { bridge.lastError = "Unable to load translation table from " + candidates[j] + ": " + String(e); }
     }
     return 0;
   }
@@ -429,12 +546,11 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
 
   const RPGRenPyCjkFontFamily = "RPGRenPyLocalizer CJK";
   function cjkFontFace() {
-    return RPGRenPyCjkFontFamily + ", Microsoft YaHei, SimHei, Noto Sans CJK SC, Noto Sans SC, sans-serif";
+    var custom = (bridge.options && bridge.options.fontFamily) ? (bridge.options.fontFamily + ", ") : "";
+    return custom + RPGRenPyCjkFontFamily + ", Microsoft YaHei, SimHei, Noto Sans CJK SC, Noto Sans SC, sans-serif";
   }
   function installCjkFont() {
-    // Do not copy or request a bundled font. NW.js/Chromium resolves the
-    // following system fallbacks directly, avoiding a multi-megabyte runtime
-    // artifact and preventing missing-font loading stalls in MV/MZ.
+    // NW.js/Chromium resolves system fallbacks directly
   }
   installCjkFont();
 
@@ -472,7 +588,14 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   function translate(text) {
     if (!bridge.translationEnabled || text == null) return text;
     const raw = String(text);
-    return bridge.translations[raw] || bridge.translations[raw.trim()] || raw;
+    var target = bridge.translations[raw] || bridge.translations[raw.trim()];
+    if (target) return target;
+    var cleaned = cleanRuby(raw);
+    if (cleaned !== raw) {
+      target = bridge.translations[cleaned] || bridge.translations[cleaned.trim()];
+      if (target) return target;
+    }
+    return raw;
   }
 
   function refreshVisibleText(restartMessage) {
@@ -490,6 +613,23 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       }
       if (scene.refresh) scene.refresh();
     } catch (_e) {}
+  }
+
+  // Restore pristine original data when translation is toggled off
+  function restoreOriginalData() {
+    if (!Array.isArray(bridge.modifiedRecords)) return 0;
+    var restored = 0;
+    for (var i = bridge.modifiedRecords.length - 1; i >= 0; i--) {
+      var rec = bridge.modifiedRecords[i];
+      try {
+        if (rec && rec.container && rec.key !== undefined) {
+          rec.container[rec.key] = rec.original;
+          restored++;
+        }
+      } catch (_e) {}
+    }
+    bridge.modifiedRecords = [];
+    return restored;
   }
 
   function applyTranslationsToLoadedData() {
@@ -510,6 +650,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       const original = originalValue(container, key);
       const translated = translate(original);
       if (container[key] !== translated) {
+        bridge.modifiedRecords.push({ container: container, key: key, original: original });
         container[key] = translated;
         changed++;
       }
@@ -551,6 +692,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         }
       }
     };
+
     [
       window.$dataActors,
       window.$dataArmors,
@@ -562,6 +704,47 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       window.$dataStates,
       window.$dataWeapons
     ].forEach(walkDatabase);
+
+    // Apply Troops.json (battle events and troop names)
+    if (Array.isArray(window.$dataTroops)) {
+      for (var ti = 0; ti < window.$dataTroops.length; ti++) {
+        var troop = window.$dataTroops[ti];
+        if (!troop) continue;
+        applyString(troop, "name");
+        for (var pi = 0; pi < (Array.isArray(troop.pages) ? troop.pages.length : 0); pi++) {
+          var tPage = troop.pages[pi];
+          applyEventList(tPage && tPage.list);
+        }
+      }
+    }
+
+    // Apply System.json (game title, currency, terms, types)
+    if (window.$dataSystem && typeof window.$dataSystem === "object") {
+      applyString(window.$dataSystem, "gameTitle");
+      applyString(window.$dataSystem, "currencyUnit");
+      if (window.$dataSystem.terms && typeof window.$dataSystem.terms === "object") {
+        ["basic", "commands", "params"].forEach(function(cat) {
+          if (Array.isArray(window.$dataSystem.terms[cat])) {
+            for (var bi = 0; bi < window.$dataSystem.terms[cat].length; bi++) {
+              applyString(window.$dataSystem.terms[cat], bi);
+            }
+          }
+        });
+        if (window.$dataSystem.terms.messages && typeof window.$dataSystem.terms.messages === "object") {
+          for (var mKey of Object.keys(window.$dataSystem.terms.messages)) {
+            applyString(window.$dataSystem.terms.messages, mKey);
+          }
+        }
+      }
+      ["elements", "equipTypes", "skillTypes", "weaponTypes", "armorTypes"].forEach(function(grp) {
+        if (Array.isArray(window.$dataSystem[grp])) {
+          for (var gi = 0; gi < window.$dataSystem[grp].length; gi++) {
+            applyString(window.$dataSystem[grp], gi);
+          }
+        }
+      });
+    }
+
     applyMapDialogue(window.$dataMap);
     if (Array.isArray(window.$dataCommonEvents)) {
       for (const event of window.$dataCommonEvents) applyEventList(event && event.list);
@@ -577,7 +760,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (window.$gameMap) $gameMap.requestRefresh();
     if (window.SceneManager && SceneManager._scene) {
       try {
-        // Force redraw of message and choice windows
         var msgWin = SceneManager._scene._messageWindow;
         if (msgWin) {
           msgWin._needsRefresh = true;
@@ -587,7 +769,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         if (choiceWin) {
           if (choiceWin.refresh) choiceWin.refresh();
         }
-        // Also refresh the scroll text window if present
         var scrollWin = SceneManager._scene._scrollTextWindow;
         if (scrollWin && scrollWin.refresh) scrollWin.refresh();
         if (SceneManager._scene.refresh) SceneManager._scene.refresh();
@@ -595,6 +776,122 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     }
     return changed;
   }
+
+  // Setup hotkey listener for F9 / Ctrl+T bilingual toggle, F10 reload, F8 HUD, and cheat shortcuts
+  function toggleStatusHud() {
+    try {
+      if (typeof document === "undefined" || !document.body) return;
+      var id = "rpgrtl-status-hud";
+      var el = document.getElementById(id);
+      if (el) {
+        el.style.display = (el.style.display === "none") ? "flex" : "none";
+        return;
+      }
+      el = document.createElement("div");
+      el.id = id;
+      el.style.position = "fixed";
+      el.style.bottom = "16px";
+      el.style.left = "16px";
+      el.style.zIndex = "9999998";
+      el.style.display = "flex";
+      el.style.gap = "8px";
+      el.style.padding = "6px 12px";
+      el.style.background = "rgba(13, 23, 38, 0.88)";
+      el.style.border = "1px solid rgba(77, 214, 200, 0.4)";
+      el.style.borderRadius = "8px";
+      el.style.fontFamily = "system-ui, sans-serif";
+      el.style.fontSize = "12px";
+      el.style.color = "#edf4ff";
+      el.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+      el.style.pointerEvents = "none";
+      document.body.appendChild(el);
+      function updateHud() {
+        if (!el || el.style.display === "none") return;
+        var t = bridge.options.through ? "⚡穿墙:ON" : "⚡穿墙:OFF";
+        var g = bridge.options.godMode ? "🛡️无敌:ON" : "🛡️无敌:OFF";
+        var n = bridge.options.noEncounter ? "🚫不遇敌:ON" : "🚫不遇敌:OFF";
+        var k = bridge.options.oneHitKill ? "⚔️秒杀:ON" : "⚔️秒杀:OFF";
+        var tr = bridge.translationEnabled ? "🌐译文:ON" : "🌐原文:ON";
+        el.textContent = [t, g, n, k, tr].join(" | ");
+      }
+      setInterval(updateHud, 500);
+      updateHud();
+    } catch (_e) {}
+  }
+
+  function setupHotkeyListeners() {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function" || window._rpgrtl_hotkey_installed) return;
+    window._rpgrtl_hotkey_installed = true;
+    window.addEventListener("keydown", function(e) {
+      if (!e) return;
+      var isF9 = e.key === "F9" || e.code === "F9" || e.keyCode === 120;
+      var isToggleCtrlT = e.ctrlKey && (e.key === "t" || e.key === "T" || e.keyCode === 84);
+      var isTilde = e.key === "`" || e.key === "~" || e.code === "Backquote";
+      if (isF9 || isToggleCtrlT || isTilde) {
+        e.preventDefault();
+        bridge.translationEnabled = !bridge.translationEnabled;
+        if (bridge.translationEnabled) {
+          var count = applyTranslationsToLoadedData();
+          refreshVisibleText(true);
+          showToast("RPGRenPyLocalizer: 翻译已生效 (" + (bridge.translationCount || count) + " 条) [F9 切换]", "#059669");
+        } else {
+          restoreOriginalData();
+          refreshVisibleText(true);
+          showToast("RPGRenPyLocalizer: 已切换至原版语言 [F9 恢复]", "#d97706");
+        }
+        return;
+      }
+      var isF10 = e.key === "F10" || e.code === "F10" || e.keyCode === 121;
+      var isReloadCtrlR = (e.ctrlKey && (e.key === "r" || e.key === "R" || e.keyCode === 82)) && e.shiftKey;
+      if (isF10 || isReloadCtrlR) {
+        e.preventDefault();
+        var reloaded = loadLocalTranslationTable();
+        if (bridge.translationEnabled) {
+          applyTranslationsToLoadedData();
+          refreshVisibleText(true);
+        }
+        showToast("RPGRenPyLocalizer: 翻译文件重新载入 (" + bridge.translationCount + " 条)", "#2563eb");
+        return;
+      }
+      var isF8 = e.key === "F8" || e.code === "F8" || e.keyCode === 119;
+      if (isF8) {
+        e.preventDefault();
+        toggleStatusHud();
+        showToast("RPGRenPyLocalizer: 状态指示栏已切换 [F8]", "#0284c7");
+        return;
+      }
+      if (e.ctrlKey || e.altKey) {
+        var key = String(e.key || "").toUpperCase();
+        if (key === "F1" || key === "1") {
+          e.preventDefault();
+          bridge.options.through = !bridge.options.through;
+          if (window.$gamePlayer && $gamePlayer.setThrough) $gamePlayer.setThrough(bridge.options.through);
+          showToast("⚡ 穿墙模式: " + (bridge.options.through ? "开启" : "关闭"), bridge.options.through ? "#059669" : "#6b7280");
+        } else if (key === "F2" || key === "2") {
+          e.preventDefault();
+          bridge.options.godMode = !bridge.options.godMode;
+          showToast("🛡️ 锁血无敌: " + (bridge.options.godMode ? "开启" : "关闭"), bridge.options.godMode ? "#059669" : "#6b7280");
+        } else if (key === "F3" || key === "3") {
+          e.preventDefault();
+          bridge.options.noEncounter = !bridge.options.noEncounter;
+          showToast("🚫 不遇敌模式: " + (bridge.options.noEncounter ? "开启" : "关闭"), bridge.options.noEncounter ? "#059669" : "#6b7280");
+        } else if (key === "F4" || key === "4") {
+          e.preventDefault();
+          bridge.options.oneHitKill = !bridge.options.oneHitKill;
+          showToast("⚔️ 致命秒杀: " + (bridge.options.oneHitKill ? "开启" : "关闭"), bridge.options.oneHitKill ? "#059669" : "#6b7280");
+        } else if (key === "F5" || key === "5") {
+          e.preventDefault();
+          apply({ heal_all: true });
+          showToast("💖 全员状态已完全恢复", "#ec4899");
+        } else if (key === "F6" || key === "6") {
+          e.preventDefault();
+          apply({ clear_pictures: true, clear_screen_effects: true });
+          showToast("🛠️ 已清除卡死图片与特效", "#f59e0b");
+        }
+      }
+    }, true);
+  }
+  setupHotkeyListeners();
 
   function collectContainer(container, database) {
     const result = [];
@@ -661,7 +958,7 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         displayName: window.$dataMap ? ($dataMap.displayName || "") : "",
         x: window.$gamePlayer ? $gamePlayer.x : 0,
         y: window.$gamePlayer ? $gamePlayer.y : 0,
-        through: window.$gamePlayer ? $gamePlayer.isThrough() : false
+        through: !!(bridge.options.through || (window.$gamePlayer && $gamePlayer.isThrough && $gamePlayer.isThrough()))
       },
       locks: bridge.locks,
       options: bridge.options,
@@ -682,8 +979,89 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     applyItems("items", window.$dataItems);
     applyItems("weapons", window.$dataWeapons);
     applyItems("armors", window.$dataArmors);
-    if (window.$gameSwitches && payload.switches) for (const [id, value] of Object.entries(payload.switches)) $gameSwitches.setValue(Number(id), !!value);
-    if (window.$gameVariables && payload.variables) for (const [id, value] of Object.entries(payload.variables)) $gameVariables.setValue(Number(id), value);
+
+    // MTool feature: One-click all items / weapons / armors
+    if (payload.all_items && window.$gameParty && window.$dataItems) {
+      const qty = Math.max(1, Math.min(Number(payload.all_items_count || payload.count) || 99, 999));
+      for (let i = 1; i < $dataItems.length; i++) {
+        const item = $dataItems[i];
+        if (item && item.name) {
+          try { $gameParty.gainItem(item, qty); } catch (_e) {
+            if ($gameParty._items) $gameParty._items[i] = qty;
+          }
+        }
+      }
+    }
+    if (payload.all_weapons && window.$gameParty && window.$dataWeapons) {
+      const qty = Math.max(1, Math.min(Number(payload.all_weapons_count || payload.count) || 99, 999));
+      for (let i = 1; i < $dataWeapons.length; i++) {
+        const item = $dataWeapons[i];
+        if (item && item.name) {
+          try { $gameParty.gainItem(item, qty); } catch (_e) {
+            if ($gameParty._weapons) $gameParty._weapons[i] = qty;
+          }
+        }
+      }
+    }
+    if (payload.all_armors && window.$gameParty && window.$dataArmors) {
+      const qty = Math.max(1, Math.min(Number(payload.all_armors_count || payload.count) || 99, 999));
+      for (let i = 1; i < $dataArmors.length; i++) {
+        const item = $dataArmors[i];
+        if (item && item.name) {
+          try { $gameParty.gainItem(item, qty); } catch (_e) {
+            if ($gameParty._armors) $gameParty._armors[i] = qty;
+          }
+        }
+      }
+    }
+
+    // Clear items / weapons / armors
+    if (payload.clear_items && window.$gameParty) $gameParty._items = {};
+    if (payload.clear_weapons && window.$gameParty) $gameParty._weapons = {};
+    if (payload.clear_armors && window.$gameParty) $gameParty._armors = {};
+
+    // MTool feature: One-click recover all / heal all party members
+    if (payload.heal_all && window.$gameParty && $gameParty.members) {
+      $gameParty.members().forEach(actor => {
+        if (actor) {
+          if (actor.recoverAll) actor.recoverAll();
+          actor._hp = actor.mhp || actor._hp || 9999;
+          actor._mp = actor.mmp || actor._mp || 999;
+          actor._tp = 100;
+          if (actor.clearStates) actor.clearStates();
+        }
+      });
+    }
+
+    // MTool feature: Set all party actors level
+    if (payload.all_actors_level && window.$gameParty && $gameParty.members) {
+      const lvl = Math.max(1, Math.min(Number(payload.all_actors_level) || 99, 999));
+      $gameParty.members().forEach(actor => {
+        if (actor && actor.changeLevel) actor.changeLevel(lvl, false);
+      });
+    }
+
+    if (window.$gameSwitches && payload.switches) {
+      for (const [id, value] of Object.entries(payload.switches)) {
+        $gameSwitches.setValue(Number(id), !!value);
+      }
+    }
+
+    // MTool feature: Batch switches toggle
+    if (payload.batch_switches && window.$gameSwitches) {
+      const ids = Array.isArray(payload.batch_switches.ids) ? payload.batch_switches.ids : [];
+      const val = !!payload.batch_switches.value;
+      for (let i = 0; i < ids.length; i++) {
+        $gameSwitches.setValue(Number(ids[i]), val);
+      }
+    }
+
+    if (window.$gameVariables && payload.variables) {
+      for (const [id, value] of Object.entries(payload.variables)) {
+        $gameVariables.setValue(Number(id), value);
+      }
+    }
+
     if (window.$gameActors && payload.actors) {
       for (const [id, patch] of Object.entries(payload.actors)) {
         const actor = $gameActors.actor(Number(id));
@@ -703,6 +1081,35 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         }
       }
     }
+
+    // MTool feature: Clear stuck pictures, screen tone/weather effects, or erase events
+    if (payload.clear_pictures && window.$gameScreen && $gameScreen.clearPictures) {
+      $gameScreen.clearPictures();
+    }
+    if (payload.clear_screen_effects && window.$gameScreen) {
+      if ($gameScreen.clearTone) $gameScreen.clearTone();
+      if ($gameScreen.clearFlash) $gameScreen.clearFlash();
+      if ($gameScreen.clearShake) $gameScreen.clearShake();
+      if ($gameScreen.clearWeather) $gameScreen.clearWeather();
+    }
+    if (payload.erase_current_event && window.$gameMap && window.$gamePlayer) {
+      var px = $gamePlayer.x;
+      var py = $gamePlayer.y;
+      var d = $gamePlayer.direction ? $gamePlayer.direction() : 2;
+      var fx = $gameMap.roundXWithDirection ? $gameMap.roundXWithDirection(px, d) : px;
+      var fy = $gameMap.roundYWithDirection ? $gameMap.roundYWithDirection(py, d) : py;
+      var events = $gameMap.events ? $gameMap.events() : [];
+      events.forEach(function(ev) {
+        if (!ev) return;
+        if ((ev.x === px && ev.y === py) || (ev.x === fx && ev.y === fy)) {
+          if (ev.erase) ev.erase();
+        }
+      });
+    }
+    if (payload.erase_event_id && window.$gameMap) {
+      var targetEv = $gameMap.event ? $gameMap.event(Number(payload.erase_event_id)) : null;
+      if (targetEv && targetEv.erase) targetEv.erase();
+    }
     if (payload.options) {
       const options = payload.options;
       if (options.gameSpeed !== undefined) bridge.options.gameSpeed = clamp(options.gameSpeed, 1, 16, 1);
@@ -710,16 +1117,51 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       if (options.battleSpeed !== undefined) bridge.options.battleSpeed = clamp(options.battleSpeed, 1, 16, 1);
       if (options.autoBattle !== undefined) bridge.options.autoBattle = !!options.autoBattle;
       if (options.godMode !== undefined) bridge.options.godMode = !!options.godMode;
+      if (options.noEncounter !== undefined) bridge.options.noEncounter = !!options.noEncounter;
+      if (options.oneHitKill !== undefined) bridge.options.oneHitKill = !!options.oneHitKill;
+      if (options.through !== undefined) {
+        bridge.options.through = !!options.through;
+        if (window.$gamePlayer && $gamePlayer.setThrough) $gamePlayer.setThrough(bridge.options.through);
+      }
       if (options.autoSaveInterval !== undefined) bridge.options.autoSaveInterval = Math.max(0, Number(options.autoSaveInterval) || 0);
       if (options.unlockCg !== undefined) bridge.options.unlockCg = !!options.unlockCg;
       if (options.fontSize !== undefined) bridge.options.fontSize = Math.max(0, Number(options.fontSize) || 0);
+      if (options.fontSizeOffset !== undefined) {
+        bridge.options.fontSizeOffset = clamp(options.fontSizeOffset, -12, 12, 0);
+        refreshVisibleText(true);
+      }
+      if (options.fontFamily !== undefined) {
+        bridge.options.fontFamily = String(options.fontFamily || "").trim();
+        refreshVisibleText(true);
+      }
       if (options.fpsBoost !== undefined) bridge.options.fpsBoost = !!options.fpsBoost;
       if (options.clickTeleport !== undefined) bridge.options.clickTeleport = !!options.clickTeleport;
-      if (bridge.options.unlockCg && window.$gameSystem) {
-        $gameSystem._cgUnlocked = true;
-        $gameSystem._galleryUnlocked = true;
-        $gameSystem._unlockedCg = $gameSystem._unlockedCg || {};
-        for (let i = 1; i <= 999; i++) $gameSystem._unlockedCg[i] = true;
+      if (bridge.options.unlockCg) {
+        if (window.$gameSystem) {
+          $gameSystem._cgUnlocked = true;
+          $gameSystem._galleryUnlocked = true;
+          $gameSystem._unlockedCg = $gameSystem._unlockedCg || {};
+          $gameSystem._cg = $gameSystem._cg || {};
+          $gameSystem._cgs = $gameSystem._cgs || {};
+          $gameSystem._scenes = $gameSystem._scenes || {};
+          $gameSystem._gallery = $gameSystem._gallery || {};
+          for (let i = 1; i <= 999; i++) {
+            $gameSystem._unlockedCg[i] = true;
+            $gameSystem._cg[i] = true;
+            $gameSystem._cgs[i] = true;
+            $gameSystem._scenes[i] = true;
+            $gameSystem._gallery[i] = true;
+          }
+        }
+        if (window.$dataSystem && window.$gameSwitches && Array.isArray($dataSystem.switches)) {
+          const cgRegex = /回想|CG|画廊|scene|gallery|recollection|event|omake/i;
+          for (let s = 1; s < $dataSystem.switches.length; s++) {
+            const swName = $dataSystem.switches[s];
+            if (swName && cgRegex.test(swName)) {
+              $gameSwitches.setValue(s, true);
+            }
+          }
+        }
       }
       if (window.Graphics && bridge.options.fpsBoost) {
         try { Graphics._maxFps = 60; } catch (_e) {}
@@ -734,7 +1176,10 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (payload.battle === "win" && window.BattleManager) BattleManager.processVictory();
     if (payload.battle === "lose" && window.BattleManager) BattleManager.processDefeat();
     if (payload.battle === "escape" && window.BattleManager) BattleManager.processEscape();
-    if (window.$gamePlayer && payload.player && payload.player.through !== undefined) $gamePlayer.setThrough(!!payload.player.through);
+    if (window.$gamePlayer && payload.player && payload.player.through !== undefined) {
+      bridge.options.through = !!payload.player.through;
+      $gamePlayer.setThrough(bridge.options.through);
+    }
     if (window.$gamePlayer && payload.player && payload.player.teleport && window.$gameMap) {
       const toMapX = value => value === "mouse" && window.TouchInput ? $gameMap.canvasToMapX(TouchInput.x) : Number(value);
       const toMapY = value => value === "mouse" && window.TouchInput ? $gameMap.canvasToMapY(TouchInput.y) : Number(value);
@@ -763,6 +1208,100 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       battler._hp = Math.max(1, battler.mhp || battler._hp || 1);
       battler._mp = battler.mmp || battler._mp || 0;
       battler._tp = 100;
+    }
+  }
+
+  // MTool feature: God mode & skill cost protection
+  if (typeof Game_BattlerBase !== "undefined") {
+    if (Game_BattlerBase.prototype.setHp) {
+      const _origSetHp = Game_BattlerBase.prototype.setHp;
+      Game_BattlerBase.prototype.setHp = function(hp) {
+        if (this.isActor && this.isActor()) {
+          const id = this.actorId();
+          const lock = bridge.locks[String(id)] || {};
+          if (bridge.options.godMode) {
+            hp = Math.max(1, this.mhp || this._hp || 9999);
+          } else if (lock.hp !== undefined) {
+            hp = Number(lock.hp) || 0;
+          }
+        }
+        _origSetHp.call(this, hp);
+      };
+    }
+    if (Game_BattlerBase.prototype.paySkillCost) {
+      const _origPaySkillCost = Game_BattlerBase.prototype.paySkillCost;
+      Game_BattlerBase.prototype.paySkillCost = function(skill) {
+        if (this.isActor && this.isActor()) {
+          const id = this.actorId();
+          const lock = bridge.locks[String(id)] || {};
+          if (bridge.options.godMode || lock.mp !== undefined || lock.tp !== undefined) {
+            return;
+          }
+        }
+        _origPaySkillCost.call(this, skill);
+      };
+    }
+  }
+
+  // MTool feature: God mode damage nullification
+  if (typeof Game_Battler !== "undefined" && Game_Battler.prototype.gainHp) {
+    const _origGainHp = Game_Battler.prototype.gainHp;
+    Game_Battler.prototype.gainHp = function(value) {
+      if (this.isActor && this.isActor() && bridge.options.godMode && value < 0) {
+        return;
+      }
+      _origGainHp.call(this, value);
+    };
+  }
+
+  // MTool feature: God mode & one-hit kill hooks in Game_Action
+  if (typeof Game_Action !== "undefined") {
+    if (Game_Action.prototype.executeDamage) {
+      const _origExecuteDamage = Game_Action.prototype.executeDamage;
+      Game_Action.prototype.executeDamage = function(target, value) {
+        if (target && target.isActor && target.isActor() && bridge.options.godMode) {
+          value = 0;
+        }
+        _origExecuteDamage.call(this, target, value);
+      };
+    }
+    if (Game_Action.prototype.makeDamageValue) {
+      const _origMakeDamageValue = Game_Action.prototype.makeDamageValue;
+      Game_Action.prototype.makeDamageValue = function(target, critical) {
+        let value = _origMakeDamageValue.call(this, target, critical);
+        if (bridge.options.oneHitKill && this.subject && this.subject() && this.subject().isActor && this.subject().isActor()) {
+          if (target && (!target.isActor || !target.isActor())) {
+            value = Math.max(value, target.hp || target._hp || 999999);
+          }
+        }
+        return value;
+      };
+    }
+  }
+
+  // MTool feature: Persistent through & no-encounter hooks in Game_Player
+  if (typeof Game_Player !== "undefined") {
+    const _origPlayerIsThrough = Game_Player.prototype.isThrough;
+    Game_Player.prototype.isThrough = function() {
+      if (bridge.options.through) return true;
+      return _origPlayerIsThrough ? _origPlayerIsThrough.call(this) : false;
+    };
+    if (Game_Player.prototype.canEncounter) {
+      const _origCanEncounter = Game_Player.prototype.canEncounter;
+      Game_Player.prototype.canEncounter = function() {
+        if (bridge.options.noEncounter) return false;
+        return _origCanEncounter.call(this);
+      };
+    }
+    if (Game_Player.prototype.makeEncounterCount) {
+      const _origMakeEncounterCount = Game_Player.prototype.makeEncounterCount;
+      Game_Player.prototype.makeEncounterCount = function() {
+        if (bridge.options.noEncounter) {
+          this._encounterCount = 999999;
+          return;
+        }
+        _origMakeEncounterCount.call(this);
+      };
     }
   }
 
@@ -830,9 +1369,18 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     _bitmapInitialize.call(this, width, height);
     this.fontFace = cjkFontFace();
     if (bridge.options.fontSize > 0) this.fontSize = bridge.options.fontSize;
+    else if (bridge.options.fontSizeOffset) this.fontSize = Math.max(10, (this.fontSize || 28) + Number(bridge.options.fontSizeOffset));
   };
 
   if (typeof Window_Base !== "undefined") {
+    if (Window_Base.prototype.standardFontSize) {
+      const _standardFontSize = Window_Base.prototype.standardFontSize;
+      Window_Base.prototype.standardFontSize = function() {
+        const base = _standardFontSize.call(this);
+        const offset = Number(bridge.options.fontSizeOffset || 0);
+        return Math.max(10, base + offset);
+      };
+    }
     if (Window_Base.prototype.standardFontFace) {
       const _standardFontFace = Window_Base.prototype.standardFontFace;
       Window_Base.prototype.standardFontFace = function() {
@@ -844,7 +1392,12 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       const _resetFontSettings = Window_Base.prototype.resetFontSettings;
       Window_Base.prototype.resetFontSettings = function() {
         _resetFontSettings.call(this);
-        if (this.contents) this.contents.fontFace = cjkFontFace();
+        if (this.contents) {
+          this.contents.fontFace = cjkFontFace();
+          if (bridge.options.fontSizeOffset) {
+            this.contents.fontSize = Math.max(10, (this.contents.fontSize || 28) + Number(bridge.options.fontSizeOffset));
+          }
+        }
       };
     }
   }
@@ -853,6 +1406,40 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     Game_System.prototype.mainFontFace = function() {
       const original = _mainFontFace.call(this);
       return cjkFontFace() + (original ? ", " + original : "");
+    };
+  }
+
+  // MTool compatibility: short-circuit Rubi_riru rubytext creation
+  if (typeof Game_Message !== "undefined" && Game_Message.prototype.createRubytext) {
+    Game_Message.prototype.createRubytext = function(text) { return text; };
+  }
+
+  // MTool compatibility: VisuStella MZ auto-color protection
+  if (typeof Window_Base !== "undefined" && Window_Base.prototype.processAutoColorWords) {
+    var _origAutoColor = Window_Base.prototype.processAutoColorWords;
+    Window_Base.prototype.processAutoColorWords = function(textState) {
+      try {
+        return _origAutoColor.call(this, textState);
+      } catch (_e) {
+        return;
+      }
+    };
+  }
+
+  // MTool compatibility: QuestSystem / MessageAutoReplace sliceText pre-translation
+  if (typeof Window_Base !== "undefined" && Window_Base.prototype.sliceText) {
+    var _origSliceText = Window_Base.prototype.sliceText;
+    Window_Base.prototype.sliceText = function(text, width) {
+      var tr = translate(text);
+      return _origSliceText.call(this, tr || text, width);
+    };
+  }
+
+  // BattleLog translation hook
+  if (typeof Window_BattleLog !== "undefined" && Window_BattleLog.prototype.addText) {
+    var _origAddText = Window_BattleLog.prototype.addText;
+    Window_BattleLog.prototype.addText = function(text) {
+      return _origAddText.call(this, translate(text));
     };
   }
 
@@ -887,9 +1474,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   }
   const _drawText = Bitmap.prototype.drawText;
   Bitmap.prototype.drawText = function(text, x, y, maxWidth, lineHeight, align) {
-    // Bitmap.drawText is also used by menus, HUDs, and plugins.  Translation
-    // is performed by safe message windows above, so this fallback must keep
-    // arbitrary system/plugin text untouched.
     try { var result = _drawText.call(this, text, x, y, maxWidth, lineHeight, align); }
     catch(_e) { var result = _drawText.call(this, text, x, y, maxWidth, lineHeight, align); }
     if (text && typeof text === "string" && text.trim() && text.length > 1) {
@@ -910,7 +1494,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   }
 
   // MV/MZ event dialogue normally enters the queue through add(), not setText().
-  // Hook both APIs so runtime capture works across engine versions and plugins.
   if (typeof Game_Message !== "undefined" && Game_Message.prototype.add) {
     var _origAdd = Game_Message.prototype.add;
     Game_Message.prototype.add = function(text) {
@@ -923,11 +1506,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     };
   }
 
-  // --- Hook Game_Interpreter commands for real-time text extraction ---
-  // These capture dialogue/choices/scroll text as the game EXECUTES them,
-  // which covers all event types (map, common, parallel, autorun).
+  // Hook Game_Interpreter commands for real-time text extraction
   if (typeof Game_Interpreter !== "undefined") {
-    // Command 401: dialogue continuation line
     if (Game_Interpreter.prototype.command401) {
       var _origCmd401 = Game_Interpreter.prototype.command401;
       Game_Interpreter.prototype.command401 = function() {
@@ -940,7 +1520,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         return result;
       };
     }
-    // Command 102: show choices
     if (Game_Interpreter.prototype.command102) {
       var _origCmd102 = Game_Interpreter.prototype.command102;
       Game_Interpreter.prototype.command102 = function() {
@@ -958,7 +1537,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         return result;
       };
     }
-    // Command 405: scroll text
     if (Game_Interpreter.prototype.command405) {
       var _origCmd405 = Game_Interpreter.prototype.command405;
       Game_Interpreter.prototype.command405 = function() {
@@ -1016,12 +1594,10 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     for (var j = 0; j < list.length; j++) {
       var cmd = list[j];
       if (!cmd) continue;
-      // Code 401: dialogue text
       if (cmd.code === 401 && cmd.parameters && typeof cmd.parameters[0] === "string" && cmd.parameters[0].trim()) {
         reportSeen(cmd.parameters[0], cmd.parameters[0], kind);
         count++;
       }
-      // Code 102: menu choices
       if (cmd.code === 102 && Array.isArray(cmd.parameters[0])) {
         for (var k = 0; k < cmd.parameters[0].length; k++) {
           var ch = cmd.parameters[0][k];
@@ -1031,7 +1607,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
           }
         }
       }
-      // Code 405: scroll text
       if (cmd.code === 405 && cmd.parameters && typeof cmd.parameters[0] === "string" && cmd.parameters[0].trim()) {
         reportSeen(cmd.parameters[0], cmd.parameters[0], kind);
         count++;
@@ -1042,7 +1617,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
 
   function scanMapEventsForText() {
     var count = 0;
-    // Scan current map events
     if ($dataMap && $dataMap.events) {
       for (var i = 0; i < $dataMap.events.length; i++) {
         var event = $dataMap.events[i];
@@ -1052,7 +1626,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         }
       }
     }
-    // Scan common events (these run globally, not tied to a specific map)
     if (typeof $dataCommonEvents !== "undefined" && $dataCommonEvents) {
       for (var ci = 0; ci < $dataCommonEvents.length; ci++) {
         var ce = $dataCommonEvents[ci];
@@ -1063,6 +1636,24 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (count > 0) {
       bridge.debugEvents.push({time: Date.now(), kind: "map_scan", source: "scanned " + count + " texts from map/events", displayed: "", target: "", matched: false});
     }
+  }
+
+  // Automatic file change detection & hot-reload
+  function checkFileHotReload() {
+    try {
+      if (!bridge.translationFile || !fs.existsSync(bridge.translationFile)) return;
+      var stat = fs.statSync(bridge.translationFile);
+      var mtime = stat.mtimeMs || (stat.mtime ? stat.mtime.getTime() : 0);
+      if (bridge.lastFileMtime && mtime > bridge.lastFileMtime + 400) {
+        bridge.lastFileMtime = mtime;
+        loadLocalTranslationTable();
+        if (bridge.translationEnabled) {
+          applyTranslationsToLoadedData();
+          refreshVisibleText(true);
+          showToast("RPGRenPyLocalizer: 翻译文件更新，热重载完成 (" + bridge.translationCount + " 条)", "#7c3aed");
+        }
+      }
+    } catch (_e) {}
   }
 
   // Background: poll tool server for translations
@@ -1135,8 +1726,6 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
               for (var i = 0; i < batch.length && i < payload.targets.length; i++) {
                 if (payload.targets[i]) bridge.translations[batch[i].text] = payload.targets[i];
               }
-              // A translation can become available between add() and this
-              // response. Apply it to the active message queue before redraw.
               var applied = applyTranslationsToLoadedData();
               refreshVisibleText(applied > 0);
             }
@@ -1149,12 +1738,13 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     req.end();
   }
 
-  // Start background polling
+  // Start background polling and hot-reload watcher
   function startBackgroundPolling() {
     if (bridge._pollTimer) return;
     bridge._pollTimer = setInterval(function() {
       sendSeenBatchToTool();
       pollToolForTranslations();
+      checkFileHotReload();
     }, 500);
   }
 
@@ -1260,6 +1850,9 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     const applied = applyTranslationsToLoadedData();
     refreshVisibleText(applied > 0);
     startBackgroundPolling();
+    if (bridge.translationCount > 0) {
+      showToast("RPGRenPyLocalizer: 翻译已自动生效 (" + bridge.translationCount + " 条) [F9 切换]", "#059669");
+    }
   });
 })();
 """
@@ -1276,6 +1869,7 @@ CATEGORY_LABELS = {
     "Weapons.json": "Weapons 武器",
     "MapInfos.json": "MapInfos 地图",
     "CommonEvents.json": "CommonEvents 公共事件",
+    "Troops.json": "Troops 敌群事件",
 }
 
 
@@ -1310,10 +1904,10 @@ class RPGMakerService:
     def _filter_safe_translation_map(cls, translations: dict[str, TranslationEntry]) -> dict[str, TranslationEntry]:
         return {entry_id: entry for entry_id, entry in translations.items() if cls._is_safe_translation_entry(entry)}
 
-    def extract_translations(self) -> list[TranslationEntry]:
+    def extract_translations(self, include_system: bool = False) -> list[TranslationEntry]:
         entries: list[TranslationEntry] = []
         for json_path in sorted(self.data_dir.glob("*.json")):
-            if not _is_safe_translation_file(json_path.name):
+            if not _is_safe_translation_file(json_path.name, include_system=include_system):
                 continue
             data = load_json(json_path)
             entries.extend(self._extract_from_json(json_path.name, data))
@@ -1726,9 +2320,15 @@ class RPGMakerService:
         body = json.dumps(plugins, ensure_ascii=False, indent=2)
         plugins_js.write_text("// Generated by RPG Maker.\n// Do not edit this file directly.\nvar $plugins =\n" + body + ";\n", encoding="utf-8", newline="\n")
 
+    def _find_save_dir(self) -> Path | None:
+        for candidate in (self.project.root / "save", self.project.root / "www" / "save"):
+            if candidate.is_dir():
+                return candidate
+        return None
+
     def list_save_slots(self) -> list[SaveSlot]:
-        save_dir = self.project.root / "save"
-        if not save_dir.is_dir():
+        save_dir = self._find_save_dir()
+        if not save_dir or not save_dir.is_dir():
             return []
         slots: list[SaveSlot] = []
         for path in sorted(save_dir.glob("*.*save")):
@@ -1739,6 +2339,74 @@ class RPGMakerService:
             modified = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
             slots.append(SaveSlot(slot_id=slot_id, label=f"存档 {slot_id}", path=path, modified_at=modified))
         return slots
+
+    def list_save_snapshots(self) -> list[dict[str, Any]]:
+        backup_base = self.project.root / ".rpgrtl_workspace" / "save_backups"
+        if not backup_base.is_dir():
+            return []
+        results = []
+        for snap_dir in sorted(backup_base.iterdir(), reverse=True):
+            if not snap_dir.is_dir():
+                continue
+            meta_file = snap_dir / "meta.json"
+            if meta_file.is_file():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                    results.append(meta)
+                    continue
+                except Exception:
+                    pass
+            files = list(snap_dir.glob("*.*save"))
+            results.append({
+                "id": snap_dir.name,
+                "label": snap_dir.name,
+                "created_at": datetime.fromtimestamp(snap_dir.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "file_count": len(files),
+                "path": str(snap_dir),
+            })
+        return results
+
+    def create_save_snapshot(self, label: str = "") -> dict[str, Any]:
+        save_dir = self._find_save_dir()
+        if not save_dir or not save_dir.is_dir():
+            return {"ok": False, "error": "未找到游戏存档目录"}
+        save_files = list(save_dir.glob("*.*save"))
+        if not save_files:
+            return {"ok": False, "error": "当前没有可备份的存档文件"}
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = re.sub(r"[^\w\-]", "_", label.strip())[:20] if label else "manual"
+        snap_id = f"snap_{stamp}_{slug}"
+        snap_dir = self.project.root / ".rpgrtl_workspace" / "save_backups" / snap_id
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        copied_files = []
+        for sf in save_files:
+            dest = snap_dir / sf.name
+            shutil.copy2(sf, dest)
+            copied_files.append(sf.name)
+        meta = {
+            "id": snap_id,
+            "label": label or f"快照 {stamp}",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "file_count": len(copied_files),
+            "files": copied_files,
+            "path": str(snap_dir),
+        }
+        (snap_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"ok": True, "snapshot": meta}
+
+    def restore_save_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        snap_dir = self.project.root / ".rpgrtl_workspace" / "save_backups" / snapshot_id
+        if not snap_dir.is_dir():
+            return {"ok": False, "error": "指定的备份快照不存在"}
+        save_dir = self._find_save_dir()
+        if not save_dir:
+            save_dir = self.project.root / "save"
+            save_dir.mkdir(parents=True, exist_ok=True)
+        restored = []
+        for sf in snap_dir.glob("*.*save"):
+            shutil.copy2(sf, save_dir / sf.name)
+            restored.append(sf.name)
+        return {"ok": True, "restored_count": len(restored), "files": restored}
 
     def load_save(self, save_path: Path) -> dict[str, Any]:
         raw = save_path.read_bytes().decode("utf-8", errors="surrogateescape")
@@ -2126,9 +2794,70 @@ class RPGMakerService:
         return records
 
     def _extract_from_json(self, file_name: str, data: Any) -> list[TranslationEntry]:
+        if file_name == "System.json" and isinstance(data, dict):
+            return self._extract_system_fields(file_name, data)
         entries = self._extract_standard_database_fields(file_name, data)
         entries.extend(self._extract_standard_event_commands(file_name, data))
         return self._deduplicate(entries)
+
+    def _extract_system_fields(self, file_name: str, data: dict[str, Any]) -> list[TranslationEntry]:
+        entries: list[TranslationEntry] = []
+        for key in ("gameTitle", "currencyUnit"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                entries.append(
+                    TranslationEntry(
+                        entry_id=self._make_entry_id(file_name, [key]),
+                        source=value,
+                        file=file_name,
+                        context=key,
+                        category="system",
+                    )
+                )
+        terms = data.get("terms")
+        if isinstance(terms, dict):
+            for group_name in ("basic", "commands", "params"):
+                group = terms.get(group_name)
+                if isinstance(group, list):
+                    for idx, val in enumerate(group):
+                        if isinstance(val, str) and val.strip():
+                            entries.append(
+                                TranslationEntry(
+                                    entry_id=self._make_entry_id(file_name, ["terms", group_name, idx]),
+                                    source=val,
+                                    file=file_name,
+                                    context=f"terms.{group_name}[{idx}]",
+                                    category="system",
+                                )
+                            )
+            messages = terms.get("messages")
+            if isinstance(messages, dict):
+                for m_key, m_val in messages.items():
+                    if isinstance(m_val, str) and m_val.strip():
+                        entries.append(
+                            TranslationEntry(
+                                entry_id=self._make_entry_id(file_name, ["terms", "messages", m_key]),
+                                source=m_val,
+                                file=file_name,
+                                context=f"terms.messages.{m_key}",
+                                category="system",
+                            )
+                        )
+        for group_name in ("elements", "equipTypes", "skillTypes", "weaponTypes", "armorTypes"):
+            group = data.get(group_name)
+            if isinstance(group, list):
+                for idx, val in enumerate(group):
+                    if isinstance(val, str) and val.strip():
+                        entries.append(
+                            TranslationEntry(
+                                entry_id=self._make_entry_id(file_name, [group_name, idx]),
+                                source=val,
+                                file=file_name,
+                                context=f"{group_name}[{idx}]",
+                                category="system",
+                            )
+                        )
+        return entries
 
     def _extract_standard_database_fields(self, file_name: str, data: Any) -> list[TranslationEntry]:
         if file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict):
@@ -2180,6 +2909,23 @@ class RPGMakerService:
                     for command_index, command in enumerate(commands):
                         if isinstance(command, dict):
                             yield command, [event_index, "list", command_index]
+            return
+        if file_name == "Troops.json" and isinstance(data, list):
+            for troop_index, troop in enumerate(data):
+                if not isinstance(troop, dict):
+                    continue
+                pages = troop.get("pages")
+                if not isinstance(pages, list):
+                    continue
+                for page_index, page in enumerate(pages):
+                    if not isinstance(page, dict):
+                        continue
+                    commands = page.get("list")
+                    if not isinstance(commands, list):
+                        continue
+                    for command_index, command in enumerate(commands):
+                        if isinstance(command, dict):
+                            yield command, [troop_index, "pages", page_index, "list", command_index]
             return
         if not (file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict)):
             return
@@ -2289,6 +3035,9 @@ class RPGMakerService:
                 return entry.target
             return source_index.get((category, original), original)
 
+        if file_name == "System.json" and isinstance(data, dict):
+            return self._apply_system_fields(file_name, data, resolve)
+
         fields = DATABASE_TEXT_FIELDS.get(file_name, frozenset())
         if file_name.startswith("Map") and file_name.endswith(".json") and isinstance(data, dict):
             original = data.get("displayName")
@@ -2313,6 +3062,52 @@ class RPGMakerService:
                         changed += 1
         for command, path in self._iter_standard_event_commands(file_name, data):
             changed += self._apply_event_command(file_name, command, path, resolve)
+        return changed
+
+    def _apply_system_fields(self, file_name: str, data: dict[str, Any], resolve: Any) -> int:
+        changed = 0
+        for key in ("gameTitle", "currencyUnit"):
+            original = data.get(key)
+            if isinstance(original, str) and original.strip():
+                entry_id = self._make_entry_id(file_name, [key])
+                new_text = resolve(entry_id, original, "system")
+                if new_text != original:
+                    data[key] = new_text
+                    changed += 1
+
+        terms = data.get("terms")
+        if isinstance(terms, dict):
+            for group_name in ("basic", "commands", "params"):
+                group = terms.get(group_name)
+                if isinstance(group, list):
+                    for idx, val in enumerate(group):
+                        if isinstance(val, str) and val.strip():
+                            entry_id = self._make_entry_id(file_name, ["terms", group_name, idx])
+                            new_text = resolve(entry_id, val, "system")
+                            if new_text != val:
+                                group[idx] = new_text
+                                changed += 1
+            messages = terms.get("messages")
+            if isinstance(messages, dict):
+                for m_key, m_val in messages.items():
+                    if isinstance(m_val, str) and m_val.strip():
+                        entry_id = self._make_entry_id(file_name, ["terms", "messages", m_key])
+                        new_text = resolve(entry_id, m_val, "system")
+                        if new_text != m_val:
+                            messages[m_key] = new_text
+                            changed += 1
+
+        for group_name in ("elements", "equipTypes", "skillTypes", "weaponTypes", "armorTypes"):
+            group = data.get(group_name)
+            if isinstance(group, list):
+                for idx, val in enumerate(group):
+                    if isinstance(val, str) and val.strip():
+                        entry_id = self._make_entry_id(file_name, [group_name, idx])
+                        new_text = resolve(entry_id, val, "system")
+                        if new_text != val:
+                            group[idx] = new_text
+                            changed += 1
+
         return changed
 
     def _apply_event_command(
@@ -2406,7 +3201,7 @@ class RPGMakerService:
             if key in {"name", "displayName"}:
                 return "database"
             return "dialogue"
-        if file_name == "CommonEvents.json":
+        if file_name in {"CommonEvents.json", "Troops.json"}:
             return "dialogue"
         if file_name == "System.json":
             return "system"

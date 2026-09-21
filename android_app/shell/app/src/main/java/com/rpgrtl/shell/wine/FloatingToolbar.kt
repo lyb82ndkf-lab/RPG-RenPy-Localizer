@@ -88,7 +88,7 @@ class FloatingToolbar(
             ) { fire("live_translation") }
         )
         addView(iconButton(Icon.DATABASE, "日志") { fire("live_log") })
-        addView(iconButton(Icon.DATABASE, "数据") { fire("data") })
+        addView(iconButton(Icon.DATABASE, "修改") { fire("trainer") })
         addView(iconButton(Icon.KEYBOARD, "键盘") { fire("keyboard") })
         addView(
             iconButton(

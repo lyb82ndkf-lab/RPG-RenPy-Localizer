@@ -81,28 +81,91 @@ def detect_project(path: str | Path) -> ProjectInfo:
             scripts_dir=renpy_game,
         )
 
-    if list(root.glob("*.rxproj")) and (root / "Data").is_dir():
+    if (list(root.glob("*.rxproj")) or (root / "Data" / "Scripts.rxdata").is_file() or (root / "Data" / "System.rxdata").is_file() or any(f.name.lower().startswith("rgss10") and f.name.lower().endswith(".dll") for f in root.glob("*.dll"))) and (root / "Data").is_dir():
         return ProjectInfo(
             engine="RPG Maker XP",
             root=root,
             game_dir=root,
             launcher_path=launcher,
+            data_dir=root / "Data",
         )
 
-    if list(root.glob("*.rvproj")) and (root / "Data").is_dir():
+    if (list(root.glob("*.rvproj")) or (root / "Data" / "Scripts.rvdata").is_file() or (root / "Data" / "System.rvdata").is_file() or any(f.name.lower().startswith("rgss20") and f.name.lower().endswith(".dll") for f in root.glob("*.dll"))) and (root / "Data").is_dir():
         return ProjectInfo(
             engine="RPG Maker VX",
             root=root,
             game_dir=root,
             launcher_path=launcher,
+            data_dir=root / "Data",
         )
 
-    if list(root.glob("*.rvproj2")) and (root / "Data").is_dir():
+    if (list(root.glob("*.rvproj2")) or (root / "Data" / "Scripts.rvdata2").is_file() or (root / "Data" / "System.rvdata2").is_file() or any(f.name.lower().startswith("rgss30") and f.name.lower().endswith(".dll") for f in root.glob("*.dll"))) and (root / "Data").is_dir():
         return ProjectInfo(
             engine="RPG Maker VX Ace",
             root=root,
             game_dir=root,
             launcher_path=launcher,
+            data_dir=root / "Data",
+        )
+
+    if (root / "Data.dts").is_file() or ((root / "Script").is_dir() and (root / "Plugin").is_dir()):
+        return ProjectInfo(
+            engine="SRPG Studio",
+            root=root,
+            game_dir=root,
+            launcher_path=launcher,
+            data_dir=root / "Plugin" if (root / "Plugin").is_dir() else root,
+        )
+
+    # RPG Developer Bakin
+    if (
+        (root / "data" / "bakinplayer.exe").is_file()
+        or (root / "data" / "bakinengine.dll").is_file()
+        or (root / "bakinplayer.exe").is_file()
+        or (root / "bakinengine.dll").is_file()
+        or ((root / "data").is_dir() and any(f.suffix.lower() == ".rbpack" for f in (root / "data").glob("*.rbpack")))
+    ):
+        return ProjectInfo(
+            engine="RPG Developer Bakin",
+            root=root,
+            game_dir=root,
+            launcher_path=launcher,
+            data_dir=root / "data" if (root / "data").is_dir() else root,
+        )
+
+    # TyranoBuilder / TyranoScript
+    if (
+        (root / "tyrano" / "tyrano.js").is_file()
+        or (root / "tyrano").is_dir()
+        or ((root / "data" / "scenario").is_dir() and any((root / "data" / "scenario").glob("*.ks")) and not any(root.glob("*.xp3")) and not (root / "krkr.exe").is_file())
+    ):
+        return ProjectInfo(
+            engine="TyranoBuilder",
+            root=root,
+            game_dir=root,
+            launcher_path=launcher,
+            data_dir=root / "data" if (root / "data").is_dir() else root,
+            scripts_dir=root / "data" / "scenario" if (root / "data" / "scenario").is_dir() else None,
+        )
+
+    # Pixel Game Maker MV (Action Game Maker / Agtk)
+    if (root / "agtk.exe").is_file() or (root / "player.exe").is_file() and any("agtk" in f.name.lower() for f in root.glob("*.dll")):
+        return ProjectInfo(
+            engine="Pixel Game Maker MV",
+            root=root,
+            game_dir=root,
+            launcher_path=launcher,
+            data_dir=root / "data" if (root / "data").is_dir() else root,
+        )
+
+    # Smile Game Builder (SGB)
+    if (root / "game.kmy").is_file() or ((root / "kmyCore.dll").is_file() and not (root / "data" / "bakinplayer.exe").is_file()):
+        return ProjectInfo(
+            engine="Smile Game Builder",
+            root=root,
+            game_dir=root,
+            launcher_path=launcher,
+            data_dir=root,
         )
 
     # Unknown games remain importable for the read-only Agent workbench.
@@ -152,6 +215,27 @@ def detect_engine(root: str | Path) -> str:
         or any(name.endswith(('.ldb', '.lmt', '.lmu')) for name in names)
     ):
         return "RPG Maker 2000/2003"
+    if "data.dts" in names or any("plugin/" in p and p.endswith(".js") for p in relative_paths) or ("script" in names and "plugin" in names):
+        return "SRPG Studio"
+    if any(name.startswith("rgss30") and name.endswith(".dll") for name in names) or any(p.endswith(".rvdata2") for p in relative_paths):
+        return "RPG Maker VX Ace"
+    if any(name.startswith("rgss20") and name.endswith(".dll") for name in names) or any(p.endswith(".rvdata") for p in relative_paths):
+        return "RPG Maker VX"
+    if any(name.startswith("rgss10") and name.endswith(".dll") for name in names) or any(p.endswith(".rxdata") for p in relative_paths):
+        return "RPG Maker XP"
+    if (
+        "bakinplayer.exe" in names
+        or "bakinengine.dll" in names
+        or any(name.endswith(".rbpack") for name in names)
+        or "sharpkmycore.dll" in names
+    ):
+        return "RPG Developer Bakin"
+    if "tyrano.js" in names or any("tyrano/" in p for p in relative_paths):
+        return "TyranoBuilder"
+    if "agtk.exe" in names or any("agtk" in name for name in names):
+        return "Pixel Game Maker MV"
+    if "game.kmy" in names or ("kmycore.dll" in names and "bakinengine.dll" not in names):
+        return "Smile Game Builder"
     if "electron.exe" in names or "resources/app.asar" in relative_paths:
         return "Electron/Web"
     # Common visual-novel runtime signals.  Kirikiri/KAG uses XP3 archives

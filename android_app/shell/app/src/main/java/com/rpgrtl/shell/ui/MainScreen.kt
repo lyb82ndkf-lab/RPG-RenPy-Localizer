@@ -318,6 +318,11 @@ fun MainScreen(incomingIntent: Intent? = null) {
                             val updated = game.copy(box64Preset = box64, graphicsDriver = driver)
                             repository.updateGame(updated)
                             refreshGames()
+                        },
+                        onUpdateExecutable = { game, newExePath ->
+                            val updated = game.copy(executablePath = newExePath)
+                            repository.updateGame(updated)
+                            refreshGames()
                         }
                     )
                 }

@@ -89,8 +89,63 @@ object WinePathCompat {
         return n > 0 || lib.isFile
     }
 
+    fun patchVulkanIcds(context: Context): Int {
+        ensureBridge(context)
+        val rootfs = RootFS.find(context).rootDir
+        if (!rootfs.isDirectory) return 0
+        val icdDir = File(rootfs, "usr/share/vulkan/icd.d")
+        val oldP = OLD_ROOTFS_PREFIX
+        val newP = newRootfsPrefix(context)
+        var count = 0
+
+        // Ensure libvulkan_freedreno.so is visible in rootfs/lib as well as rootfs/usr/lib
+        val turnipUsr = File(rootfs, "usr/lib/libvulkan_freedreno.so")
+        val turnipLib = File(rootfs, "lib/libvulkan_freedreno.so")
+        if (turnipUsr.isFile && !turnipLib.exists()) {
+            try {
+                FileUtils.symlink(turnipUsr.absolutePath, turnipLib.absolutePath)
+            } catch (_: Throwable) {
+            }
+        }
+
+        if (icdDir.isDirectory) {
+            icdDir.listFiles()?.filter { it.isFile && it.name.endsWith(".json") }?.forEach { file ->
+                try {
+                    var text = file.readText()
+                    var modified = false
+                    if (text.contains(oldP)) {
+                        text = text.replace(oldP, newP)
+                        modified = true
+                    }
+                    if (file.name.contains("freedreno")) {
+                        val expectedPath = "$newP/usr/lib/libvulkan_freedreno.so"
+                        if (!text.contains(expectedPath) && !text.contains("$newP/lib/libvulkan_freedreno.so")) {
+                            text = "{\n    \"ICD\": {\n        \"api_version\": \"1.4.318\",\n        \"library_arch\": \"64\",\n        \"library_path\": \"$expectedPath\"\n    },\n    \"file_format_version\": \"1.0.1\"\n}\n"
+                            modified = true
+                        }
+                    } else if (file.name.contains("vortek")) {
+                        val expectedPath = "$newP/usr/lib/libvulkan_vortek.so"
+                        if (!text.contains(expectedPath) && !text.contains("$newP/lib/libvulkan_vortek.so")) {
+                            text = "{\n    \"ICD\": {\n        \"api_version\": \"1.1.128\",\n        \"library_path\": \"$expectedPath\"\n    },\n    \"file_format_version\": \"1.0.0\"\n}\n"
+                            modified = true
+                        }
+                    }
+                    if (modified) {
+                        file.writeText(text)
+                        count++
+                        ShellLog.info(context, "Patched Vulkan ICD ${file.name} to $newP")
+                    }
+                } catch (t: Throwable) {
+                    ShellLog.error(context, "Failed to patch Vulkan ICD ${file.name}", t)
+                }
+            }
+        }
+        return count
+    }
+
     fun patchCoreRuntimePaths(context: Context): Int {
         ensureBridge(context)
+        patchVulkanIcds(context)
         val rootfs = RootFS.find(context).rootDir
         if (!rootfs.isDirectory) return 0
         val oldP = OLD_ROOTFS_PREFIX
@@ -155,7 +210,8 @@ object WinePathCompat {
             File(rootfs, "usr/lib/libxcb.so"),
             File(rootfs, "usr/lib/libxcb.so.1"),
             File(rootfs, "usr/lib/libvulkan.so"),
-            File(rootfs, "usr/lib/libvulkan.so.1")
+            File(rootfs, "usr/lib/libvulkan.so.1"),
+            File(rootfs, "usr/lib/libvulkan.so.1.3.301")
         )
         listOf(
             File(rootfs, "usr/lib"),
@@ -342,5 +398,234 @@ object WinePathCompat {
             return i
         }
         return -1
+    }
+
+    fun findHostCjkFont(): File? {
+        val searchDirs = listOf(
+            File("/system/fonts"),
+            File("/product/fonts"),
+            File("/system_ext/fonts")
+        )
+        val preferredNames = listOf(
+            "NotoSansCJK-Regular.ttc",
+            "NotoSansSC-Regular.otf",
+            "NotoSansSC-Regular.ttf",
+            "NotoSansHans-Regular.otf",
+            "NotoSansHans-Regular.ttf",
+            "DroidSansFallback.ttf",
+            "MiSans-Regular.ttf",
+            "HarmonyOS_Sans_SC.ttf",
+            "OPPOSans-Regular.ttf",
+            "HONOR_Sans_Chinese-Regular.ttf",
+            "SourceHanSansCN-Regular.otf",
+            "SourceHanSans-Regular.ttc",
+            "FZLanTingHei-R-GBK.ttf"
+        )
+
+        for (dir in searchDirs) {
+            if (!dir.isDirectory) continue
+            for (name in preferredNames) {
+                val f = File(dir, name)
+                if (f.isFile && f.length() > 100_000) return f
+            }
+        }
+
+        for (dir in searchDirs) {
+            if (!dir.isDirectory) continue
+            val match = dir.listFiles()?.firstOrNull { file ->
+                if (!file.isFile || file.length() < 500_000) return@firstOrNull false
+                val lower = file.name.lowercase(java.util.Locale.ROOT)
+                (lower.contains("cjk") || lower.contains("sc-") || lower.contains("hans") ||
+                    lower.contains("fallback") || lower.contains("chinese") || lower.contains("misans") ||
+                    lower.contains("harmonyos")) && (lower.endsWith(".ttf") || lower.endsWith(".otf") || lower.endsWith(".ttc"))
+            }
+            if (match != null) return match
+        }
+
+        for (dir in searchDirs) {
+            if (!dir.isDirectory) continue
+            val largeFont = dir.listFiles()?.firstOrNull { file ->
+                file.isFile && file.length() > 4_000_000 &&
+                    (file.name.endsWith(".ttf") || file.name.endsWith(".otf") || file.name.endsWith(".ttc"))
+            }
+            if (largeFont != null) return largeFont
+        }
+
+        return null
+    }
+
+    private fun linkOrCopyFont(source: File, target: File): Boolean {
+        if (target.exists() || FileUtils.isSymlink(target)) {
+            if (target.length() > 0) return true
+            FileUtils.delete(target)
+        }
+        target.parentFile?.mkdirs()
+        val linked = runCatching {
+            FileUtils.symlink(source.absolutePath, target.absolutePath)
+            target.exists() && target.length() > 0
+        }.getOrDefault(false)
+        if (linked) return true
+
+        return runCatching {
+            FileUtils.copy(source, target)
+            target.isFile && target.length() > 0
+        }.getOrDefault(false)
+    }
+
+    fun setupCjkFonts(context: Context, containerDir: File): Boolean {
+        val rootfs = RootFS.find(context).rootDir
+        val hostCjkFont = findHostCjkFont()
+        if (hostCjkFont == null) {
+            ShellLog.error(context, "No CJK font found in /system/fonts or /product/fonts", null)
+            return false
+        }
+        ShellLog.info(context, "Using host CJK font: ${hostCjkFont.absolutePath} (size=${hostCjkFont.length()} bytes)")
+
+        val winFontsDir = File(containerDir, ".wine/drive_c/windows/Fonts")
+        val wineShareFontsDir = File(rootfs, "opt/wine/share/wine/fonts")
+        val linuxCjkFontsDir = File(rootfs, "usr/share/fonts/truetype/cjk")
+
+        listOf(winFontsDir, wineShareFontsDir, linuxCjkFontsDir).forEach { it.mkdirs() }
+
+        val standardFontAliases = listOf(
+            "simsun.ttc",
+            "simsun.ttf",
+            "msyh.ttc",
+            "msyh.ttf",
+            "simhei.ttf",
+            "simkai.ttf",
+            "simfang.ttf",
+            "msgothic.ttc"
+        )
+
+        for (alias in standardFontAliases) {
+            linkOrCopyFont(hostCjkFont, File(winFontsDir, alias))
+            linkOrCopyFont(hostCjkFont, File(wineShareFontsDir, alias))
+        }
+        linkOrCopyFont(hostCjkFont, File(linuxCjkFontsDir, "cjk_font.ttf"))
+
+        patchFontconfigConf(context, rootfs)
+        configureFontRegistry(context, containerDir)
+        return true
+    }
+
+    private fun patchFontconfigConf(context: Context, rootfs: File) {
+        val fontsConf = File(rootfs, "etc/fonts/fonts.conf")
+        val cacheDir = File(rootfs, "var/cache/fontconfig")
+        cacheDir.mkdirs()
+
+        if (fontsConf.isFile) {
+            runCatching {
+                var content = fontsConf.readText()
+                val oldP = OLD_ROOTFS_PREFIX
+                val newP = newRootfsPrefix(context)
+                if (content.contains(oldP)) {
+                    content = content.replace(oldP, newP)
+                    fontsConf.writeText(content)
+                    ShellLog.info(context, "Patched fontconfig fonts.conf with $newP")
+                }
+            }.onFailure { error ->
+                ShellLog.error(context, "Failed to patch fonts.conf", error)
+            }
+        }
+    }
+
+    private fun configureFontRegistry(context: Context, containerDir: File) {
+        val regFiles = listOf(
+            File(containerDir, ".wine/system.reg"),
+            File(containerDir, ".wine/user.reg")
+        )
+
+        val fontLinks = listOf(
+            "Tahoma",
+            "Arial",
+            "Segoe UI",
+            "Microsoft Sans Serif",
+            "MS Sans Serif",
+            "Lucida Sans Unicode",
+            "System",
+            "Times New Roman",
+            "Courier New"
+        )
+        val linkTargets = arrayOf("simsun.ttc,SimSun", "msyh.ttc,Microsoft YaHei")
+
+        val fontSubstitutes = listOf(
+            "SimSun" to "SimSun",
+            "宋体" to "SimSun",
+            "NSimSun" to "SimSun",
+            "新宋体" to "SimSun",
+            "SimHei" to "SimHei",
+            "黑体" to "SimHei",
+            "Microsoft YaHei" to "Microsoft YaHei",
+            "微软雅黑" to "Microsoft YaHei",
+            "KaiTi" to "KaiTi",
+            "楷体" to "KaiTi",
+            "FangSong" to "FangSong",
+            "仿宋" to "FangSong",
+            "MS Gothic" to "SimSun",
+            "MS PGothic" to "SimSun",
+            "MS UI Gothic" to "SimSun",
+            "MingLiU" to "SimSun",
+            "PMingLiU" to "SimSun"
+        )
+
+        val fontList = listOf(
+            "SimSun & NSimSun (TrueType)" to "simsun.ttc",
+            "Microsoft YaHei & Microsoft YaHei UI (TrueType)" to "msyh.ttc",
+            "SimHei (TrueType)" to "simhei.ttf",
+            "KaiTi (TrueType)" to "simkai.ttf",
+            "FangSong (TrueType)" to "simfang.ttf"
+        )
+
+        for (regFile in regFiles) {
+            if (!regFile.isFile) continue
+            runCatching {
+                com.rpgrtl.engine.core.WineRegistryEditor(regFile).use { reg ->
+                    val fontKey = "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts"
+                    for ((k, v) in fontList) {
+                        reg.setStringValue(fontKey, k, v)
+                    }
+
+                    val subKey = "Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes"
+                    for ((k, v) in fontSubstitutes) {
+                        reg.setStringValue(subKey, k, v)
+                    }
+
+                    val linkKey = "Software\\Microsoft\\Windows NT\\CurrentVersion\\FontLink\\SystemLink"
+                    for (face in fontLinks) {
+                        reg.setMultiStringValue(linkKey, face, linkTargets)
+                    }
+                }
+                ShellLog.info(context, "Configured CJK fonts & FontLink in ${regFile.name}")
+            }.onFailure { error ->
+                ShellLog.error(context, "Failed to write font registry to ${regFile.name}", error)
+            }
+        }
+    }
+
+    fun setupDxvkConfig(context: Context, rootDir: File): File {
+        val etcDir = File(rootDir, "etc")
+        etcDir.mkdirs()
+        val confFile = File(etcDir, "dxvk.conf")
+        val content = """
+            # RPGRenPyLocalizer optimized DXVK configuration
+            # Enforce VSync, tearFree, and strict frame presentation pacing to eliminate screen flickering
+            dxgi.syncInterval = 1
+            d3d11.syncInterval = 1
+            d3d9.presentInterval = 1
+            dxgi.tearFree = True
+            d3d9.tearFree = True
+            dxgi.maxFrameLatency = 1
+            d3d11.maxFrameLatency = 1
+            d3d9.maxFrameLatency = 1
+        """.trimIndent() + "\n"
+
+        runCatching {
+            confFile.writeText(content)
+            ShellLog.info(context, "Created optimized dxvk.conf at ${confFile.absolutePath}")
+        }.onFailure { error ->
+            ShellLog.error(context, "Failed to write dxvk.conf", error)
+        }
+        return confFile
     }
 }

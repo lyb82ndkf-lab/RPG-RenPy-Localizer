@@ -58,7 +58,8 @@ fun LibraryScreen(
     onOpenTranslation: (GameItem) -> Unit,
     onOpenTrainer: (GameItem) -> Unit = {},
     onDeleteGame: (GameItem) -> Unit,
-    onUpdatePreset: (GameItem, String, String) -> Unit
+    onUpdatePreset: (GameItem, String, String) -> Unit,
+    onUpdateExecutable: (GameItem, String) -> Unit = { _, _ -> }
 ) {
     var selectedGameForDetail by remember { mutableStateOf<GameItem?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -145,6 +146,9 @@ fun LibraryScreen(
                 },
                 onUpdatePreset = { box64, driver ->
                     onUpdatePreset(game, box64, driver)
+                },
+                onUpdateExecutable = { newExePath ->
+                    onUpdateExecutable(game, newExePath)
                 }
             )
         }

@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,6 +34,7 @@ import com.rpgrtl.shell.data.model.GameItem
 import com.rpgrtl.shell.ui.components.EngineBadge
 import com.rpgrtl.shell.ui.components.SectionHeader
 import com.rpgrtl.shell.wine.WinlatorBridge
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,10 +46,20 @@ fun GameDetailSheet(
     onOpenTranslation: () -> Unit,
     onOpenTrainer: () -> Unit = {},
     onDelete: () -> Unit,
-    onUpdatePreset: (box64: String, driver: String) -> Unit
+    onUpdatePreset: (box64: String, driver: String) -> Unit,
+    onUpdateExecutable: (exePath: String) -> Unit = {}
 ) {
     var selectedBox64 by remember(game) { mutableStateOf(game.box64Preset) }
     var selectedDriver by remember(game) { mutableStateOf(game.graphicsDriver) }
+    var selectedExePath by remember(game) { mutableStateOf(game.executablePath) }
+
+    val allExes = remember(game) {
+        game.directory.listFiles()?.filter {
+            it.isFile && it.extension.equals("exe", ignoreCase = true) &&
+            !it.name.startsWith("unitycrashhandler", ignoreCase = true) &&
+            !it.name.startsWith("unins", ignoreCase = true)
+        }?.sortedBy { it.name } ?: emptyList()
+    }
 
     val box64Presets = listOf("Performance", "Compatibility", "Safe")
     val driverOptions = listOf("Turnip + DXVK", "Turnip + Zink", "VirGL")
@@ -81,6 +93,43 @@ fun GameDetailSheet(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "启动程序: ",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = File(selectedExePath).name,
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            if (allExes.size > 1) {
+                Spacer(modifier = Modifier.height(8.dp))
+                SectionHeader(title = "切换启动程序 (.exe)")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    allExes.forEach { exeFile ->
+                        FilterChip(
+                            selected = File(selectedExePath).name.equals(exeFile.name, ignoreCase = true),
+                            onClick = {
+                                selectedExePath = exeFile.absolutePath
+                                onUpdateExecutable(exeFile.absolutePath)
+                            },
+                            label = { Text(exeFile.name) }
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
             SectionHeader(title = "Box64 运行模式")

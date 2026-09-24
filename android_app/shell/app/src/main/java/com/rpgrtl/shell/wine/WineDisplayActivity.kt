@@ -55,10 +55,12 @@ import com.rpgrtl.engine.xenvironment.components.GuestProgramLauncherComponent
 import com.rpgrtl.engine.xenvironment.components.ALSAServerComponent
 import com.rpgrtl.engine.xenvironment.components.SysVSharedMemoryComponent
 import com.rpgrtl.engine.xenvironment.components.VirGLRendererComponent
+import com.rpgrtl.engine.xenvironment.components.VortekRendererComponent
 import com.rpgrtl.engine.xenvironment.components.XServerComponent
 import com.rpgrtl.engine.xserver.ScreenInfo
 import com.rpgrtl.engine.xserver.XServer
 import com.rpgrtl.shell.MainActivity
+import com.rpgrtl.shell.data.model.GameEngine
 import com.rpgrtl.shell.ShellLog
 import androidx.preference.PreferenceManager
 import java.io.File
@@ -78,6 +80,10 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
     private var gameWorkDir = ""
     private var selectedBox64Preset = Box64Preset.PERFORMANCE
     private var selectedGraphicsDriver = ""
+    private var selectedGraphicsDriverRequestsDxvk = false
+    private var selectedGameEngine = GameEngine.CUSTOM
+    private val recentWineLogs = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private var wineProcessStartTime = 0L
     private var wineDebugCallback: com.rpgrtl.engine.core.Callback<String>? = null
     private var renpyLiveTranslationService: RenPyLiveTranslationService? = null
     private var displayRoot: FrameLayout? = null
@@ -107,6 +113,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
 
         gameExePath = intent.getStringExtra(EXTRA_GAME_URI).orEmpty()
         val gameTitle = intent.getStringExtra(EXTRA_GAME_TITLE).orEmpty().ifBlank { "Windows Game" }
+        selectedGameEngine = resolveGameEngine()
         val containerId = intent.getIntExtra(EXTRA_CONTAINER_ID, 0)
         runtimeBridge = RuntimeBridge(containerId.toString())
 
@@ -134,12 +141,10 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         if (!ensureWineRuntimePrepared()) return
 
         val dm = resources.displayMetrics
-        val screenW = maxOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(1280)
-        val screenH = minOf(dm.widthPixels, dm.heightPixels).coerceAtLeast(720)
-        val dynamicScreen = "${screenW}x${screenH}"
-        container.screenSize = dynamicScreen
-        screenInfo = ScreenInfo(dynamicScreen)
-        ShellLog.info(this, "Wine display init screen=$dynamicScreen device=${dm.widthPixels}x${dm.heightPixels}")
+        val screen = container.screenSize.ifBlank { Container.DEFAULT_SCREEN_SIZE }
+        container.screenSize = screen
+        screenInfo = ScreenInfo(screen)
+        ShellLog.info(this, "Wine display init screen=$screen device=${dm.widthPixels}x${dm.heightPixels}")
         xServer = XServer(this, screenInfo)
         winHandler = WinHandler(this)
         xServer.setWinHandler(winHandler)
@@ -223,22 +228,35 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         winHandler.start()
         wineDebugCallback?.let { ProcessHelper.removeDebugCallback(it) }
         wineDebugCallback = com.rpgrtl.engine.core.Callback<String> { line ->
-            ShellLog.info(this, "Wine output: $line")
+            recentWineLogs.add(line)
+            while (recentWineLogs.size > 500) {
+                recentWineLogs.pollFirst()
+            }
+            ShellLog.info(this, "[Wine/Box64] $line")
         }.also { ProcessHelper.addDebugCallback(it) }
         environment.startEnvironmentComponents()
         activeRuntimeBridges[container.id] = runtimeBridge
         Handler(Looper.getMainLooper()).postDelayed({
             val box64 = File(rootFS.rootDir, "usr/local/bin/box64")
             val wineBin = File(rootFS.rootDir, "opt/wine/bin/wine")
-            ShellLog.info(
-                this,
-                "Starting Wine guest once cmd=${launcherComponent?.guestExecutable} " +
-                    "cwd=${launcherComponent?.workingDir} box64=${box64.absolutePath} " +
-                    "box64Exists=${box64.isFile} box64Size=${box64.length()} " +
-                    "wineExists=${wineBin.isFile} bridge=${WinePathCompat.ensureBridge(this)}"
-            )
+            val launchFile = resolveLaunchFile(gameExePath)
+            ShellLog.info(this, "==================================================")
+            ShellLog.info(this, "===== RPGRenPyLocalizer 启动游戏 =====")
+            ShellLog.info(this, "游戏名称: $gameTitle")
+            ShellLog.info(this, "EXE 绝对路径: ${launchFile.absolutePath} (存在: ${launchFile.isFile})")
+            ShellLog.info(this, "工作目录 (CWD): ${launchFile.parentFile?.absolutePath}")
+            ShellLog.info(this, "显卡渲染驱动: $selectedGraphicsDriver (请求DXVK: $selectedGraphicsDriverRequestsDxvk)")
+            ShellLog.info(this, "Box64 性能预设: $selectedBox64Preset")
+            ShellLog.info(this, "Wine 启动命令行: ${launcherComponent?.guestExecutable}")
+            ShellLog.info(this, "WinePrefix: ${File(container.rootDir, ".wine").absolutePath}")
+            ShellLog.info(this, "X11 Socket: ${WinePathCompat.newX11Path(this)}")
+            ShellLog.info(this, "Box64 二进制: ${box64.absolutePath} (大小: ${box64.length()} 字节)")
+            ShellLog.info(this, "Wine 二进制: ${wineBin.absolutePath} (存在: ${wineBin.isFile})")
+            ShellLog.info(this, "==================================================")
+            wineProcessStartTime = System.currentTimeMillis()
+            recentWineLogs.clear()
             launcherComponent?.start()
-            ShellLog.info(this, "launcherComponent.start() pid=${launcherComponent?.pid ?: -1}")
+            ShellLog.info(this, "launcherComponent.start() 已调用, pid=${launcherComponent?.pid ?: -1}")
         }, 1200)
 
         Toast.makeText(this, "正在通过 Wine + Box64 启动：$gameTitle", Toast.LENGTH_LONG).show()
@@ -336,12 +354,58 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         selectedGraphicsDriver = resolveGraphicsDriver()
         container.box64Preset = selectedBox64Preset
         container.setGraphicsDriver(selectedGraphicsDriver)
-        container.setDXWrapper(DXWrappers.WINED3D)
+        val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
+        val isPureOpenGL = selectedGraphicsDriver.equals("virgl", ignoreCase = true) ||
+            selectedGraphicsDriver.contains("wined3d", ignoreCase = true) ||
+            (drivers.isNotEmpty() && drivers[0].equals("none", ignoreCase = true))
+        container.setDXWrapper(if (isPureOpenGL) DXWrappers.WINED3D else DXWrappers.DXVK)
         container.setStartupSelection(Container.STARTUP_SELECTION_ESSENTIAL)
-        Log.i(TAG, "Wine launch profile: box64=$selectedBox64Preset graphics=$selectedGraphicsDriver")
+        Log.i(TAG, "Wine launch profile: engine=$selectedGameEngine box64=$selectedBox64Preset graphics=$selectedGraphicsDriver dxwrapper=${container.getDXWrapper()}")
         manager.activateContainer(container)
         WineUtils.createDosdevicesSymlinks(container, false)
+        ensureDxvkInstalled(container)
+        WinePathCompat.setupCjkFonts(this, container.rootDir)
+        WinePathCompat.setupDxvkConfig(this, rootFS.rootDir)
         return true
+    }
+
+    private fun ensureDxvkInstalled(container: Container) {
+        if (container.dxWrapper != DXWrappers.DXVK) return
+        val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
+        val vulkanDriver = drivers[0]
+        val dxvkVersion = DefaultVersion.DXVK(vulkanDriver)
+        val windowsDir = File(container.rootDir, ".wine/drive_c/windows")
+        val required = listOf(
+            File(windowsDir, "system32/d3d11.dll"),
+            File(windowsDir, "system32/dxgi.dll"),
+            File(windowsDir, "system32/d3d10core.dll"),
+            File(windowsDir, "system32/d3d9.dll"),
+            File(windowsDir, "syswow64/d3d11.dll"),
+            File(windowsDir, "syswow64/dxgi.dll"),
+            File(windowsDir, "syswow64/d3d10core.dll"),
+            File(windowsDir, "syswow64/d3d9.dll")
+        )
+        val missing = required.filterNot { it.isFile }
+        if (missing.isNotEmpty()) {
+            ShellLog.info(this, "Container ${container.id} missing DXVK files: ${missing.map { it.name }}; extracting DXVK $dxvkVersion")
+            windowsDir.mkdirs()
+            GeneralComponents.extractFile(GeneralComponents.Type.DXVK, this, dxvkVersion, DefaultVersion.MAJOR_DXVK)
+        }
+
+        val userRegFile = File(container.rootDir, ".wine/user.reg")
+        if (userRegFile.isFile) {
+            try {
+                com.rpgrtl.engine.core.WineRegistryEditor(userRegFile).use { reg ->
+                    val libs = listOf("d3d11", "dxgi", "d3d10core", "d3d9", "d3d10", "d3d10_1")
+                    for (lib in libs) {
+                        reg.setStringValue("Software\\Wine\\DllOverrides", lib, "native,builtin")
+                    }
+                }
+                ShellLog.info(this, "Registered DXVK native,builtin overrides in user.reg")
+            } catch (t: Throwable) {
+                ShellLog.error(this, "Failed to write DXVK dll overrides to user.reg", t)
+            }
+        }
     }
 
     /**
@@ -349,11 +413,19 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
      * its binary path patches and guest drivers before wineserver can be spawned.
      */
     private fun ensureWineRuntimePrepared(): Boolean {
-        val marker = File(rootFS.rootDir, ".winlator/rpgtl_runtime_prepared_v3")
+        val marker = File(rootFS.rootDir, ".winlator/rpgtl_runtime_prepared_v5")
         if (marker.isFile) {
-            WinePathCompat.ensureBridge(this)
-            WinePathCompat.patchBox64Interpreter(this)
-            return true
+            val runtimeIsComplete = runCatching {
+                verifyDxvkRuntimeFiles(rootFS.rootDir)
+                true
+            }.getOrDefault(false)
+            if (runtimeIsComplete) {
+                WinePathCompat.ensureBridge(this)
+                WinePathCompat.patchBox64Interpreter(this)
+                return true
+            }
+            ShellLog.info(this, "DXVK files missing despite runtime marker; rebuilding Winlator runtime")
+            marker.delete()
         }
 
         setContentView(FrameLayout(this).apply {
@@ -404,7 +476,9 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         }
         val vulkanVersion = if (drivers[0] == GraphicsDrivers.VORTEK) DefaultVersion.VORTEK else DefaultVersion.TURNIP
         GeneralComponents.extractGraphicsDriverAsset(this, drivers[0], vulkanVersion)
+        WinePathCompat.patchVulkanIcds(this)
         GeneralComponents.extractFile(GeneralComponents.Type.DXVK, this, DefaultVersion.DXVK(drivers[0]), DefaultVersion.MAJOR_DXVK)
+        verifyDxvkRuntimeFiles(rootDir)
 
         WineUtils.applySystemTweaks(this, WineInfo.MAIN_WINE_INFO)
         WineUtils.changeServicesStatus(container, true)
@@ -512,6 +586,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
 
     private fun addRuntimeComponents() {
         WinePathCompat.ensureBridge(this)
+        WinePathCompat.patchVulkanIcds(this)
         val rootDir = rootFS.rootDir
         val drivers = GraphicsDrivers.parseIdentifiers(selectedGraphicsDriver)
         val guestRoot = WinePathCompat.newRootfsPrefix(this)
@@ -541,6 +616,17 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
                 )
             )
         }
+        if (drivers[0] == GraphicsDrivers.VORTEK) {
+            val options = VortekRendererComponent.Options()
+            environment.addComponent(
+                VortekRendererComponent(
+                    xServer,
+                    UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.VORTEK_SERVER_PATH),
+                    options
+                )
+            )
+            ShellLog.info(this, "VortekRendererComponent added")
+        }
         environment.addComponent(
             ALSAServerComponent(
                 UnixSocketConfig.create(rootDir.absolutePath, UnixSocketConfig.ALSA_SERVER_PATH),
@@ -560,9 +646,16 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         env.put("ANDROID_SYSVSHM_SERVER", "$guestRoot${UnixSocketConfig.SYSVSHM_SERVER_PATH}")
         env.put("ALSA_PLUGIN_DIR", "$guestRoot/usr/lib/alsa-lib")
         env.put("SDL_AUDIODRIVER", "alsa")
-        env.put("WINEDLLOVERRIDES", "winemenubuilder.exe=d;mscoree,mshtml=")
+        val isDxvk = container.dxWrapper == DXWrappers.DXVK
+        val d3dOverride = if (isDxvk) "d3d11,dxgi,d3d10core,d3d9=n,b" else "d3d11,dxgi,d3d10core,d3d9=b"
+        env.put("WINEDLLOVERRIDES", "$d3dOverride;winemenubuilder.exe=d")
         env.put("NWJS_ARGS", "--remote-debugging-port=${RuntimeBridge.CDP_PORT}")
         env.put("CHROME_REMOTE_DEBUGGING_PORT", RuntimeBridge.CDP_PORT.toString())
+        env.put("UNITY_DISABLE_STACKTRACE_FORMATTING", "1")
+        env.put("UNITY_FORCE_SINGLE_INSTANCE", "0")
+        env.put("BOX64_DYNAREC_STRONGMEM", "1")
+        env.put("BOX64_DYNAREC_SAFEFLAGS", "1")
+        env.put("DXVK_HUD", "0")
         applyPerformanceEnv(env, selectedGraphicsDriver)
 
         val launchFile = resolveLaunchFile(gameExePath)
@@ -576,18 +669,101 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
             setEnvVars(env)
             setBox64Preset(selectedBox64Preset)
             setGuestExecutable(buildGuestCommand(launchFile))
-            setWorkingDir(launchFile.parentFile)
+            // Unity resolves <GameName>_Data relative to the process CWD.
+            setWorkingDir(launchFile.parentFile?.takeIf { it.isDirectory } ?: rootFS.rootDir)
             setDeferredStart(true)
             setTerminationCallback { status ->
-                ShellLog.info(this@WineDisplayActivity, "Wine launcher exited status=$status")
+                val durationMs = if (wineProcessStartTime > 0) System.currentTimeMillis() - wineProcessStartTime else -1
+                val isShortRun = durationMs in 0..3000
+                val isAbnormal = status != 0 || isShortRun
+                ShellLog.info(this@WineDisplayActivity, "==================================================")
+                ShellLog.info(this@WineDisplayActivity, "===== 游戏进程已结束 (TerminationCallback) =====")
+                ShellLog.info(this@WineDisplayActivity, "退出状态码 exitCode: $status, 运行持续时间: ${durationMs}ms, 是否异常/快速闪退: $isAbnormal")
+                ShellLog.info(this@WineDisplayActivity, "==================================================")
                 wineDebugCallback?.let { callback -> ProcessHelper.removeDebugCallback(callback) }
                 wineDebugCallback = null
+
+                val logSnapshot = recentWineLogs.toList().takeLast(100)
+                if (isAbnormal) {
+                    ShellLog.error(
+                        this@WineDisplayActivity,
+                        "Wine 异常退出 / 闪退 (exitCode=$status, 耗时 ${durationMs}ms), 最近输出记录:\n" +
+                            logSnapshot.joinToString("\n"),
+                        null
+                    )
+                    saveLastErrorLog(status, durationMs, logSnapshot)
+                }
+
                 runOnUiThread {
-                    Toast.makeText(this@WineDisplayActivity, "Wine 启动器异常结束（code=$status）。", Toast.LENGTH_SHORT).show()
+                    val message = if (isShortRun) {
+                        "游戏快速闪退（code=$status，耗时 ${durationMs}ms）。已记录详细日志，请在“设置 -> 运行日志”中查看"
+                    } else if (status != 0) {
+                        "游戏异常退出（code=$status）。已记录详细日志，请在“设置 -> 运行日志”中查看"
+                    } else {
+                        "Wine 游戏已退出。"
+                    }
+                    Toast.makeText(this@WineDisplayActivity, message, Toast.LENGTH_LONG).show()
                 }
             }
         }
         environment.addComponent(launcherComponent)
+    }
+
+    private fun saveLastErrorLog(status: Int, durationMs: Long, lines: List<String>) {
+        runCatching {
+            val targetDir = getExternalFilesDir(null) ?: filesDir
+            val logFile = File(targetDir, "wine_last_error.log")
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(java.util.Date())
+            val content = buildString {
+                append("=== Wine Last Error Report ===\n")
+                append("Timestamp: ").append(timestamp).append('\n')
+                append("Exit Code: ").append(status).append('\n')
+                append("Duration: ").append(durationMs).append("ms\n")
+                append("Game Exe: ").append(gameExePath).append('\n')
+                append("Game WorkDir: ").append(gameWorkDir).append('\n')
+                append("Graphics Driver: ").append(selectedGraphicsDriver).append('\n')
+                append("DXWrapper: ").append(container.getDXWrapper()).append('\n')
+                append("Box64 Preset: ").append(selectedBox64Preset).append('\n')
+                append("\n--- Recent Wine Output (last ").append(lines.size).append(" lines) ---\n")
+                for (line in lines) {
+                    append(line).append('\n')
+                }
+                append("=== End of Report ===\n")
+            }
+            FileUtils.writeString(logFile, content)
+            ShellLog.info(this, "Saved wine error log to ${logFile.absolutePath}")
+        }.onFailure { error ->
+            ShellLog.error(this, "Failed to save wine_last_error.log", error)
+        }
+    }
+
+    private val isUnityOrCustom: Boolean
+        get() = selectedGameEngine == GameEngine.UNITY || selectedGameEngine == GameEngine.CUSTOM
+
+    private fun resolveGameEngine(): GameEngine {
+        val requested = intent.getStringExtra(EXTRA_GAME_ENGINE).orEmpty().trim()
+        if (requested.isBlank()) return GameEngine.CUSTOM
+        return GameEngine.values().firstOrNull { it.name.equals(requested, ignoreCase = true) }
+            ?: GameEngine.fromString(requested)
+    }
+
+    private fun verifyDxvkRuntimeFiles(rootDir: File) {
+        val windowsDir = File(rootDir, RootFS.WINEPREFIX + "/drive_c/windows")
+        val required = listOf(
+            File(windowsDir, "system32/d3d11.dll"),
+            File(windowsDir, "system32/dxgi.dll"),
+            File(windowsDir, "system32/d3d10core.dll"),
+            File(windowsDir, "system32/d3d9.dll"),
+            File(windowsDir, "syswow64/d3d11.dll"),
+            File(windowsDir, "syswow64/dxgi.dll"),
+            File(windowsDir, "syswow64/d3d10core.dll"),
+            File(windowsDir, "syswow64/d3d9.dll")
+        )
+        val missing = required.filterNot { it.isFile }
+        check(missing.isEmpty()) {
+            "DXVK extraction incomplete; missing=${missing.joinToString { it.absolutePath }}"
+        }
+        ShellLog.info(this, "DXVK runtime verified files=${required.joinToString { it.absolutePath }}")
     }
 
     private fun resolveBox64Preset(): String {
@@ -608,6 +784,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         val requested = intent.getStringExtra(EXTRA_GRAPHICS_DRIVER).orEmpty()
             .trim()
             .lowercase(Locale.ENGLISH)
+        selectedGraphicsDriverRequestsDxvk = requested.contains("dxvk")
         if (requested.isNotBlank() && requested != "auto") {
             return normalizeGraphicsDriver(requested)
         }
@@ -615,6 +792,24 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
     }
 
     private fun normalizeGraphicsDriver(value: String): String {
+        val displayName = value.lowercase(Locale.ENGLISH)
+        if (displayName.contains("turnip") || displayName.contains("vortek") ||
+            displayName.contains("virgl") || displayName.contains("zink") ||
+            displayName.contains("gladio")
+        ) {
+            val vulkan = when {
+                displayName.contains("turnip") -> GraphicsDrivers.TURNIP
+                displayName.contains("vortek") -> GraphicsDrivers.VORTEK
+                else -> GraphicsDrivers.DEFAULT_VULKAN_DRIVER
+            }
+            val opengl = when {
+                displayName.contains("virgl") -> GraphicsDrivers.VIRGL
+                displayName.contains("zink") -> GraphicsDrivers.ZINK
+                displayName.contains("gladio") -> GraphicsDrivers.GLADIO
+                else -> GraphicsDrivers.DEFAULT_OPENGL_DRIVER
+            }
+            return "$vulkan,$opengl"
+        }
         val parts = GraphicsDrivers.parseIdentifiers(value)
         return "${parts[0]},${parts[1]}"
     }
@@ -660,33 +855,56 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         // Enabling it makes wineserver fail with shm_open/ftruncate errors before the game starts.
         env.put("WINEESYNC", "0")
         val drivers = GraphicsDrivers.parseIdentifiers(graphicsDriver)
-        // Wine errors remain in the app log; suppress Box64's repetitive loader trace.
-        env.put("BOX64_LOG", "0")
+        // Enable Box64 error logging so missing symbols or load failures are visible
+        env.put("BOX64_LOG", "1")
         env.put("BOX64_NOBANNER", "1")
         env.put("BOX64_DYNAREC", "1")
         env.put("BOX64_DYNAREC_FASTNAN", "1")
         env.put("BOX64_DYNAREC_FASTROUND", "1")
-        val launchTarget = resolveLaunchFile(gameExePath)
-        val isRenPy = findRenPyProjectRoot(launchTarget) != null
-        env.put("BOX64_DYNAREC_BIGBLOCK", if (isRenPy) "1" else "3")
-        env.put("BOX64_DYNAREC_SAFEFLAGS", if (isRenPy) "1" else "0")
-        env.put("BOX64_DYNAREC_FORWARD", "512")
-        env.put("BOX64_DYNAREC_CALLRET", "1")
-        env.put("BOX64_DYNAREC_NATIVEFLAGS", if (isRenPy) "0" else "1")
-        env.put("BOX64_DYNAREC_WEAKBARRIER", "2")
-        env.put("DXVK_LOG_LEVEL", "none")
+        env.put("DXVK_LOG_LEVEL", "info")
+        // +loaddll logs every DLL load attempt so missing runtimes (VC++, etc.) are recorded
+        env.put("WINEDEBUG", "-all,+err,+warn,+loaddll")
         env.put("DXVK_STATE_CACHE_PATH", RootFS.getDosUserCachePath())
         env.put("VKD3D_SHADER_CACHE_PATH", RootFS.getDosUserCachePath())
         env.put("MESA_SHADER_CACHE_DISABLE", "false")
-        // SDL2/Ren'Py is substantially more compatible with the Winlator gladio 3.3 path.
-        env.put("MESA_GL_VERSION_OVERRIDE", "3.3")
-        env.put("MESA_GLSL_VERSION_OVERRIDE", "330")
-        env.put("vblank_mode", "0")
+        // Enable VSync across Mesa Gallium, Turnip, and SDL to eliminate screen tearing and flickering
+        env.put("vblank_mode", "1")
+        env.put("SDL_RENDER_VSYNC", "1")
+
+        val guestRoot = WinePathCompat.newRootfsPrefix(this)
+        val rootDir = rootFS.rootDir
+        val icdDir = File(rootDir, "usr/share/vulkan/icd.d")
+
+        env.put("XDG_DATA_DIRS", "$guestRoot/usr/share:$guestRoot/usr/local/share")
+        env.put("XDG_CONFIG_DIRS", "$guestRoot/etc/xdg")
+        env.put("FONTCONFIG_PATH", "$guestRoot/etc/fonts")
+        env.put("FONTCONFIG_FILE", "$guestRoot/etc/fonts/fonts.conf")
+        env.put("DXVK_CONFIG_FILE", "$guestRoot/etc/dxvk.conf")
+
+        // Enforce CJK Chinese locale for Wine ANSI codepage (CP936) & Wine console
+        com.rpgrtl.engine.core.LocaleHelper.setEnvVars(env)
 
         if (drivers[0] == GraphicsDrivers.TURNIP) {
+            // Force FIFO presentation mode in Vulkan WSI to prevent buffer skipping and tearing
+            env.put("MESA_VK_WSI_PRESENT_MODE", "fifo")
             env.put("MESA_VK_WSI_USE_HWBUF", "1")
             env.put("MESA_VK_WSI_FORCE_WAIT_FOR_FENCES", "1")
             env.put("TU_DEBUG", "noconform")
+            val turnipIcd = File(icdDir, "freedreno_icd.aarch64.json")
+            if (turnipIcd.isFile) {
+                val guestIcd = "$guestRoot/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+                env.put("VK_ICD_FILENAMES", guestIcd)
+                env.put("VK_DRIVER_FILES", guestIcd)
+                ShellLog.info(this, "Vulkan Turnip ICD configured: $guestIcd")
+            }
+        } else if (drivers[0] == GraphicsDrivers.VORTEK) {
+            val vortekIcd = File(icdDir, "vortek_icd.aarch64.json")
+            if (vortekIcd.isFile) {
+                val guestIcd = "$guestRoot/usr/share/vulkan/icd.d/vortek_icd.aarch64.json"
+                env.put("VK_ICD_FILENAMES", guestIcd)
+                env.put("VK_DRIVER_FILES", guestIcd)
+                ShellLog.info(this, "Vulkan Vortek ICD configured: $guestIcd")
+            }
         }
         if (drivers[1] == GraphicsDrivers.VIRGL) {
             env.put("GALLIUM_DRIVER", "virpipe")
@@ -702,45 +920,6 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
             path
         }
         return File(resolvedPath)
-    }
-
-    /**
-     * Ren'Py windows builds often expose lib/py3-windows-x86_64/python.exe.
-     * Launching that alone fails with missing encodings/PYTHONHOME.
-     * Prefer the game root launcher next to game/ + renpy/.
-     */
-    private fun resolveRenPyLaunchTarget(selected: File): File {
-        if (!selected.isFile) return selected
-        val projectRoot = findRenPyProjectRoot(selected) ?: return selected
-        val rootExes = projectRoot.listFiles()
-            ?.filter {
-                it.isFile &&
-                    it.extension.equals("exe", true) &&
-                    !it.name.equals("python.exe", true) &&
-                    !it.name.equals("pythonw.exe", true) &&
-                    !it.name.equals("renpy.exe", true)
-            }
-            .orEmpty()
-        if (rootExes.isEmpty()) return selected
-
-        val preferredNames = listOf(
-            projectRoot.name,
-            gameTitleHint(),
-            "game",
-        ).map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotBlank() }
-
-        val preferred = rootExes.firstOrNull { exe ->
-            val base = exe.nameWithoutExtension.lowercase(Locale.ROOT)
-            preferredNames.any { name -> base == name || base.contains(name) || name.contains(base) }
-        }
-        val launcher = preferred ?: rootExes.minByOrNull { it.name.length } ?: selected
-        if (launcher.absolutePath != selected.absolutePath) {
-            ShellLog.info(
-                this,
-                "RenPy launcher remap selected=${selected.absolutePath} -> ${launcher.absolutePath} root=${projectRoot.absolutePath}"
-            )
-        }
-        return launcher
     }
 
     private fun findRenPyProjectRoot(start: File): File? {
@@ -762,14 +941,10 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         return null
     }
 
-    private fun gameTitleHint(): String {
-        return intent.getStringExtra(EXTRA_GAME_TITLE).orEmpty()
-    }
-
     private fun buildGuestCommand(exe: File): String {
         val rootPath = rootFS.rootDir.absolutePath.trimEnd('/')
         val dosPath = if (exe.absolutePath.startsWith("$rootPath/")) {
-            // Z: is the rootfs. drive_game is an ASCII symlink to the selected game folder.
+            // Z: is the rootfs.
             "Z:\\" + exe.absolutePath.removePrefix(rootPath).trimStart('/').replace('/', '\\')
         } else {
             val convertedDosPath = WineUtils.unixToDOSPath(exe.absolutePath, container)
@@ -779,10 +954,9 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
                 convertedDosPath
             }
         }
-        // Pass the executable as a single argv item.  Wine accepts this directly, whereas
-        // cmd.exe mishandles escaped quotes around Chinese paths on this build.
-        val command = "wine \"$dosPath\""
-        ShellLog.info(this, "Wine guest command directExe=$dosPath")
+        val screen = container.screenSize.ifBlank { "1280x720" }
+        val command = "wine explorer /desktop=shell,$screen \"$dosPath\""
+        ShellLog.info(this, "Wine guest command directExe=$dosPath screen=$screen cmd=$command cwd=${exe.parentFile?.absolutePath}")
         return command
     }
 
@@ -804,10 +978,15 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
             return null
         }
 
-        val selected = resolveLaunchFile(path)
-        val exe = resolveRenPyLaunchTarget(selected)
-        val projectRoot = findRenPyProjectRoot(exe) ?: exe.parentFile
-        val gameDir = projectRoot
+        var exe = resolveLaunchFile(path)
+        val gameDir = exe.parentFile
+        if (gameDir != null && gameDir.isDirectory && exe.name.startsWith("unitycrashhandler", ignoreCase = true)) {
+            val realExe = com.rpgrtl.shell.data.GameRepository(this).findExecutable(gameDir)
+            if (realExe != null && !realExe.name.startsWith("unitycrashhandler", ignoreCase = true)) {
+                ShellLog.info(this, "Auto-redirecting launch target from crash handler ${exe.name} -> ${realExe.name}")
+                exe = realExe
+            }
+        }
         if (!exe.isFile || gameDir == null || !gameDir.isDirectory) {
             ShellLog.error(this, "Wine game source is unavailable: $path")
             Toast.makeText(this, "找不到完整的游戏目录。请在游戏文件夹内选择 exe。", Toast.LENGTH_LONG).show()
@@ -818,7 +997,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         // Keep E: as the device's primary storage and use D: for the active title.
         // Container.drives has a compact parser: the next drive letter itself is the
         // delimiter.  Do not insert a separating space, or it becomes part of D:'s path.
-        // For Ren'Py, D: must be the project root (game/, renpy/, launcher.exe), not lib/python.
+        // Mount the game's parent folder directly to D:
         container.drives = "D:${gameDir.absolutePath}E:${AppUtils.INTERNAL_STORAGE}"
         container.saveData()
         WineUtils.createDosdevicesSymlinks(container, false)
@@ -2112,6 +2291,7 @@ class WineDisplayActivity : XServerDisplayActivity(), FloatingToolbar.Listener {
         const val EXTRA_CONTAINER_ID = "container_id"
         const val EXTRA_BOX64_PRESET = "box64_preset"
         const val EXTRA_GRAPHICS_DRIVER = "graphics_driver"
+        const val EXTRA_GAME_ENGINE = "game_engine"
         private const val TAG = "RPGTL-Wine"
         private val activeRuntimeBridges = ConcurrentHashMap<Int, RuntimeBridge>()
 

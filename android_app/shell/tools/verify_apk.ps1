@@ -87,7 +87,18 @@ try {
     foreach ($coverageMarker in @("pointer-events:auto", "min-width:100vw", "min-height:100vh")) {
         if (-not $dashboardCss.Replace(" ", "").Contains($coverageMarker)) { throw "MTool dashboard coverage is incomplete: $coverageMarker" }
     }
-    foreach ($dashboardMarker in @("主页", "物品", "防具", "武器", "开关", "变量", "角色", "地图Ex", "按键设定")) {
+    $dashboardMarkers = @(
+        [regex]::Unescape("\u4e3b\u9875"),
+        [regex]::Unescape("\u7269\u54c1"),
+        [regex]::Unescape("\u9632\u5177"),
+        [regex]::Unescape("\u6b66\u5668"),
+        [regex]::Unescape("\u5f00\u5173"),
+        [regex]::Unescape("\u53d8\u91cf"),
+        [regex]::Unescape("\u89d2\u8272"),
+        [regex]::Unescape("\u5730\u56feEx"),
+        [regex]::Unescape("\u6309\u952e\u8bbe\u5b9a")
+    )
+    foreach ($dashboardMarker in $dashboardMarkers) {
         if (-not $dashboardScript.Contains($dashboardMarker)) {
             throw "MTool dashboard is incomplete; missing tab marker: $dashboardMarker"
         }

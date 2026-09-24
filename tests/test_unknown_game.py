@@ -146,6 +146,25 @@ class UnknownGameServiceTests(unittest.TestCase):
             self.assertEqual(payload["Subnamespaces"][0]["Children"][0]["Translation"]["Text"], entry.target)
             self.assertEqual(payload["Subnamespaces"][0]["Children"][0]["Source"]["Text"], entry.source)
 
+    def test_unreal_source_only_archive_creates_translation_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "UE5Game.exe").write_bytes(b"MZ")
+            archive = root / "Content" / "Localization" / "Game" / "en" / "Game.archive"
+            archive.parent.mkdir(parents=True)
+            archive.write_text(json.dumps({
+                "Namespace": "Game",
+                "Children": [{"Source": {"Text": "Source-only dialogue."}, "Key": "LINE_1"}],
+            }), encoding="utf-8")
+            service = UnknownGameService(detect_project(root))
+            entry = service.extract_translations()[0]
+            self.assertEqual(entry.source, "Source-only dialogue.")
+            entry.target = "仅源文本对话。"
+            runtime, _launcher, changed = service.build_runtime_copy({entry.entry_id: entry})
+            self.assertEqual(changed, 1)
+            payload = json.loads((runtime / "Content" / "Localization" / "Game" / "en" / "Game.archive").read_text(encoding="utf-8"))
+            self.assertEqual(payload["Children"][0]["Translation"]["Text"], entry.target)
+
     def test_unity_polyglot_table_uses_simplified_chinese_slot(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

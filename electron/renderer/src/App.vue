@@ -97,22 +97,40 @@
             <el-check-tag :checked="runtimeForm.godMode" @change="toggleQuickGodMode">无敌</el-check-tag>
             <el-check-tag :checked="runtimeForm.noEncounter" @change="toggleQuickNoEncounter">不遇敌</el-check-tag>
             <el-check-tag :checked="runtimeForm.oneHitKill" @change="toggleQuickOneHitKill">秒杀</el-check-tag>
+            <el-check-tag :checked="runtimeForm.clickTeleport" @change="toggleQuickClickTeleport">点击传送</el-check-tag>
+            <el-check-tag :checked="runtimeForm.autoBattle" @change="toggleQuickAutoBattle">自动战斗</el-check-tag>
+            <el-check-tag :checked="runtimeForm.alwaysDash" @change="toggleQuickAlwaysDash">疾跑</el-check-tag>
+            <el-check-tag :checked="Number(runtimeForm.autoSaveMinutes) > 0" @change="toggleQuickAutoSave">自动存档</el-check-tag>
           </div>
         </div>
         <div class="quick-cheats-actions">
+          <span class="quick-cheats-mini">
+            <el-input v-model="runtimeForm.gameSpeed" size="small" type="number" class="quick-speed-input" placeholder="倍速" @keyup.enter="applyQuickSpeed" />
+            <el-button size="small" type="primary" plain @click="applyQuickSpeed">倍速</el-button>
+          </span>
+          <span class="quick-cheats-mini">
+            <el-input v-model="runtimeForm.x" size="small" type="number" placeholder="X" class="quick-coord-input" />
+            <el-input v-model="runtimeForm.y" size="small" type="number" placeholder="Y" class="quick-coord-input" />
+            <el-button size="small" plain @click="quickTeleport">传送</el-button>
+          </span>
           <el-button size="small" type="success" plain @click="quickHealAll">全员回满</el-button>
           <el-button size="small" type="warning" plain @click="quickMaxGold">金币最大</el-button>
           <el-button size="small" type="primary" plain @click="quickAllItems">全物品 99</el-button>
           <el-button size="small" type="info" plain @click="quickUnlockCg">解锁全 CG</el-button>
+          <el-button size="small" type="success" plain @click="quickBattleWin">直接胜利</el-button>
+          <el-button size="small" type="warning" plain @click="quickBattleEscape">立即逃跑</el-button>
+          <el-button size="small" type="danger" plain @click="quickEnemyHp1">敌人 1HP</el-button>
+          <el-button size="small" plain @click="quickFpsOptimize">FPS 优化</el-button>
+          <el-button size="small" plain @click="quickQuickSave">快速存档</el-button>
         </div>
       </div>
 
       <div class="view-loading-wrap" v-loading="pageLoading" element-loading-text="正在载入..." element-loading-background="rgba(7, 15, 28, .62)">
-      <section v-if="currentView === 'library'" class="view-shell" data-tour="library-table">
+      <section v-if="currentView === 'library'" class="view-shell" data-tour="library-table" :class="{ 'library-running': gameRunning }">
         <el-card shadow="never" class="section-card library-card">
           <template #header>
             <div class="card-head">
-              <strong>全部游戏</strong>
+              <strong>{{ gameRunning ? '游戏列表 · 运行中锁定' : '全部游戏' }}</strong>
               <div class="card-head-right">
                 <el-input v-model="librarySearch" class="search-inline" size="small" placeholder="搜索游戏名、路径、引擎" clearable :prefix-icon="Search" />
                 <el-button size="small" :icon="Refresh" @click="loadLibrary" :loading="busy.refresh">刷新库</el-button>
@@ -146,7 +164,101 @@
           </el-table>
         </el-card>
 
-        <el-card shadow="never" class="section-card detail-card">
+        <!-- Running dashboard replaces static detail while a game is active -->
+        <el-card v-if="gameRunning" shadow="never" class="section-card detail-card running-panel">
+          <template #header>
+            <div class="card-head">
+              <strong>正在进行游戏</strong>
+              <div class="card-head-right wrap">
+                <el-tag type="success" effect="dark">运行中</el-tag>
+                <el-button size="small" :icon="Refresh" @click="refreshRunningDashboard">刷新</el-button>
+                <el-button size="small" type="primary" plain @click="currentView = 'runtime'">实时修改</el-button>
+                <el-button v-if="!isRpgMakerSelected" size="small" type="success" plain @click="toggleLibraryLive">
+                  {{ liveStatus.running ? '停止实时翻译' : '启动实时翻译' }}
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <div class="running-dashboard">
+            <div class="running-hero">
+              <div>
+                <div class="running-title">{{ selectedEntry?.name || '当前游戏' }}</div>
+                <div class="running-sub">{{ selectedEntry?.engine || '未知引擎' }}</div>
+              </div>
+              <el-switch
+                v-if="!isRpgMakerSelected"
+                v-model="libraryLiveOn"
+                active-text="实时翻译"
+                :loading="busy.launch"
+                @change="onLibraryLiveToggle"
+              />
+            </div>
+
+            <div class="running-stats">
+              <template v-if="isRpgMakerSelected">
+                <div class="info-box"><span>桥接状态</span><div>{{ runtimeConnected ? '已连接' : '未连接' }}</div></div>
+                <div class="info-box"><span>金币</span><div>{{ runtimeState?.gold ?? '—' }}</div></div>
+                <div class="info-box"><span>当前地图</span><div>{{ runtimeState?.map?.name || runtimeState?.map?.id || '—' }}</div></div>
+                <div class="info-box"><span>玩家位置</span><div>{{ runtimeState?.map ? `${runtimeState.map.x}, ${runtimeState.map.y}` : '—' }}</div></div>
+                <div class="info-box"><span>队伍人数</span><div>{{ runtimeState?.actors?.length ?? '—' }}</div></div>
+                <div class="info-box"><span>工作模式</span><div>译文副本运行</div></div>
+              </template>
+              <template v-else>
+                <div class="info-box"><span>本地服务</span><div>{{ liveStatus.running ? '运行中' : '未启动' }}</div></div>
+                <div class="info-box"><span>游戏 Hook</span><div>{{ liveStatus.connected ? '已连接' : (liveStatus.running ? '等待游戏' : '—') }}</div></div>
+                <div class="info-box"><span>已捕获</span><div>{{ liveStatus.seen ?? 0 }}</div></div>
+                <div class="info-box"><span>已翻译</span><div>{{ liveStatus.translated ?? liveStatus.worker?.translated ?? 0 }}</div></div>
+                <div class="info-box"><span>AI 队列</span><div>{{ liveStatus.queue_count ?? 0 }}</div></div>
+                <div class="info-box"><span>最近事件</span><div>{{ (liveStatus.recentEvents || []).length }}</div></div>
+              </template>
+            </div>
+
+            <div class="running-meta">
+              <div class="info-box large"><span>游戏目录</span><div class="selectable">{{ selectedEntry?.path || gameStatus.activePath || '—' }}</div></div>
+              <div class="info-box"><span>引擎</span><div>{{ selectedEntry?.engine || '—' }}</div></div>
+              <div class="info-box"><span>工作台</span><div>{{ isRpgMakerSelected ? '随译文副本运行' : (isUnitySelected ? 'XUA CustomTranslate' : (isRenPySelected ? 'Ren\'Py Live Bridge' : '标准流程')) }}</div></div>
+            </div>
+
+            <div class="running-section">
+              <div class="running-section-head">
+                <strong>{{ isRpgMakerSelected ? '实时状态摘要' : '实时 Hook 最近捕获' }}</strong>
+                <el-button v-if="!isRpgMakerSelected" size="small" text type="primary" @click="currentView = 'live'">打开实时翻译</el-button>
+                <el-button v-else size="small" text type="primary" @click="currentView = 'runtime'">打开实时修改</el-button>
+              </div>
+              <el-table
+                v-if="!isRpgMakerSelected"
+                :data="liveRecentEvents.slice(0, 8)"
+                size="small"
+                height="180"
+                empty-text="暂无捕获。启动实时翻译后，游戏内文本会出现在这里。"
+              >
+                <el-table-column label="状态" width="86">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.matched ? 'success' : 'info'">{{ row.matched ? '已替换' : '已捕获' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="kind" label="来源" width="110" />
+                <el-table-column prop="source" label="文本" min-width="200" show-overflow-tooltip />
+              </el-table>
+              <div v-else class="running-rpg-hints">
+                <div class="info-box"><span>穿墙</span><div>{{ runtimeForm.through ? '开' : '关' }}</div></div>
+                <div class="info-box"><span>不遇敌</span><div>{{ runtimeForm.noEncounter ? '开' : '关' }}</div></div>
+                <div class="info-box"><span>自动战斗</span><div>{{ runtimeForm.autoBattle ? '开' : '关' }}</div></div>
+                <div class="info-box"><span>游戏倍速</span><div>{{ runtimeForm.gameSpeed }}x</div></div>
+              </div>
+            </div>
+
+            <div class="running-actions">
+              <el-button type="primary" plain @click="currentView = 'translations'">打开翻译工作台</el-button>
+              <el-button plain @click="currentView = 'live'" v-if="!isRpgMakerSelected">实时翻译面板</el-button>
+              <el-button plain @click="currentView = 'maps'" v-if="isRpgMakerSelected">地图事件</el-button>
+              <el-button :icon="FolderOpened" @click="openSelectedFolder">打开目录</el-button>
+            </div>
+          </div>
+        </el-card>
+
+        <el-card v-else shadow="never" class="section-card detail-card">
           <template #header>
             <div class="card-head">
               <strong>详情</strong>
@@ -443,9 +555,18 @@
                       <el-button size="small" type="primary" plain @click="setRuntimeActorLevelPreset(99)">直接满级(99)</el-button>
                     </div>
                     <div class="actor-gauges">
-                      <el-input v-model="runtimeDataForm.hp" type="number"><template #prepend>HP</template></el-input>
-                      <el-input v-model="runtimeDataForm.mp" type="number"><template #prepend>MP</template></el-input>
-                      <el-input v-model="runtimeDataForm.tp" type="number"><template #prepend>TP</template></el-input>
+                      <label class="gauge-field">
+                        <span>HP</span>
+                        <el-input v-model="runtimeDataForm.hp" type="number" />
+                      </label>
+                      <label class="gauge-field">
+                        <span>MP</span>
+                        <el-input v-model="runtimeDataForm.mp" type="number" />
+                      </label>
+                      <label class="gauge-field">
+                        <span>TP</span>
+                        <el-input v-model="runtimeDataForm.tp" type="number" />
+                      </label>
                     </div>
                     <el-button type="primary" @click="saveRuntimeDataRow">应用角色数值</el-button>
                   </template>
@@ -791,74 +912,91 @@
               </div>
             </div>
           </template>
-          <div class="runtime-page">
+          <div class="runtime-page dense-runtime">
             <div class="runtime-summary">
               <div class="info-box"><span>金币</span><div>{{ runtimeState?.gold ?? '—' }}</div></div>
               <div class="info-box"><span>当前地图</span><div>{{ runtimeState?.map?.name || runtimeState?.map?.id || '—' }}</div></div>
               <div class="info-box"><span>玩家位置</span><div>{{ runtimeState?.map ? `${runtimeState.map.x}, ${runtimeState.map.y}` : '—' }}</div></div>
               <div class="info-box"><span>队伍人数</span><div>{{ runtimeState?.actors?.length ?? '—' }}</div></div>
             </div>
-            <div class="runtime-groups">
+            <div class="runtime-groups runtime-groups-3">
               <section class="runtime-group">
                 <h3>玩家与资源</h3>
-                <div class="form-row"><span>金币</span><el-input v-model="runtimeForm.gold" type="number" /><el-button type="primary" @click="setRuntimeGold">应用</el-button></div>
+                <div class="form-row compact"><span>金币</span><el-input v-model="runtimeForm.gold" type="number" size="small" /><el-button size="small" type="primary" @click="setRuntimeGold">应用</el-button></div>
                 <div class="quick-btn-row">
                   <el-button size="small" @click="addRuntimeGold(100000)">+10万</el-button>
                   <el-button size="small" @click="addRuntimeGold(1000000)">+100万</el-button>
-                  <el-button size="small" type="warning" plain @click="setRuntimeGoldMax">最大 99999999</el-button>
+                  <el-button size="small" type="warning" plain @click="setRuntimeGoldMax">最大</el-button>
                 </div>
-                <div class="form-row"><span>穿墙模式 (持久锁定)</span><el-switch v-model="runtimeForm.through" @change="setRuntimeThrough" /></div>
-                <div class="form-row"><span>不遇敌模式</span><el-switch v-model="runtimeForm.noEncounter" @change="setRuntimeAdvancedOptions" /></div>
-                <div class="form-row"><span>点击传送</span><el-switch v-model="runtimeForm.clickTeleport" @change="setRuntimeOptions" /></div>
-                <div class="form-row"><span>自动存档（分钟）</span><el-input v-model="runtimeForm.autoSaveMinutes" type="number" /><el-button @click="setRuntimeOptions">应用</el-button></div>
-                <div class="form-row teleport-row"><span>传送坐标</span><el-input v-model="runtimeForm.x" type="number" placeholder="X" /><el-input v-model="runtimeForm.y" type="number" placeholder="Y" /><el-button @click="teleportToTile(runtimeForm.x, runtimeForm.y)">传送</el-button></div>
+                <div class="switch-grid">
+                  <el-check-tag :checked="runtimeForm.through" @change="toggleQuickThrough">穿墙</el-check-tag>
+                  <el-check-tag :checked="runtimeForm.noEncounter" @change="toggleQuickNoEncounter">不遇敌</el-check-tag>
+                  <el-check-tag :checked="runtimeForm.clickTeleport" @change="toggleQuickClickTeleport">点击传送</el-check-tag>
+                  <el-check-tag :checked="Number(runtimeForm.autoSaveMinutes) > 0" @change="toggleQuickAutoSave">自动存档</el-check-tag>
+                </div>
+                <div class="form-row compact"><span>存档间隔(分)</span><el-input v-model="runtimeForm.autoSaveMinutes" type="number" size="small" /><el-button size="small" @click="setRuntimeOptions">应用</el-button></div>
+                <div class="form-row compact teleport-row"><span>传送</span><el-input v-model="runtimeForm.x" type="number" placeholder="X" size="small" /><el-input v-model="runtimeForm.y" type="number" placeholder="Y" size="small" /><el-button size="small" @click="teleportToTile(runtimeForm.x, runtimeForm.y)">传送</el-button></div>
               </section>
               <section class="runtime-group">
                 <h3>队伍与角色</h3>
-                <div class="team-quick-actions">
-                  <div class="mini-title">全队一键快捷操作</div>
-                  <div class="button-wrap-grid">
-                    <el-button size="small" type="success" @click="quickHealAll">全员完全回复</el-button>
-                    <el-button size="small" type="primary" plain @click="quickMaxAllLevel">全员满级(99)</el-button>
-                    <el-button size="small" type="warning" plain @click="quickAllItems">全物品 99</el-button>
-                    <el-button size="small" type="warning" plain @click="quickAllWeapons">全武器 99</el-button>
-                    <el-button size="small" type="warning" plain @click="quickAllArmors">全防具 99</el-button>
-                    <el-button size="small" type="info" plain @click="quickUnlockCg">解锁全 CG / 回想</el-button>
-                  </div>
+                <div class="button-wrap-grid three">
+                  <el-button size="small" type="success" @click="quickHealAll">全员回复</el-button>
+                  <el-button size="small" type="primary" plain @click="quickMaxAllLevel">满级(99)</el-button>
+                  <el-button size="small" type="warning" plain @click="quickAllItems">全物品99</el-button>
+                  <el-button size="small" type="warning" plain @click="quickAllWeapons">全武器99</el-button>
+                  <el-button size="small" type="warning" plain @click="quickAllArmors">全防具99</el-button>
+                  <el-button size="small" type="info" plain @click="quickUnlockCg">解锁CG</el-button>
                 </div>
-                <el-divider style="margin: 12px 0;" />
-                <el-select v-model="runtimeForm.actorId" placeholder="选择单个角色调节" @change="syncRuntimeActorForm"><el-option v-for="actor in runtimeState?.actors || []" :key="actor.id" :label="`${actor.name} #${actor.id}`" :value="actor.id" /></el-select>
-                <div class="actor-gauges"><el-input v-model="runtimeForm.hp" type="number"><template #prepend>HP</template></el-input><el-input v-model="runtimeForm.mp" type="number"><template #prepend>MP</template></el-input><el-input v-model="runtimeForm.tp" type="number"><template #prepend>TP</template></el-input></div>
-                <el-button type="primary" @click="setRuntimeActor">应用角色数值</el-button>
-                <div class="lock-row"><el-checkbox v-model="runtimeForm.lockHp">锁定 HP</el-checkbox><el-checkbox v-model="runtimeForm.lockMp">锁定 MP</el-checkbox><el-checkbox v-model="runtimeForm.lockTp">锁定 TP</el-checkbox><el-button @click="setRuntimeLocks">应用锁定</el-button></div>
+                <el-divider class="tight-divider" />
+                <el-select size="small" v-model="runtimeForm.actorId" placeholder="选择角色" @change="syncRuntimeActorForm"><el-option v-for="actor in runtimeState?.actors || []" :key="actor.id" :label="`${actor.name} #${actor.id}`" :value="actor.id" /></el-select>
+                <div class="actor-gauges">
+                  <label class="gauge-field">
+                    <span>HP</span>
+                    <el-input v-model="runtimeForm.hp" type="number" size="small" />
+                  </label>
+                  <label class="gauge-field">
+                    <span>MP</span>
+                    <el-input v-model="runtimeForm.mp" type="number" size="small" />
+                  </label>
+                  <label class="gauge-field">
+                    <span>TP</span>
+                    <el-input v-model="runtimeForm.tp" type="number" size="small" />
+                  </label>
+                </div>
+                <el-button size="small" type="primary" style="width:100%" @click="setRuntimeActor">应用角色数值</el-button>
+                <div class="lock-row compact"><el-checkbox v-model="runtimeForm.lockHp">锁HP</el-checkbox><el-checkbox v-model="runtimeForm.lockMp">锁MP</el-checkbox><el-checkbox v-model="runtimeForm.lockTp">锁TP</el-checkbox><el-button size="small" @click="setRuntimeLocks">锁定</el-button></div>
               </section>
               <section class="runtime-group">
                 <h3>战斗与辅助</h3>
-                <div class="battle-actions"><el-button type="success" plain @click="setBattleResult('win')">直接胜利</el-button><el-button type="warning" plain @click="setBattleResult('escape')">立即逃跑</el-button><el-button type="danger" plain @click="setBattleResult('lose')">直接失败</el-button></div>
-                <div class="form-row"><span>秒杀模式 (One-Hit Kill)</span><el-switch v-model="runtimeForm.oneHitKill" @change="setRuntimeAdvancedOptions" /></div>
-                <div class="form-row"><span>上帝模式 (伤害免疫/零耗蓝)</span><el-switch v-model="runtimeForm.godMode" @change="setRuntimeAdvancedOptions" /></div>
-                <div class="form-row"><span>自动战斗</span><el-switch v-model="runtimeForm.autoBattle" @change="setRuntimeAdvancedOptions" /></div>
-                <div class="form-row"><span>游戏速度 (倍速)</span><el-input v-model="runtimeForm.gameSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
-                <div class="form-row"><span>战斗速度 (倍速)</span><el-input v-model="runtimeForm.battleSpeed" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
-                <div class="form-row"><span>移动速度增加 (+0~+6)</span><el-input v-model="runtimeForm.moveSpeedIncrease" type="number" /><el-button @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <div class="battle-actions compact">
+                  <el-button size="small" type="success" plain @click="setBattleResult('win')">直接胜利</el-button>
+                  <el-button size="small" type="warning" plain @click="setBattleResult('escape')">立即逃跑</el-button>
+                  <el-button size="small" type="danger" plain @click="setBattleResult('lose')">直接失败</el-button>
+                  <el-button size="small" type="danger" plain @click="quickEnemyHp1">敌1HP</el-button>
+                  <el-button size="small" type="success" plain @click="quickEnemyHpMax">敌满血</el-button>
+                  <el-button size="small" plain @click="quickFpsOptimize">FPS优化</el-button>
+                  <el-button size="small" plain @click="quickQuickSave">快速存档</el-button>
+                  <el-button size="small" plain @click="toggleRuntimeAlwaysDash">疾跑</el-button>
+                </div>
+                <div class="switch-grid">
+                  <el-check-tag :checked="runtimeForm.oneHitKill" @change="toggleQuickOneHitKill">秒杀</el-check-tag>
+                  <el-check-tag :checked="runtimeForm.godMode" @change="toggleQuickGodMode">上帝模式</el-check-tag>
+                  <el-check-tag :checked="runtimeForm.autoBattle" @change="toggleQuickAutoBattle">自动战斗</el-check-tag>
+                </div>
+                <div class="form-row compact"><span>游戏倍速</span><el-input v-model="runtimeForm.gameSpeed" type="number" size="small" /><el-button size="small" @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <div class="form-row compact"><span>战斗倍速</span><el-input v-model="runtimeForm.battleSpeed" type="number" size="small" /><el-button size="small" @click="setRuntimeAdvancedOptions">应用</el-button></div>
+                <div class="form-row compact"><span>移速+0~6</span><el-input v-model="runtimeForm.moveSpeedIncrease" type="number" size="small" /><el-button size="small" @click="setRuntimeAdvancedOptions">应用</el-button></div>
               </section>
-              <section class="runtime-group">
-                <h3>字体控制与画面恢复</h3>
-                <div class="form-row">
-                  <span>字号相对偏移 (-12 ~ +12)</span>
-                  <el-slider v-model="runtimeForm.fontSizeOffset" :min="-12" :max="12" :step="1" show-input @change="setRuntimeFontSize" />
-                </div>
-                <div class="form-row">
-                  <span>自定义字体 (fontFamily)</span>
-                  <el-input v-model="runtimeForm.fontFamily" placeholder="如 Microsoft YaHei, SimHei" />
-                  <el-button @click="setRuntimeFontFamily">应用字体</el-button>
-                </div>
-                <el-divider style="margin: 12px 0;" />
-                <div class="mini-title">画面与事件防卡死应急工具</div>
-                <div class="button-wrap-grid">
-                  <el-button size="small" type="danger" plain @click="clearRuntimePictures">清除残留图片</el-button>
-                  <el-button size="small" type="warning" plain @click="clearRuntimeEffects">重置天气滤镜</el-button>
-                  <el-button size="small" type="danger" @click="eraseRuntimeCurrentEvent">消除当前阻塞事件</el-button>
+              <section class="runtime-group span-all">
+                <h3>字体与画面应急</h3>
+                <div class="font-row">
+                  <div class="form-row compact grow"><span>字号偏移</span><el-slider v-model="runtimeForm.fontSizeOffset" :min="-12" :max="12" :step="1" size="small" @change="setRuntimeFontSize" /></div>
+                  <div class="form-row compact grow"><span>自定义字体</span><el-input v-model="runtimeForm.fontFamily" size="small" placeholder="Microsoft YaHei" /><el-button size="small" @click="setRuntimeFontFamily">应用</el-button></div>
+                  <div class="button-wrap-grid three emergency">
+                    <el-button size="small" type="danger" plain @click="clearRuntimePictures">清除图片</el-button>
+                    <el-button size="small" type="warning" plain @click="clearRuntimeEffects">重置天气</el-button>
+                    <el-button size="small" type="danger" @click="eraseRuntimeCurrentEvent">消除卡死事件</el-button>
+                  </div>
                 </div>
               </section>
             </div>
@@ -932,6 +1070,11 @@
                 <el-button size="small" @click="stopLive">停止</el-button>
                 <el-button size="small" @click="refreshLive">刷新状态</el-button>
                 <el-button size="small" :icon="Notebook" @click="openLiveDebug">调试窗口</el-button>
+                <template v-if="isUnitySelected">
+                  <el-button size="small" type="warning" plain :loading="busy.agent" @click="installUnityXua">安装 XUA 桥</el-button>
+                  <el-button size="small" type="success" plain :loading="busy.agent" @click="exportUnityXua">导出词典</el-button>
+                  <el-button size="small" type="info" plain :loading="busy.agent" @click="importUnityXua">导入捕获</el-button>
+                </template>
               </div>
             </div>
           </template>
@@ -950,6 +1093,7 @@
               <div class="info-box"><span>游戏 Hook</span><div>{{ liveStatus.connected ? '已连接' : '等待游戏' }}</div></div>
               <div class="info-box"><span>AI 状态</span><div>{{ liveWorkerStateLabel }}</div></div>
               <div class="info-box"><span>实时进度</span><div>已译 {{ liveStatus.worker?.translated || 0 }} · 队列 {{ liveStatus.queue_count || 0 }}</div></div>
+              <div v-if="isUnitySelected" class="info-box"><span>Unity 预取</span><div>命中 {{ liveStatus.xua_hit || 0 }} · 未命中 {{ liveStatus.xua_miss || 0 }} · 最近预取 {{ liveStatus.seeded_last || 0 }}</div></div>
             </div>
             <div class="split-layout live-layout">
               <div class="left-pane live-events-pane">
@@ -967,7 +1111,7 @@
                 <el-input v-model="liveSource" type="textarea" :rows="4" placeholder="原文" />
                 <el-input v-model="liveTarget" type="textarea" :rows="4" placeholder="译文" />
                 <div class="detail-actions"><el-button type="primary" @click="mergeLive">写入实时翻译表</el-button></div>
-                <div class="mini-info">实时组件会在工具安装时随项目准备。RenPy 请先启动游戏，再回到这里启动实时翻译；RPGMaker 会在启动实时翻译时自动启用桥接，并优先使用已提前翻译的对白。</div>
+                <div class="mini-info">实时组件会在工具安装时随项目准备。RenPy 请先启动游戏，再回到这里启动实时翻译；RPGMaker 会在启动实时翻译时自动启用桥接，并优先使用已提前翻译的对白。Unity 会写入 XUA 词典并通过 CustomTranslate（127.0.0.1:32182）补译；游戏内请安装 BepInEx + XUnity.AutoTranslator，ALT+R 可热重载词典。</div>
               </div>
             </div>
             </div>
@@ -1374,7 +1518,7 @@ const memoryForm = reactive({ pid: null, valueType: 'int32', initialValue: '', c
 
 const runtimeState = ref(null);
 const runtimeConnected = ref(false);
-const runtimeForm = reactive({ gold: 0, actorId: null, hp: 0, mp: 0, tp: 0, lockHp: false, lockMp: false, lockTp: false, through: false, clickTeleport: false, autoSaveMinutes: 0, x: 0, y: 0, gameSpeed: 1, battleSpeed: 1, moveSpeedIncrease: 0, autoBattle: false, godMode: false, noEncounter: false, oneHitKill: false, unlockCg: false, fontSizeOffset: 0, fontFamily: '' });
+const runtimeForm = reactive({ gold: 0, actorId: null, hp: 0, mp: 0, tp: 0, lockHp: false, lockMp: false, lockTp: false, through: false, clickTeleport: false, autoSaveMinutes: 0, x: 0, y: 0, gameSpeed: 1, battleSpeed: 1, moveSpeedIncrease: 0, autoBattle: false, godMode: false, noEncounter: false, oneHitKill: false, unlockCg: false, fontSizeOffset: 0, fontFamily: '', alwaysDash: false });
 const runtimeSearch = ref('');
 const runtimeHideEmpty = ref(false);
 let runtimePollTimer = null;
@@ -1386,7 +1530,8 @@ const wolfForm = reactive({ gold: 99999999, speed: 1.0, noclip: false });
 const smartGoldForm = reactive({ pid: null, currentGold: '', newGold: '', targetGold: 99999999, status: 'idle', sessionId: '', hint: '', count: 0 });
 
 
-const liveStatus = ref({ running: false, connected: false, queue_count: 0, worker: { running: false, state: 'stopped', translated: 0, failures: 0, lastError: '' }, recentEvents: [] });
+const liveStatus = ref({ running: false, connected: false, queue_count: 0, seen: 0, translated: 0, worker: { running: false, state: 'stopped', translated: 0, failures: 0, lastError: '' }, recentEvents: [] });
+const libraryLiveOn = ref(false);
 const liveSource = ref('');
 const liveTarget = ref('');
 const liveDebugVisible = ref(false);
@@ -1538,7 +1683,8 @@ const visibleNavItems = computed(() => navItems.filter((item) => {
   if (item.key === 'agent') return false;
   if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(item.key)) return false;
   if (isRpgMakerSelected.value && item.key === 'live') return false;
-  if (isUnknownSelected.value && ['data', 'maps', 'live'].includes(item.key)) return false;
+  if (isUnknownSelected.value && !isUnitySelected.value && ['data', 'maps', 'live'].includes(item.key)) return false;
+  if (isUnitySelected.value && ['data', 'maps', 'saves', 'runtime'].includes(item.key)) return false;
   return true;
 }));
 const currentWolfGroupVariables = computed(() => {
@@ -1558,7 +1704,7 @@ const namedAiConfigList = computed(() => Object.entries(aiNamedConfigs).map(([na
   model: config.model || '',
 })).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN')));
 const viewMeta = computed(() => {
-  if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity 翻译工作台', subtitle: '自动识别 Unity Localization、Polyglot CSV/TSV 与可编辑 JSON 本地化表。' };
+  if (currentView.value === 'agent' && isUnitySelected.value) return { eyebrow: 'Unity', title: 'Unity 翻译工作台', subtitle: 'Localization/Polyglot 表 + XUA 词典与 CustomTranslate 实时注入' };
   if (currentView.value === 'agent' && isUnrealSelected.value) return { eyebrow: 'Unreal', title: 'UE4/UE5 翻译工作台', subtitle: '读取 UE4/UE5 Localization Archive 的 Source/Translation 字段，保留可写回的定位信息。' };
   if (currentView.value === 'agent' && isGalgameSelected.value) return { eyebrow: 'Galgame', title: 'Galgame 翻译工作台', subtitle: '支持 Kirikiri/KAG、NScripter/ONScripter 与 GalTransl 兼容 JSON 的剧本翻译流程。' };
   if (currentView.value === 'agent' && isWolfSelected.value) return { eyebrow: 'Wolf RPG', title: 'Wolf RPG 翻译工作台', subtitle: '解析翻译包和 MPS 事件文本，所有写回都在隔离副本中进行。' };
@@ -2839,6 +2985,7 @@ function syncRuntimeForm() {
   runtimeForm.unlockCg = Boolean(state.options?.unlockCg);
   runtimeForm.fontSizeOffset = Number(state.options?.fontSizeOffset || 0);
   runtimeForm.fontFamily = String(state.options?.fontFamily || '');
+  runtimeForm.alwaysDash = Boolean(state.options?.alwaysDash);
   if (!runtimeForm.actorId && state.actors?.length) runtimeForm.actorId = state.actors[0].id;
   syncRuntimeActorForm();
 }
@@ -2862,7 +3009,8 @@ async function setRuntimeAdvancedOptions() {
       noEncounter: runtimeForm.noEncounter,
       oneHitKill: runtimeForm.oneHitKill,
       through: runtimeForm.through,
-      unlockCg: runtimeForm.unlockCg
+      unlockCg: runtimeForm.unlockCg,
+      alwaysDash: runtimeForm.alwaysDash
     }
   });
 }
@@ -2881,6 +3029,48 @@ async function toggleQuickNoEncounter(val) {
 async function toggleQuickOneHitKill(val) {
   runtimeForm.oneHitKill = val;
   await setRuntimeAdvancedOptions();
+}
+async function toggleQuickClickTeleport(val) {
+  runtimeForm.clickTeleport = val;
+  await setRuntimeOptions();
+  if (val) toast('已开启点击传送：地图上点击目标格即可瞬移');
+}
+async function toggleQuickAutoBattle(val) {
+  runtimeForm.autoBattle = val;
+  await setRuntimeAdvancedOptions();
+}
+async function toggleQuickAlwaysDash(val) {
+  runtimeForm.alwaysDash = val;
+  await setRuntimeAdvancedOptions();
+}
+async function toggleQuickAutoSave(val) {
+  runtimeForm.autoSaveMinutes = val ? Math.max(1, Number(runtimeForm.autoSaveMinutes) || 3) : 0;
+  await setRuntimeOptions();
+  if (val) toast(`自动存档已开启：每 ${runtimeForm.autoSaveMinutes} 分钟`);
+  else toast('自动存档已关闭');
+}
+async function applyQuickSpeed() {
+  runtimeForm.gameSpeed = Math.max(1, Math.min(16, Number(runtimeForm.gameSpeed) || 1));
+  await setRuntimeAdvancedOptions();
+  toast(`游戏速度已设为 ${runtimeForm.gameSpeed}x`);
+}
+async function quickTeleport() {
+  await teleportToTile(runtimeForm.x, runtimeForm.y);
+}
+async function quickBattleWin() {
+  await setBattleResult('win');
+}
+async function quickBattleEscape() {
+  await setBattleResult('escape');
+}
+async function quickEnemyHp1() {
+  if (await setRuntimePayload({ enemy_hp_1: true })) toast('当前战斗敌人 HP 已降至 1');
+}
+async function quickFpsOptimize() {
+  if (await setRuntimePayload({ fps_optimize: true })) toast('FPS 优化已应用（拉伸渲染 + 满帧 + 关闭交互抢占）');
+}
+async function quickQuickSave() {
+  if (await setRuntimePayload({ quick_save: true })) toast('已触发快速存档到槽位 0');
 }
 async function setRuntimeFontSize() {
   await setRuntimePayload({
@@ -2972,7 +3162,17 @@ async function quickUnlockCg() {
     toast('全 CG 画廊与全回想开关已解锁');
   }
 }
-async function loadLiveStatus(silent = false) { if (!(await ensureProjectLoaded())) return; try { liveStatus.value = await api('/live/status'); } catch (error) { if (!silent) toast(error.message, 'warning'); } }
+async function quickEnemyHpMax() {
+  if (await setRuntimePayload({ enemy_hp_max: true })) toast('当前战斗敌人 HP 已回满');
+}
+async function toggleRuntimeAlwaysDash() {
+  const next = !runtimeForm.alwaysDash;
+  if (await setRuntimePayload({ always_dash: next, options: { alwaysDash: next } })) {
+    runtimeForm.alwaysDash = next;
+    toast(next ? '疾跑已开启' : '疾跑已关闭');
+  }
+}
+async function loadLiveStatus(silent = false) { if (!(await ensureProjectLoaded())) return; try { liveStatus.value = await api('/live/status'); libraryLiveOn.value = Boolean(liveStatus.value?.running); } catch (error) { if (!silent) toast(error.message, 'warning'); } }
 async function startLive() {
   if (!(await ensureProjectLoaded())) return false;
   if (isRpgMakerSelected.value) {
@@ -2983,11 +3183,65 @@ async function startLive() {
     toast('请先启动 RenPy 游戏，再启动实时翻译', 'warning');
     return false;
   }
+  if (isUnitySelected.value) {
+    await api('/unity/xua/install', { body: {} });
+    if (translations.value.some((item) => hasUsableTranslation(item))) {
+      await api('/unity/xua/export', { body: { entries: translations.value } });
+    }
+  }
   liveStatus.value = await api('/live/start', { body: { autoTranslate: true } });
-  toast('RenPy 实时翻译已启动');
+  libraryLiveOn.value = Boolean(liveStatus.value?.running);
+  toast(isUnitySelected.value ? 'Unity XUA 实时翻译已启动（CustomTranslate :32182）' : 'RenPy 实时翻译已启动');
   return true;
 }
-async function stopLive() { if (!(await ensureProjectLoaded())) return; liveStatus.value = await api('/live/stop', { body: {} }); toast('实时翻译已停止'); }
+async function stopLive() { if (!(await ensureProjectLoaded())) return; liveStatus.value = await api('/live/stop', { body: {} }); libraryLiveOn.value = false; toast('实时翻译已停止'); }
+async function onLibraryLiveToggle(on) {
+  try {
+    if (on) await startLive();
+    else await stopLive();
+  } catch (error) {
+    libraryLiveOn.value = Boolean(liveStatus.value?.running);
+    toast(error.message, 'error');
+  }
+}
+async function toggleLibraryLive() {
+  await onLibraryLiveToggle(!liveStatus.value?.running);
+}
+async function refreshRunningDashboard() {
+  await loadGameStatus();
+  await loadLibrary();
+  if (!isRpgMakerSelected.value) await loadLiveStatus(true);
+  else await loadRuntimeState(true);
+}
+async function installUnityXua() {
+  if (!(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/unity/xua/install', { body: {} });
+    toast(data.path ? `XUA 桥已安装：${data.path}` : 'XUA 桥已安装');
+  } catch (error) { toast(error.message, 'error'); } finally { busy.agent = false; }
+}
+async function exportUnityXua() {
+  if (!(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/unity/xua/export', { body: { entries: translations.value } });
+    toast(`已导出 XUA 词典 ${data.count || 0} 条`);
+  } catch (error) { toast(error.message, 'error'); } finally { busy.agent = false; }
+}
+async function importUnityXua() {
+  if (!(await ensureProjectLoaded())) return;
+  busy.agent = true;
+  try {
+    const data = await api('/unity/xua/import');
+    if (data.count) {
+      const index = new Map(translations.value.map((item) => [item.entry_id, item]));
+      for (const item of data.entries || []) index.set(item.entry_id, { ...(index.get(item.entry_id) || {}), ...item });
+      translations.value = Array.from(index.values());
+    }
+    toast(`已导入运行时捕获 ${data.count || 0} 条`);
+  } catch (error) { toast(error.message, 'error'); } finally { busy.agent = false; }
+}
 async function refreshLive() { if (!(await ensureProjectLoaded())) return; await api('/live/refresh', { body: {} }); await loadLiveStatus(true); }
 async function mergeLive() { if (!(await ensureProjectLoaded())) return; await api('/live/merge', { body: { source: liveSource.value, target: liveTarget.value } }); await loadLiveStatus(true); toast('已写入实时翻译表并通知游戏刷新'); }
 async function openLiveDebug() {
@@ -3260,7 +3514,12 @@ async function sendFeedback() {
 }
 async function loadViewData(view, refresh = false) {
   if (view === 'settings') return;
-  if (view === 'library') { if (refresh) await loadLibrary(); return; }
+  if (view === 'library') {
+    if (refresh) await loadLibrary();
+    if (gameRunning.value && !isRpgMakerSelected.value) await loadLiveStatus(true);
+    if (gameRunning.value && isRpgMakerSelected.value) await loadRuntimeState(true);
+    return;
+  }
   if (view === 'ai') { if (refresh) await loadAiSettings(); return; }
   if (!requireGameSelected()) return;
   const key = `${selectedPath.value}:${view}`;
@@ -3282,6 +3541,12 @@ watch(currentView, async (view) => {
     await loadViewData(view);
     if ((['maps', 'runtime'].includes(view) || (view === 'data' && dataSection.value !== 'database')) && !isRenPySelected.value) runtimePollTimer = setInterval(() => loadRuntimeState(true), 2000);
     else if (view === 'live' && !isRpgMakerSelected.value) runtimePollTimer = setInterval(() => loadLiveStatus(true), 1000);
+    else if (view === 'library' && gameRunning.value) {
+      runtimePollTimer = setInterval(() => {
+        if (isRpgMakerSelected.value) loadRuntimeState(true);
+        else loadLiveStatus(true);
+      }, 1500);
+    }
   } finally {
     viewLoading.value = false;
   }

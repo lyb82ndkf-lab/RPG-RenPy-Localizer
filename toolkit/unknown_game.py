@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import struct
+import threading
 import time
 from urllib.parse import quote, unquote
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import Any
 
 from .detectors import detect_engine, find_launcher
 from .models import DataRecord, ProjectInfo, TranslationEntry
+from .live_prefetch import nearby_translation_sources
 
 
 TEXT_EXTENSIONS = {
@@ -39,8 +41,35 @@ IGNORED_DIRS = {".git", ".rpgrtl_workspace", ".rpgrtl_backup", "node_modules", "
 PATH_LIKE = re.compile(r"^(?:[a-z]:[\\/]|https?://|file://|[./\\]|[A-Za-z0-9_ -]+\.(?:dll|exe|png|jpg|json|js|css|ttf|otf))", re.I)
 PRINTABLE = re.compile(r"[\x20-\x7e\u00a0-\uffff]{3,}")
 WOLF_BINARY_SEPARATOR = re.compile(rb"[\x00-\x1f\x7f]+")
-EXCLUDED_TEXT_NAMES = {"game.ini", "license.txt", "license_ofl.txt", "readme.txt", "readme.md", "notice.txt", "changelog.txt", "others.txt"}
+EXCLUDED_TEXT_NAMES = {
+    "game.ini", "license.txt", "license_ofl.txt", "readme.txt", "readme.md",
+    "notice.txt", "changelog.txt", "others.txt", "todo.txt", "notes.txt",
+    "note.txt", "credits.txt", "version.txt", "history.txt", "changes.txt",
+}
 EXCLUDED_TEXT_DIRS = {"license", "licenses", "readme", "docs", "documentation", "manual"}
+# Loose line-oriented formats.  These are only scanned when the path looks like
+# player-facing game content, never for an arbitrary root-level .txt dump.
+PLAIN_LINE_SUFFIXES = {".txt", ".md", ".csv", ".tsv", ".po", ".pot"}
+# Structured formats: prefer quoted/value extraction over whole-line scraping.
+QUOTED_ONLY_SUFFIXES = {
+    ".json", ".json5", ".js", ".mjs", ".cjs", ".ts", ".xml", ".html", ".htm",
+    ".asset", ".translation", ".resx", ".strings", ".jsonl", ".yaml", ".yml",
+    ".ini", ".cfg",
+}
+GAME_CONTENT_DIR_HINTS = {
+    "data", "streamingassets", "localization", "localisation", "texts", "text",
+    "lang", "language", "languages", "locale", "locales", "i18n", "l10n",
+    "content", "resources", "strings", "subtitle", "subtitles", "caption",
+    "captions", "dialogue", "dialog", "dialogs", "messages", "script",
+    "scripts", "scenario", "scenarios", "export", "exports", "table",
+    "tables", "stringtable", "string_table", "polyglot", "localise",
+}
+GAME_TEXT_NAME_HINTS = (
+    "dialogue", "dialog", "message", "messages", "subtitle", "string",
+    "localization", "localisation", "locale", "lang", "language", "text",
+    "script", "scenario", "quest", "item", "skill", "system", "ui", "menu",
+    "story", "chapter", "translat", "caption", "polyglot", "stringtable",
+)
 LEGACY_RPG_EXTENSIONS = {".ldb", ".lmt", ".lmu"}
 ENGLISH_HINT_WORDS = {
     "a", "about", "after", "again", "all", "am", "an", "and", "any", "are", "as", "at", "away",
@@ -60,6 +89,16 @@ UNITY_SIMPLIFIED_CHINESE_LOCALES = {
     "chinese (simplified)", "simplified_chinese", "simplified-chinese",
 }
 POLYGLOT_TARGET_COLUMN = 2 + 17  # Key + description + Language.Simplified_Chinese
+
+_UNREAL_LIVE_LOCK = threading.Lock()
+_UNREAL_LIVE_STATE: dict[str, Any] = {
+    "running": False,
+    "translations": {},
+    "pre_translate_queue": [],
+    "events": [],
+    "seeded_last": 0,
+    "idle_prefetch_count": 0,
+}
 
 
 def _normalise_locale(value: str) -> str:
@@ -297,8 +336,7 @@ def _unreal_archive_entries(path: Path, raw: bytes, rel: str, limit: int) -> tup
                 if not isinstance(child, dict):
                     continue
                 source = _unreal_text(child.get("Source")).strip()
-                has_translation = "Translation" in child and isinstance(child.get("Translation"), (dict, str))
-                if has_translation and _looks_like_dialogue(source):
+                if _looks_like_dialogue(source):
                     child_pointer = pointer + ["Children", str(index)]
                     digest = hashlib.sha1(f"{rel}:{'/'.join(child_pointer)}:{source}".encode("utf-8")).hexdigest()[:12]
                     entries.append(TranslationEntry(
@@ -354,8 +392,12 @@ def _apply_unreal_archive_entries(path: Path, entries: list[TranslationEntry]) -
             if translation.get("Text") != entry.target:
                 translation["Text"] = entry.target
                 changed = True
-        elif isinstance(translation, str) and translation != entry.target:
-            node["Translation"] = entry.target
+        elif isinstance(translation, str):
+            if translation != entry.target:
+                node["Translation"] = entry.target
+                changed = True
+        elif entry.target:
+            node["Translation"] = {"Text": entry.target}
             changed = True
     if not changed:
         return 0
@@ -468,6 +510,25 @@ def _looks_like_dialogue(value: str) -> bool:
     if re.fullmatch(r"[A-Za-z0-9_ .:+\-/\\]+", text) and (" " not in text or re.fullmatch(r"[A-Za-z0-9_.-]+", text)):
         return False
     return bool(re.search(r"[A-Za-z\u00c0-\u024f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", text))
+
+
+def _looks_like_player_text(value: str) -> bool:
+    """Stricter gate for whole-line scrapes of loose formats like .txt.
+
+    Structured JSON/CSV values may be short labels. A raw text-file line is
+    almost never game dialogue unless it reads as a sentence or CJK line.
+    """
+    text = str(value or "").replace("\x00", " ").strip()
+    if not _looks_like_dialogue(text):
+        return False
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", text):
+        return len(text) >= 4
+    words = re.findall(r"[A-Za-z']+", text)
+    if len(words) < 2:
+        return False
+    if re.search(r"[.!?…:;]$", text):
+        return True
+    return len(words) >= 3 and " " in text
 
 
 def _looks_like_wolf_text(value: str) -> bool:
@@ -1708,30 +1769,87 @@ class UnknownGameService:
                 text = self._wolf_binary_strings(raw)
             else:
                 text = self._binary_strings(raw)
+            allow_plain_line = self._allows_full_line_scan(path, suffix)
             for line_no, line in enumerate(text.splitlines(), 1):
-                candidates = [line.strip()]
+                candidates: list[tuple[str, bool]] = []
+                # Whole-line scrape only for content-eligible plain formats.
+                if allow_plain_line:
+                    candidates.append((line.strip(), True))
                 # JSON/JS/resource files often keep one or more values on a line.
-                candidates.extend(match.group(1).strip() for match in re.finditer(r"[\"']((?:\\.|[^\"']){2,1000})[\"']", line))
-                for source in candidates:
+                if suffix in TEXT_EXTENSIONS or suffix in BINARY_EXTENSIONS:
+                    candidates.extend(
+                        (match.group(1).strip(), False)
+                        for match in re.finditer(r"[\"']((?:\\.|[^\"']){2,1000})[\"']", line)
+                    )
+                for source, is_plain_line in candidates:
                     if "\\" in source:
                         source = source.replace('\\"', '"').replace('\\n', "\n").replace('\\r', "\r").replace('\\t', "\t").replace('\\\\', "\\")
-                    is_dialogue = _looks_like_wolf_text(source) if self.project.engine == "Wolf RPG Editor" and suffix in BINARY_EXTENSIONS else _looks_like_dialogue(source)
+                    if self.project.engine == "Wolf RPG Editor" and suffix in BINARY_EXTENSIONS:
+                        is_dialogue = _looks_like_wolf_text(source)
+                    elif is_plain_line:
+                        is_dialogue = _looks_like_player_text(source)
+                    else:
+                        is_dialogue = _looks_like_dialogue(source)
                     if not is_dialogue or (rel, source) in seen:
                         continue
                     seen.add((rel, source))
                     digest = hashlib.sha1(f"{rel}:{line_no}:{source}".encode("utf-8")).hexdigest()[:12]
+                    category = self._generic_scan_category(source, is_plain_line)
                     entries.append(TranslationEntry(
                         entry_id=f"unknown::{rel}::{line_no}::{digest}",
                         source=source,
                         file=rel,
                         context=f"第 {line_no} 行",
-                        category="galgame_dialogue" if self.project.engine == "Visual Novel / Galgame" else "unknown",
+                        category=category,
                     ))
                     if len(entries) >= max(1, min(int(limit or 30000), 30000)):
                         report(processed, "完成", rel)
                         return entries
         report(total_paths, "完成")
         return entries
+
+    def _generic_scan_category(self, source: str, is_plain_line: bool) -> str:
+        if self.project.engine == "Visual Novel / Galgame":
+            return "galgame_dialogue"
+        if self.project.engine in {"Unity", "Unreal Engine 4/5"}:
+            return "dialogue" if _looks_like_dialogue(source) else "unknown"
+        if self.project.engine in {"Godot", "Electron/Web", "Generic Windows Game", "Unknown"}:
+            if is_plain_line:
+                return "dialogue" if _looks_like_player_text(source) else "unknown"
+            return "dialogue" if _looks_like_dialogue(source) else "unknown"
+        return "unknown"
+
+    def _allows_full_line_scan(self, path: Path, suffix: str) -> bool:
+        if suffix in QUOTED_ONLY_SUFFIXES:
+            return False
+        if suffix not in TEXT_EXTENSIONS:
+            return False
+        if suffix in PLAIN_LINE_SUFFIXES:
+            return self._is_game_text_location(path)
+        return True
+
+    def _is_game_text_location(self, path: Path) -> bool:
+        try:
+            parts = [part.lower() for part in path.relative_to(self.project.root).parts]
+        except ValueError:
+            return False
+        if not parts:
+            return False
+        dirs = parts[:-1]
+        name = parts[-1]
+        stem = Path(name).stem
+        if name in EXCLUDED_TEXT_NAMES or any(part in EXCLUDED_TEXT_DIRS for part in dirs):
+            return False
+        if any(dir_hint in dirs for dir_hint in GAME_CONTENT_DIR_HINTS):
+            return True
+        if any(dir.endswith("_data") or dir.endswith(".data") for dir in dirs):
+            return True
+        lowered = stem.lower()
+        if any(hint in lowered for hint in GAME_TEXT_NAME_HINTS):
+            return True
+        if not dirs:
+            return False
+        return any(hint in lowered for hint in GAME_TEXT_NAME_HINTS)
 
     def _is_candidate_resource(self, path: Path, suffix: str) -> bool:
         rel_parts = [part.lower() for part in path.relative_to(self.project.root).parts]
@@ -1747,6 +1865,8 @@ class UnknownGameService:
                 return True
             if rel.startswith("data/basicdata/") and name in {"commonevent.dat", "database.dat", "cdatabase.dat", "sysdatabase.dat"}:
                 return True
+            return False
+        if suffix in PLAIN_LINE_SUFFIXES and not self._is_game_text_location(path):
             return False
         return suffix in TEXT_EXTENSIONS or suffix in BINARY_EXTENSIONS
 
@@ -2138,6 +2258,12 @@ class UnknownGameService:
         dest = target_dir or self.project.game_dir
         engine = self.project.engine
 
+        if engine == "Unity":
+            # XUA-compatible dictionaries + CustomTranslate config (see toolkit/unity_xua.py).
+            from .unity_xua import UnityXuaService
+
+            return UnityXuaService(self.project).install_runtime_bridge(dest)
+
         if engine == "RPG Developer Bakin" or (dest / "data" / "bakinplayer.exe").is_file() or (dest / "bakinplayer.exe").is_file():
             data_dir = dest / "data" if (dest / "data").is_dir() else dest
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -2203,6 +2329,190 @@ class UnknownGameService:
 
         return None
 
+    def _unity_xua(self):
+        if self.project.engine != "Unity":
+            return None
+        from .unity_xua import UnityXuaService
+
+        return UnityXuaService(self.project)
+
+    def export_xua_translations(self, translations: dict[str, TranslationEntry]) -> Path | None:
+        service = self._unity_xua()
+        if service is None:
+            return None
+        return service.export_translations(translations)
+
+    def import_xua_captures(self) -> list[TranslationEntry]:
+        service = self._unity_xua()
+        if service is None:
+            return []
+        return service.import_runtime_captures()
+
+    def write_live_translation_table(self, translations: dict[str, str]) -> tuple[Path, int]:
+        """Persist source→target pairs into the XUA manual dictionary (RPG Maker parity)."""
+        service = self._unity_xua()
+        if service is None:
+            path = self.project.root / "翻译文件.json"
+            payload = {k: v for k, v in translations.items() if k.strip() and v.strip() and k != v}
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+            return path, len(payload)
+        pairs = [(k, v) for k, v in translations.items() if k.strip() and v.strip() and k != v]
+        from .unity_xua import write_xua_translation_file
+
+        path = write_xua_translation_file(service.manual_path, pairs)
+        from . import unity_xua
+
+        unity_xua.merge_live_translations(dict(pairs))
+        return path, len(pairs)
+
+    def set_live_translations(self, translations: dict[str, str]) -> int:
+        service = self._unity_xua()
+        if service is None:
+            return 0
+        from . import unity_xua
+
+        return unity_xua.merge_live_translations(translations)
+
+    def _live_state(self) -> tuple[threading.Lock, dict[str, Any]] | None:
+        if self.project.engine == "Unity":
+            from .unity_xua import _XUA_LIVE_LOCK, _XUA_LIVE_STATE
+            return _XUA_LIVE_LOCK, _XUA_LIVE_STATE
+        if self.project.engine == "Unreal Engine 4/5":
+            return _UNREAL_LIVE_LOCK, _UNREAL_LIVE_STATE
+        return None
+
+    def take_live_translation_candidates(self, limit: int = 50) -> list[str]:
+        state = self._live_state()
+        if state is None:
+            return []
+        lock, live_state = state
+        with lock:
+            queue = live_state.setdefault("pre_translate_queue", [])
+            if not isinstance(queue, list):
+                return []
+            count = max(1, min(int(limit), 300))
+            selected = [str(value or "").strip() for value in queue[:count]]
+            del queue[:count]
+        return [value for value in selected if value]
+
+    def requeue_live_translation_candidates(self, candidates: list[str]) -> None:
+        state = self._live_state()
+        if state is None:
+            return
+        lock, live_state = state
+        with lock:
+            queue = live_state.setdefault("pre_translate_queue", [])
+            if not isinstance(queue, list):
+                return
+            existing = {str(value or "").strip() for value in queue}
+            for value in reversed(candidates):
+                source = str(value or "").strip()
+                if source and source not in existing:
+                    queue.insert(0, source)
+                    existing.add(source)
+            del queue[1000:]
+
+    def seed_live_translation_queue(self, entries: list[TranslationEntry], anchor_source: str, limit: int = 300) -> int:
+        if self.project.engine not in {"Unity", "Unreal Engine 4/5"}:
+            return 0
+        state = self._live_state()
+        if state is None:
+            return 0
+        lock, live_state = state
+        categories = {"unity_localization", "dialogue"} if self.project.engine == "Unity" else {"unreal_localization", "dialogue"}
+        with lock:
+            translations = dict(live_state.get("translations") or {})
+        candidates = nearby_translation_sources(entries, anchor_source, translations, limit, categories)
+        if not candidates:
+            return 0
+        added = 0
+        with lock:
+            queue = live_state.setdefault("pre_translate_queue", [])
+            if not isinstance(queue, list):
+                return 0
+            existing = {str(value or "").strip() for value in queue}
+            for source in candidates:
+                if source not in existing:
+                    queue.append(source)
+                    existing.add(source)
+                    added += 1
+            del queue[: max(0, len(queue) - 1000)]
+            live_state["seeded_last"] = added
+            live_state["idle_prefetch_count"] = int(live_state.get("idle_prefetch_count") or 0) + added
+        return added
+
+    def merge_live_translations(self, translations: dict[str, str], kind: str = "automatic") -> int:
+        if self.project.engine == "Unity":
+            from . import unity_xua
+            unity_xua.merge_live_translations(translations)
+            _path, count = self.write_live_translation_table(unity_xua.live_translations())
+            return count
+        if self.project.engine == "Unreal Engine 4/5":
+            changed = 0
+            with _UNREAL_LIVE_LOCK:
+                store = _UNREAL_LIVE_STATE.setdefault("translations", {})
+                events = _UNREAL_LIVE_STATE.setdefault("events", [])
+                for source, target in translations.items():
+                    source = str(source or "").strip()
+                    target = str(target or "").strip()
+                    if source and target and source != target:
+                        store[source] = target
+                        events.append({"kind": kind, "source": source, "target": target, "matched": True})
+                        changed += 1
+                del events[:-500]
+            return changed
+        return 0
+
+    def start_live_bridge_server(self, clear_events: bool = False) -> dict:
+        service = self._unity_xua()
+        if service is not None:
+            from . import unity_xua
+            return unity_xua.start_live_bridge_server(service, clear_seen=clear_events)
+        if self.project.engine == "Unreal Engine 4/5":
+            with _UNREAL_LIVE_LOCK:
+                _UNREAL_LIVE_STATE["running"] = True
+                if clear_events:
+                    _UNREAL_LIVE_STATE["events"] = []
+                    _UNREAL_LIVE_STATE["pre_translate_queue"] = []
+                    _UNREAL_LIVE_STATE["seeded_last"] = 0
+                    _UNREAL_LIVE_STATE["idle_prefetch_count"] = 0
+            return self.live_bridge_status()
+        return {"running": False, "error": "当前引擎不支持实时预取"}
+
+    def stop_live_bridge_server(self) -> dict:
+        if self.project.engine == "Unity":
+            from . import unity_xua
+            return unity_xua.stop_live_bridge_server()
+        if self.project.engine == "Unreal Engine 4/5":
+            with _UNREAL_LIVE_LOCK:
+                _UNREAL_LIVE_STATE["running"] = False
+            return self.live_bridge_status()
+        return {"running": False, "engine": self.project.engine}
+
+    def live_bridge_status(self) -> dict:
+        service = self._unity_xua()
+        if service is not None:
+            from . import unity_xua
+            status = unity_xua.live_status()
+            status["manualFile"] = str(service.manual_path)
+            status["autoFile"] = str(service.auto_path)
+            status["configFile"] = str(service.config_path)
+            return status
+        if self.project.engine == "Unreal Engine 4/5":
+            with _UNREAL_LIVE_LOCK:
+                return {
+                    "running": bool(_UNREAL_LIVE_STATE.get("running")),
+                    "connected": False,
+                    "engine": self.project.engine,
+                    "mode": "archive-preheat",
+                    "queue_count": len(_UNREAL_LIVE_STATE.get("pre_translate_queue") or []),
+                    "translation_count": len(_UNREAL_LIVE_STATE.get("translations") or {}),
+                    "seeded_last": int(_UNREAL_LIVE_STATE.get("seeded_last") or 0),
+                    "idle_prefetch_count": int(_UNREAL_LIVE_STATE.get("idle_prefetch_count") or 0),
+                    "recentEvents": list(_UNREAL_LIVE_STATE.get("events") or [])[-20:],
+                }
+        return {"running": False, "engine": self.project.engine}
+
     def export_translation_file(self, translations: dict[str, TranslationEntry], target_dir: Path | None = None, filename: str = "翻译文件.json") -> Path:
         """Export translations into standard flat JSON dictionary for MTool/engine runtime loaders."""
         dest = target_dir or self.project.root
@@ -2250,6 +2560,11 @@ class UnknownGameService:
         ignored = set(IGNORED_DIRS)
         if self.project.engine == "Wolf RPG Editor":
             ignored.update({"dump", "save", "savedata", "saves", "backup"})
+        else:
+            ignored.update({
+                "dump", "logs", "log", "backup", "backups", "docs",
+                "documentation", "manual", "readme", "license", "licenses",
+            })
         for current, dirnames, filenames in os.walk(self.project.root):
             dirnames[:] = [name for name in dirnames if name.lower() not in ignored]
             if self.project.engine == "Wolf RPG Editor":

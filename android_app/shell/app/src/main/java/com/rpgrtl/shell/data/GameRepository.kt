@@ -23,8 +23,24 @@ class GameRepository(private val context: Context) {
             val json = libraryFile.readText(StandardCharsets.UTF_8)
             val listType = object : TypeToken<List<GameItem>>() {}.type
             val list: List<GameItem> = gson.fromJson(json, listType) ?: emptyList()
-            // 实时刷新翻译文件状态
-            list.map { refreshTranslationStats(it) }
+            // 实时刷新翻译文件状态，并自动修复被错误识别为 UnityCrashHandler 的启动文件
+            var needSave = false
+            val refreshed = list.map { game ->
+                var g = refreshTranslationStats(game)
+                val currentExeName = g.executableFile.name.lowercase()
+                if (currentExeName.startsWith("unitycrashhandler") || !g.executableFile.exists()) {
+                    val realExe = findExecutable(g.directory)
+                    if (realExe != null && realExe.absolutePath != g.executablePath) {
+                        g = g.copy(executablePath = realExe.absolutePath)
+                        needSave = true
+                    }
+                }
+                g
+            }
+            if (needSave) {
+                saveGames(refreshed)
+            }
+            refreshed
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()
@@ -197,7 +213,33 @@ class GameRepository(private val context: Context) {
     fun findExecutable(folder: File): File? {
         val files = folder.listFiles() ?: return null
 
-        // 优先匹配标准名称
+        fun isIgnoredExe(name: String): Boolean {
+            val lower = name.lowercase()
+            return lower.startsWith("unitycrashhandler") ||
+                   lower.startsWith("unins") ||
+                   lower.startsWith("uninstall") ||
+                   lower.startsWith("update") ||
+                   lower.startsWith("patcher") ||
+                   lower.startsWith("crashpad") ||
+                   lower.startsWith("crashreport") ||
+                   lower.startsWith("dxsetup") ||
+                   lower.startsWith("vcredist")
+        }
+
+        // 1. 针对 Unity 游戏的精准配对：
+        // Unity 游戏目录结构为 <GameName>.exe 对应同名的 <GameName>_Data 文件夹
+        val unityDataDir = files.firstOrNull { it.isDirectory && it.name.endsWith("_Data", ignoreCase = true) }
+        if (unityDataDir != null) {
+            val baseName = unityDataDir.name.substring(0, unityDataDir.name.length - 5) // 去掉 "_Data"
+            val matchedExe = files.firstOrNull {
+                it.isFile && it.extension.equals("exe", ignoreCase = true) &&
+                !isIgnoredExe(it.name) &&
+                it.nameWithoutExtension.equals(baseName, ignoreCase = true)
+            }
+            if (matchedExe != null) return matchedExe
+        }
+
+        // 2. 优先匹配标准启动文件名
         val preferredNames = listOf(
             "game.exe",
             "bakinlauncher.exe",
@@ -209,16 +251,26 @@ class GameRepository(private val context: Context) {
         )
 
         for (pref in preferredNames) {
-            val found = files.firstOrNull { it.isFile && it.name.equals(pref, ignoreCase = true) }
+            val found = files.firstOrNull { it.isFile && it.name.equals(pref, ignoreCase = true) && !isIgnoredExe(it.name) }
             if (found != null) return found
         }
 
-        // 寻找任意 .exe（排除常见的卸载或更新程序）
-        val ignoredNames = setOf("unins000.exe", "uninstall.exe", "update.exe", "unitycrashhandler.exe")
+        // 3. 寻找其它有效 .exe（严格排除 UnityCrashHandler、卸载器等）
         val exeList = files.filter {
-            it.isFile && it.extension.equals("exe", ignoreCase = true) && !ignoredNames.contains(it.name.lowercase())
+            it.isFile && it.extension.equals("exe", ignoreCase = true) && !isIgnoredExe(it.name)
         }
 
+        if (exeList.isEmpty()) return null
+
+        // 优先匹配与父文件夹同名（或包含相同关键词）的 exe
+        val folderNamedExe = exeList.firstOrNull {
+            it.nameWithoutExtension.equals(folder.name, ignoreCase = true) ||
+            folder.name.contains(it.nameWithoutExtension, ignoreCase = true) ||
+            it.nameWithoutExtension.contains(folder.name, ignoreCase = true)
+        }
+        if (folderNamedExe != null) return folderNamedExe
+
+        // 否则选择体积最大的主程序
         return exeList.maxByOrNull { it.length() }
     }
 }

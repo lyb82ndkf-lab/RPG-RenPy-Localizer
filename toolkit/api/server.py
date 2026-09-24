@@ -862,17 +862,100 @@ class ToolkitApi:
 
     def _restore_translation_cache(self) -> None:
         path = self._translation_cache_path()
-        if not path.exists():
-            return
-        try:
-            payload = load_json(path)
-            cached = payload.get("entries") if isinstance(payload, dict) else []
-            by_id = {str(item.get("entry_id")): str(item.get("target") or "") for item in cached if isinstance(item, dict)}
-            for entry in self.translation_entries:
-                if entry.entry_id in by_id:
-                    entry.target = by_id[entry.entry_id]
-        except (OSError, ValueError, TypeError):
-            return
+        if path.exists():
+            try:
+                payload = load_json(path)
+                cached = payload.get("entries") if isinstance(payload, dict) else []
+                by_id = {str(item.get("entry_id")): str(item.get("target") or "") for item in cached if isinstance(item, dict)}
+                for entry in self.translation_entries:
+                    if entry.entry_id in by_id:
+                        entry.target = by_id[entry.entry_id]
+            except (OSError, ValueError, TypeError):
+                pass
+        # Workspace cache wins; external game-dir dicts only fill remaining gaps
+        # so Android/MTool-style 翻译文件.json lights up the workbench immediately.
+        self._merge_external_translation_dicts()
+
+    def _external_translation_candidates(self) -> list[Path]:
+        root = self._project().root
+        folders = [
+            root / ".rpgrtl_workspace",
+            root,
+            root / "data",
+            root / "www" / "data",
+        ]
+        names = (
+            "翻译文件.json",
+            "game_translation.json",
+            "ManualTransFile.json",
+            "translation.json",
+            "translations.json",
+            "RPGRenPyLocalizer_translation.json",
+            "live_translation.json",
+        )
+        seen: set[Path] = set()
+        candidates: list[Path] = []
+        for folder in folders:
+            for name in names:
+                path = folder / name
+                if path in seen or not path.is_file():
+                    continue
+                seen.add(path)
+                candidates.append(path)
+        return candidates
+
+    def _external_source_targets(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+
+        def put(source: Any, target: Any) -> None:
+            if isinstance(source, (dict, list)) or isinstance(target, (dict, list)):
+                return
+            src = str(source)
+            tgt = str(target)
+            if src and tgt and src not in mapping:
+                mapping[src] = tgt
+
+        for path in self._external_translation_candidates():
+            try:
+                payload = load_json(path)
+            except (OSError, ValueError, TypeError, UnicodeDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            translations = payload.get("translations")
+            if isinstance(translations, dict):
+                for source, target in translations.items():
+                    put(source, target)
+                continue
+            entries = payload.get("entries")
+            if isinstance(entries, list):
+                for item in entries:
+                    if isinstance(item, dict):
+                        put(item.get("source"), item.get("target"))
+                continue
+            for source, target in payload.items():
+                if source in {"version", "updated_at", "engine", "signature"}:
+                    continue
+                put(source, target)
+        return mapping
+
+    def _merge_external_translation_dicts(self) -> int:
+        if not self.translation_entries:
+            return 0
+        mapping = self._external_source_targets()
+        if not mapping:
+            return 0
+        by_stripped = {source.strip(): target for source, target in mapping.items()}
+        filled = 0
+        for entry in self.translation_entries:
+            if str(entry.target or "").strip():
+                continue
+            source = str(entry.source or "")
+            target = mapping.get(source) or by_stripped.get(source.strip(), "")
+            if target:
+                entry.target = target
+                filled += 1
+        return filled
 
     def _persist_translation_cache(self) -> None:
         path = self._translation_cache_path()
@@ -912,20 +995,22 @@ class ToolkitApi:
         if project.engine == "SRPG Studio":
             return {"srpg_dialogue", "dialogue", "choice", "unknown"}
         if project.engine == "Unity":
-            return {"unity_localization", "dialogue", "unknown"}
+            return {"unity_localization", "dialogue"}
         if project.engine == "Unreal Engine 4/5":
-            return {"unreal_localization", "dialogue", "unknown"}
+            return {"unreal_localization", "dialogue"}
         if project.engine == "Visual Novel / Galgame":
-            return {"galgame_dialogue", "dialogue", "unknown"}
+            return {"galgame_dialogue", "dialogue"}
         return {"database", "dialogue", "choice", "unknown", "bakin_dialogue", "bakin_map_name", "wolf_dialogue", "wolf_choice", "srpg_dialogue", "tyrano_dialogue", "agtk_dialogue", "unity_localization", "unreal_localization", "galgame_dialogue"}
 
     def _is_safe_translation_entry(self, entry: TranslationEntry) -> bool:
         categories = self._safe_translation_categories()
-        return bool(entry.source and (not categories or entry.category in categories or entry.category == "unknown"))
+        # Do not blanket-allow "unknown": Unity/UE must not surface generic
+        # .txt line scrapes that failed structured localization extraction.
+        return bool(entry.source and (not categories or entry.category in categories))
 
     def _filter_safe_translation_entries(self, entries: list[TranslationEntry]) -> list[TranslationEntry]:
         categories = self._safe_translation_categories()
-        return [entry for entry in entries if entry.source and (not categories or entry.category in categories or entry.category == "unknown")]
+        return [entry for entry in entries if entry.source and (not categories or entry.category in categories)]
 
     @staticmethod
     def _entry_write_status(entry: TranslationEntry) -> str:
@@ -1656,7 +1741,27 @@ class ToolkitApi:
         if project.engine != "RPG Maker MV/MZ":
             raise ApiError("当前项目不支持地图。")
         map_id = int(query.get("id") or query.get("mapId") or 0)
-        return _plain(RPGMakerService(project).map_detail(map_id))
+        service = RPGMakerService(project)
+        if not self.translation_entries:
+            self.translation_entries = service.extract_translations()
+        # Always re-apply workspace/external targets so map labels stay in sync
+        # even when the workbench has not refreshed translation entries yet.
+        self._restore_translation_cache()
+        translations = self._source_target_map()
+        return _plain(service.map_detail(map_id, translations=translations))
+
+    def _source_target_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for entry in self._filter_safe_translation_entries(self.translation_entries):
+            source = str(entry.source or "")
+            target = str(entry.target or "")
+            if source and target.strip() and source not in mapping:
+                mapping[source] = target
+        # Workspace entries win; external/live dicts only fill gaps.
+        for source, target in self._external_source_targets().items():
+            if source and target and source not in mapping:
+                mapping[source] = target
+        return mapping
 
     def runtime_state(self) -> JsonDict:
         try:
@@ -1725,6 +1830,46 @@ class ToolkitApi:
             raise ApiError(str(result.get("error") if isinstance(result, dict) else "实时组件返回异常"), 502)
         return result
 
+    def unity_xua_install(self) -> JsonDict:
+        service = self._service()
+        path = service.install_runtime_bridge()
+        return {"ok": True, "path": str(path) if path else ""}
+
+    def unity_xua_export(self, body: JsonDict) -> JsonDict:
+        service = self._service()
+        entries = self._merged_translation_list(body)
+        mapping = {
+            item.entry_id: TranslationEntry(item.entry_id, item.source, item.target, item.file, item.context, item.category)
+            for item in entries
+        }
+        if hasattr(service, "export_xua_translations"):
+            path = service.export_xua_translations(mapping)
+            count = 0
+            if path and hasattr(service, "write_live_translation_table"):
+                pairs = {e.source: e.target for e in entries if e.source.strip() and e.target.strip()}
+                path, count = service.write_live_translation_table(pairs)
+            return {"ok": True, "path": str(path) if path else "", "count": count}
+        path = service.export_translation_file(mapping) if hasattr(service, "export_translation_file") else None
+        return {"ok": True, "path": str(path) if path else "", "count": len(mapping)}
+
+    def unity_xua_import(self) -> JsonDict:
+        service = self._service()
+        entries = service.import_xua_captures() if hasattr(service, "import_xua_captures") else []
+        return {
+            "ok": True,
+            "entries": [
+                {"entry_id": e.entry_id, "source": e.source, "target": e.target, "file": e.file, "category": e.category}
+                for e in entries
+            ],
+            "count": len(entries),
+        }
+
+    def unity_xua_status(self) -> JsonDict:
+        service = self._service()
+        if hasattr(service, "live_bridge_status"):
+            return {"ok": True, **service.live_bridge_status()}
+        return {"ok": True, "running": False}
+
     def live_start(self, body: JsonDict) -> JsonDict:
         service = self._service()
         if not self.translation_entries:
@@ -1737,9 +1882,74 @@ class ToolkitApi:
             self._persist_translation_cache()
         if isinstance(service, RenPyService):
             raise ApiError("为保护原游戏完整性，Ren'Py 实时桥接仅会随翻译后的独立运行副本启动。")
-        elif hasattr(service, "start_live_bridge_server"):
+        if self.project.engine == "Unity":
+            return self._start_unity_live(body)
+        if self.project.engine == "Unreal Engine 4/5":
+            status = service.start_live_bridge_server(clear_events=bool(body.get("clearEvents")))
+            if self.translation_entries:
+                first = next((entry.source for entry in self._filter_safe_translation_entries(self.translation_entries) if entry.source.strip()), "")
+                if first:
+                    service.requeue_live_translation_candidates([first])
+                    service.seed_live_translation_queue(self.translation_entries, first, self._live_ai_config()["windowSize"])
+            if body.get("autoTranslate", True):
+                self._start_live_worker(service)
+            full = self.live_status()
+            full.update({"ok": True, "engine": self.project.engine, "hint": "UE 当前为 Localization archive 启动前预热；PAK/locres 仍需先用 FModel 或 UnrealPak 导出，未声明已实现运行时 Hook。"})
+            return full
+        if self.project.engine == "RPG Maker MV/MZ":
             raise ApiError("RPG Maker 实时桥接仅在“选择译文启动”创建的独立运行副本中可用，原游戏不会被安装插件。")
+        if hasattr(service, "start_live_bridge_server"):
+            status = service.start_live_bridge_server(clear_events=bool(body.get("clearEvents")))
+            if isinstance(status, dict):
+                return {"ok": True, **status}
         return self.live_status()
+
+    def _start_unity_live(self, body: JsonDict) -> JsonDict:
+        """Install XUA CustomTranslate endpoint and seed existing translations."""
+        service = self._service()
+        if hasattr(service, "install_runtime_bridge"):
+            try:
+                service.install_runtime_bridge()
+            except Exception as exc:  # noqa: BLE001
+                raise ApiError(f"Unity XUA 桥安装失败：{exc}") from exc
+        pairs = {
+            str(entry.source): str(entry.target)
+            for entry in self._filter_safe_translation_entries(self.translation_entries)
+            if str(entry.source or "").strip() and str(entry.target or "").strip()
+        }
+        entry_map = {
+            str(entry.entry_id): entry
+            for entry in self._filter_safe_translation_entries(self.translation_entries)
+            if str(entry.source or "").strip() and str(entry.target or "").strip()
+        }
+        if entry_map and hasattr(service, "export_xua_translations"):
+            try:
+                service.export_xua_translations(entry_map)
+            except Exception:
+                pass
+        if pairs and hasattr(service, "set_live_translations"):
+            service.set_live_translations(pairs)
+        if hasattr(service, "start_live_bridge_server"):
+            try:
+                status = service.start_live_bridge_server(clear_events=bool(body.get("clearEvents")))
+            except Exception as exc:  # noqa: BLE001
+                raise ApiError(f"Unity 实时服务启动失败：{exc}") from exc
+        else:
+            status = {}
+        prefetched = 0
+        first = next((entry.source for entry in self._filter_safe_translation_entries(self.translation_entries) if entry.source.strip() and not entry.target.strip()), "")
+        if first:
+            service.requeue_live_translation_candidates([first])
+            prefetched = 1 + service.seed_live_translation_queue(self.translation_entries, first, self._live_ai_config()["windowSize"])
+        if body.get("autoTranslate", True):
+            self._start_live_worker(service)
+        full = self.live_status()
+        full["ok"] = True
+        full["engine"] = "Unity"
+        full["seeding"] = len(pairs)
+        full["prefetched"] = prefetched
+        full["hint"] = "游戏需安装 BepInEx + XUnity.AutoTranslator，Endpoint 指向 CustomTranslate；ALT+R 可热重载词典。"
+        return full
 
     def live_stop(self) -> JsonDict:
         service = self._service()
@@ -1758,6 +1968,12 @@ class ToolkitApi:
                 status["recentEvents"] = _plain(service.read_live_debug_entries(20))
             elif hasattr(service, "read_live_debug_events"):
                 status["recentEvents"] = _plain(service.read_live_debug_events(20))
+            elif self.project and self.project.engine == "Unity":
+                from toolkit.unity_xua import read_live_events
+                status["recentEvents"] = _plain(read_live_events(20))
+            if "connected" not in status and status.get("running"):
+                # XUA is pull-based; treat a live endpoint as connected once seen.
+                status["connected"] = bool(status.get("seen") or status.get("lastSeenAt"))
             return status
         return {"running": False}
 
@@ -1927,7 +2143,7 @@ class ToolkitApi:
         self.live_worker_project = project_root
         with self.lock:
             self.live_worker_stats = {"running": True, "state": "waiting", "translated": 0, "failures": 0, "lastError": "", "lastSource": "", "activeBatches": 0, "batchSize": 0, "concurrency": 1, "startedAt": time.time()}
-        self.live_worker_thread = threading.Thread(target=self._live_worker_loop, args=(service, self.live_worker_stop, project_root), daemon=True, name="renpy-live-translator")
+        self.live_worker_thread = threading.Thread(target=self._live_worker_loop, args=(service, self.live_worker_stop, project_root), daemon=True, name="live-translator")
         self.live_worker_thread.start()
 
     def _stop_live_worker(self) -> None:
@@ -2008,8 +2224,9 @@ class ToolkitApi:
             # extracted script order so a configured 50 x 4 worker can actually
             # receive up to 200 upcoming entries instead of only 6 or 7.
             seeded = 0
-            if isinstance(service, RenPyService) and candidates and len(candidates) < wave_size and self.translation_entries:
-                seeded = service.seed_live_translation_queue(self.translation_entries, candidates[0], config["windowSize"])
+            seed_anchor = current_source or (candidates[0] if candidates else "")
+            if hasattr(service, "seed_live_translation_queue") and seed_anchor and len(candidates) < wave_size and self.translation_entries:
+                seeded = service.seed_live_translation_queue(self.translation_entries, seed_anchor, config["windowSize"])
                 if seeded:
                     extra_raw = service.take_live_translation_candidates(wave_size - len(candidates))
                     existing = set(candidates)
@@ -2021,7 +2238,7 @@ class ToolkitApi:
                             continue
                         candidates.append(source)
                         existing.add(source)
-            if raw_candidates:
+            if raw_candidates or seeded:
                 self._record_live_debug("capture", "candidate_batch", {
                     "raw_count": len(raw_candidates),
                     "candidate_count": len(candidates),
@@ -2080,7 +2297,7 @@ class ToolkitApi:
                             time.sleep(delay)
                         return self._translate_live_candidates_with_repair(service, chunk, debug_config)
 
-                    with ThreadPoolExecutor(max_workers=min(concurrency, len(work_chunks)), thread_name_prefix="renpy-live-batch") as pool:
+                    with ThreadPoolExecutor(max_workers=min(concurrency, len(work_chunks)), thread_name_prefix="live-batch") as pool:
                         futures = {pool.submit(translate_chunk, chunk): chunk for chunk in work_chunks}
                         for future in as_completed(futures):
                             chunk = futures[future]
@@ -3541,6 +3758,10 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/live/force-text": return api.live_force_text(body)
     if method == "POST" and path == "/ai/translate": return api.ai_translate(body)
     if method == "POST" and path == "/ai/models": return api.ai_models(body)
+    if method == "POST" and path == "/unity/xua/install": return api.unity_xua_install()
+    if method == "POST" and path == "/unity/xua/export": return api.unity_xua_export(body)
+    if method == "GET" and path == "/unity/xua/import": return api.unity_xua_import()
+    if method == "GET" and path == "/unity/xua/status": return api.unity_xua_status()
     raise ApiError(f"未知接口：{method} {path}", 404)
 
 

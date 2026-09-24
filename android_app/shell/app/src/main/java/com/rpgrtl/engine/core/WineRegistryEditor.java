@@ -193,6 +193,41 @@ public class WineRegistryEditor implements Closeable {
         setHexValue(key, name, data.toString());
     }
 
+    public void setMultiStringValue(String key, String name, String[] values) {
+        if (values == null || values.length == 0) return;
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        try {
+            for (String val : values) {
+                if (val != null) {
+                    bos.write(val.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
+                    bos.write(0);
+                    bos.write(0);
+                }
+            }
+            bos.write(0);
+            bos.write(0);
+        } catch (IOException e) {}
+
+        byte[] bytes = bos.toByteArray();
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format(Locale.ENGLISH, "%02x", Byte.toUnsignedInt(b)));
+        }
+        String hex = sb.toString();
+
+        int start = (int)Mathf.roundTo(name.length(), 2) + 10;
+        StringBuilder lines = new StringBuilder();
+        for (int i = 0, j = start; i < hex.length(); i++) {
+            if (i > 0 && (i % 2) == 0) lines.append(",");
+            if (j++ > 56) {
+                lines.append("\\\n  ");
+                j = 8;
+            }
+            lines.append(hex.charAt(i));
+        }
+        setRawValue(key, name, "hex(7):" + lines);
+    }
+
     public byte[] getHexValues(String key, String name) {
         String value = getRawValue(key, name);
         if (value != null && (value.startsWith("hex:") || value.startsWith("hex("))) {

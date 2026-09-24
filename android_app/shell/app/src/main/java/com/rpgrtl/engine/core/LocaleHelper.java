@@ -10,7 +10,7 @@ import androidx.preference.PreferenceManager;
 import java.util.Locale;
 
 public class LocaleHelper {
-    private static final String[] supportedLocales = {"en_US", "pt_BR", "ru_RU"};
+    private static final String[] supportedLocales = {"zh_CN", "en_US", "zh_TW", "ja_JP", "pt_BR", "ru_RU"};
 
     public static int getLocaleIndex(Context context) {
         Configuration configuration = context.getResources().getConfiguration();
@@ -39,14 +39,31 @@ public class LocaleHelper {
 
     public static void setEnvVars(EnvVars envVars) {
         Locale locale = Locale.getDefault();
+        String lang = locale.getLanguage();
+        String country = locale.getCountry();
+
+        if ("zh".equalsIgnoreCase(lang)) {
+            String cjkLocale = ("TW".equalsIgnoreCase(country) || "HK".equalsIgnoreCase(country) || "MO".equalsIgnoreCase(country))
+                ? "zh_TW.UTF-8" : "zh_CN.UTF-8";
+            envVars.put("LC_ALL", cjkLocale);
+            envVars.put("LANG", cjkLocale);
+            return;
+        } else if ("ja".equalsIgnoreCase(lang)) {
+            envVars.put("LC_ALL", "ja_JP.UTF-8");
+            envVars.put("LANG", "ja_JP.UTF-8");
+            return;
+        }
+
         for (String name : supportedLocales) {
             if (locale.toString().startsWith(name.substring(0, 2))) {
-                envVars.put("LC_ALL", name+".UTF-8");
+                envVars.put("LC_ALL", name + ".UTF-8");
+                envVars.put("LANG", name + ".UTF-8");
                 return;
             }
         }
 
-        envVars.put("LC_ALL", "en_US.UTF-8");
+        envVars.put("LC_ALL", "zh_CN.UTF-8");
+        envVars.put("LANG", "zh_CN.UTF-8");
     }
 }
 

@@ -16,6 +16,7 @@ public class XServerView extends GLSurfaceView {
     public XServerView(Context context, XServer xServer) {
         super(context);
         setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
         setEGLContextClientVersion(3);
         setEGLConfigChooser(8, 8, 8, 8, 0, 0);
         setPreserveEGLContextOnPause(true);

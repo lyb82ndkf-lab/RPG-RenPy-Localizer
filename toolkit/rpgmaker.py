@@ -369,7 +369,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     clickTeleport: false,
     through: false,
     noEncounter: false,
-    oneHitKill: false
+    oneHitKill: false,
+    alwaysDash: false
   };
   bridge.lastAutoSaveAt = bridge.lastAutoSaveAt || 0;
   bridge.seenBatch = [];           // pending seen texts to send to tool
@@ -1164,7 +1165,18 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         }
       }
       if (window.Graphics && bridge.options.fpsBoost) {
-        try { Graphics._maxFps = 60; } catch (_e) {}
+        try {
+          Graphics._stretchEnabled = true;
+          Graphics._maxFps = 60;
+          if (Graphics._renderer && Graphics._renderer.plugins && Graphics._renderer.plugins.interaction) {
+            Graphics._renderer.plugins.interaction.autoPreventDefault = false;
+          }
+        } catch (_e) {}
+      }
+      if (options.alwaysDash !== undefined && window.ConfigManager) {
+        bridge.options.alwaysDash = !!options.alwaysDash;
+        ConfigManager.alwaysDash = bridge.options.alwaysDash;
+        if (ConfigManager.save) ConfigManager.save();
       }
     }
     if (payload.locks) {
@@ -1176,6 +1188,46 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     if (payload.battle === "win" && window.BattleManager) BattleManager.processVictory();
     if (payload.battle === "lose" && window.BattleManager) BattleManager.processDefeat();
     if (payload.battle === "escape" && window.BattleManager) BattleManager.processEscape();
+    // Mobile-parity: drop current troop enemies to 1 HP
+    if (payload.enemy_hp_1 && window.$gameTroop && $gameTroop.members) {
+      $gameTroop.members().forEach(function(enemy) {
+        if (!enemy || !enemy.isAlive || !enemy.isAlive()) return;
+        enemy._hp = 1;
+        if (enemy.refresh) enemy.refresh();
+      });
+    }
+    if (payload.enemy_hp_max && window.$gameTroop && $gameTroop.members) {
+      $gameTroop.members().forEach(function(enemy) {
+        if (!enemy) return;
+        enemy._hp = enemy.mhp || enemy._mhp || 9999;
+        if (enemy.refresh) enemy.refresh();
+      });
+    }
+    // Mobile-parity one-shot FPS optimize
+    if (payload.fps_optimize) {
+      try {
+        if (window.Graphics) {
+          Graphics._stretchEnabled = true;
+          if (Graphics._maxFps !== undefined) Graphics._maxFps = 60;
+          if (Graphics._renderer && Graphics._renderer.plugins && Graphics._renderer.plugins.interaction) {
+            Graphics._renderer.plugins.interaction.autoPreventDefault = false;
+          }
+        }
+        if (window.ConfigManager) {
+          ConfigManager.alwaysDash = true;
+          if (ConfigManager.save) ConfigManager.save();
+        }
+      } catch (_e) {}
+      bridge.options.fpsBoost = true;
+    }
+    if (payload.always_dash !== undefined && window.ConfigManager) {
+      ConfigManager.alwaysDash = !!payload.always_dash;
+      bridge.options.alwaysDash = !!payload.always_dash;
+      if (ConfigManager.save) ConfigManager.save();
+    }
+    if (payload.quick_save && window.DataManager) {
+      try { DataManager.saveGame(0); } catch (_e) {}
+    }
     if (window.$gamePlayer && payload.player && payload.player.through !== undefined) {
       bridge.options.through = !!payload.player.through;
       $gamePlayer.setThrough(bridge.options.through);
@@ -2498,7 +2550,7 @@ class RPGMakerService:
             )
         return maps
 
-    def map_detail(self, map_id: int) -> MapDetail:
+    def map_detail(self, map_id: int, translations: dict[str, str] | None = None) -> MapDetail:
         records = {record.map_id: record for record in self.list_maps()}
         record = records.get(map_id)
         if not record:
@@ -2509,11 +2561,14 @@ class RPGMakerService:
         height = int(data.get("height") or record.height or 0)
         record.width = width
         record.height = height
-        record.display_name = str(data.get("displayName") or record.display_name)
+        display_name = str(data.get("displayName") or record.display_name)
+        if translations and display_name:
+            display_name = self._display_text(display_name, translations)
+        record.display_name = display_name
         record.tileset_id = int(data.get("tilesetId") or record.tileset_id or 0)
 
         passable = self._map_passability(data, width, height, record.tileset_id)
-        events = self._map_events(data)
+        events = self._map_events(data, translations)
         event_count: dict[tuple[int, int], int] = {}
         transfer_count: dict[tuple[int, int], int] = {}
         for event in events:
@@ -2561,7 +2616,7 @@ class RPGMakerService:
                 result[(x, y)] = not blocked
         return result
 
-    def _map_events(self, data: dict[str, Any]) -> list[MapEventInfo]:
+    def _map_events(self, data: dict[str, Any], translations: dict[str, str] | None = None) -> list[MapEventInfo]:
         result: list[MapEventInfo] = []
         events = data.get("events") or []
         if not isinstance(events, list):
@@ -2583,7 +2638,7 @@ class RPGMakerService:
                     commands = page.get("list") or []
                     if isinstance(commands, list):
                         command_count += len(commands)
-                        commands_summary.extend(self._event_command_summary(commands, page_index))
+                        commands_summary.extend(self._event_command_summary(commands, page_index, translations))
                         transfers.extend(self._event_transfers(commands))
             result.append(
                 MapEventInfo(
@@ -2599,6 +2654,16 @@ class RPGMakerService:
                 )
             )
         return result
+
+    @staticmethod
+    def _display_text(text: str, translations: dict[str, str] | None) -> str:
+        if not translations or not text:
+            return text
+        for candidate in _rpgmaker_live_candidates(text):
+            target = translations.get(candidate, "")
+            if target:
+                return target
+        return text
 
     @staticmethod
     def _event_page_conditions(page_index: int, conditions: dict[str, Any]) -> list[str]:
@@ -2633,8 +2698,16 @@ class RPGMakerService:
         return transfers
 
     @staticmethod
-    def _event_command_summary(commands: list[Any], page_index: int = 1) -> list[str]:
+    def _event_command_summary(
+        commands: list[Any],
+        page_index: int = 1,
+        translations: dict[str, str] | None = None,
+    ) -> list[str]:
         summary: list[str] = []
+
+        def shown(text: str) -> str:
+            return RPGMakerService._display_text(text, translations)
+
         for command in commands:
             if not isinstance(command, dict):
                 continue
@@ -2644,9 +2717,14 @@ class RPGMakerService:
                 continue
             label = ""
             if code == 101 and len(params) > 4 and isinstance(params[4], str):
-                label = f"对话开始：{params[4]}"
+                label = f"对话开始：{shown(params[4])}"
             elif code in {401, 405} and params and isinstance(params[0], str):
-                label = f"对话：{params[0]}"
+                label = f"对话：{shown(params[0])}"
+            elif code == 102 and params and isinstance(params[0], list):
+                options = [shown(str(item)) for item in params[0] if isinstance(item, str)]
+                label = "选项：" + (" / ".join(options) if options else json.dumps(params[0], ensure_ascii=False))
+            elif code == 402 and len(params) > 1 and isinstance(params[1], str):
+                label = f"选项分支：{shown(params[1])}"
             elif code == 121 and len(params) >= 3:
                 label = f"开关：{params[0]}-{params[1]}"
             elif code == 122 and len(params) >= 5:

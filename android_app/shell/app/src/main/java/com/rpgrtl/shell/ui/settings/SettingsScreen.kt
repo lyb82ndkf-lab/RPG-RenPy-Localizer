@@ -4,38 +4,54 @@ import android.content.Context
 import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ColorLens
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Html
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VideogameAsset
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,10 +61,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.rpgrtl.shell.MainActivity
+import com.rpgrtl.shell.ShellLog
 import com.rpgrtl.shell.ui.components.AppTopBar
 import com.rpgrtl.shell.ui.components.SectionHeader
 import org.json.JSONObject
@@ -64,6 +89,11 @@ fun SettingsScreen(
     }
     val enginePrefs = remember {
         context.getSharedPreferences("engine_global_configs", Context.MODE_PRIVATE)
+    }
+
+    var showLogViewer by remember { mutableStateOf(false) }
+    if (showLogViewer) {
+        RuntimeLogViewerDialog(onDismiss = { showLogViewer = false })
     }
 
     // ── AI 服务配置（仅 OpenAI 兼容 和 Anthropic 兼容） ────────────────
@@ -136,7 +166,7 @@ fun SettingsScreen(
                 pInfo.versionCode.toLong()
             }
             "v${pInfo.versionName} (Build $code)"
-        }.getOrNull() ?: "v3.3.0"
+        }.getOrNull() ?: "v3.4.0"
     }
 
     Scaffold(
@@ -553,6 +583,51 @@ fun SettingsScreen(
                 }
             }
 
+            // ── 7.5 Winlator 运行日志与排查 ───────────────────────
+            SectionHeader(title = "诊断与运行日志")
+            ElevatedCard(
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Outlined.Terminal,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Winlator / 游戏运行日志",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                "查看游戏启动、Wine 虚拟桌面、Box64 与 DLL 加载日志（用于排查闪退/缺失运行库）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = { showLogViewer = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("打开运行日志查看器")
+                    }
+                }
+            }
+
             // ── 8. 关于与版本信息（真实动态版本） ───────────────────────
             SectionHeader(title = "关于")
             OutlinedCard(
@@ -606,5 +681,188 @@ private fun SettingToggleItem(
                 prefs.edit().putBoolean(key, it).apply()
             }
         )
+    }
+}
+
+@Composable
+private fun RuntimeLogViewerDialog(
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var logText by remember { mutableStateOf(ShellLog.read(context)) }
+    val scrollState = rememberScrollState()
+
+    androidx.compose.runtime.LaunchedEffect(logText) {
+        if (logText.isNotEmpty()) {
+            scrollState.scrollTo(scrollState.maxValue)
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.88f),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Outlined.Terminal,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column {
+                            Text(
+                                "Winlator / 游戏运行日志",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                "记录 Wine、Box64、DXVK 及 DLL 加载轨迹",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row {
+                        IconButton(onClick = {
+                            logText = ShellLog.read(context)
+                            Toast.makeText(context, "日志已刷新", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "刷新")
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Outlined.Close, contentDescription = "关闭")
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Terminal window
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(Color(0xFF0D1117), shape = RoundedCornerShape(8.dp))
+                        .border(1.dp, Color(0xFF30363D), shape = RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                ) {
+                    if (logText.isBlank()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "暂无日志记录。\n启动一次游戏后，Wine 与内核的运行输出将实时显示在这里。",
+                                color = Color(0xFF8B949E),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        SelectionContainer {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(scrollState)
+                            ) {
+                                Text(
+                                    text = logText,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    color = Color(0xFFC9D1D9)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Action buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            ShellLog.clear(context)
+                            logText = ""
+                            Toast.makeText(context, "日志已清空", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("清空")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            if (logText.isNotBlank()) {
+                                clipboardManager.setText(AnnotatedString(logText))
+                                Toast.makeText(context, "完整日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "暂无日志可复制", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.weight(1.3f)
+                    ) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("复制日志")
+                    }
+
+                    Button(
+                        onClick = {
+                            val prompt = buildString {
+                                append("【RPG-RenPy-Localizer 游戏运行与闪退分析请求】\n")
+                                append("我在使用集成 Winlator 内核的 RPG-RenPy-Localizer 启动 Windows 游戏时遇到闪退（现象：出现约 1 秒蓝色虚拟桌面后闪退退出，返回 code=0）。\n")
+                                append("以下是应用提取的完整运行时日志（包含 Wine、Box64、DXVK、DLL 加载 trace 以及环境参数）。\n")
+                                append("请根据日志中出现的信息，详细帮我分析：\n")
+                                append("1. 游戏是因为缺少了哪些必备的 Windows DLL 运行库（例如 VC++ 2015-2022、DirectX、.NET 等）？\n")
+                                append("2. 还是由于显卡驱动、DXVK 显存创建、XServer 通信或 CWD 工作目录不正确？\n")
+                                append("3. 给出具体的解决或补丁步骤建议。\n\n")
+                                append("----- 运行日志开始 -----\n")
+                                append(if (logText.isNotBlank()) logText else "（暂无日志，请先启动一次游戏）\n")
+                                append("----- 运行日志结束 -----")
+                            }
+                            clipboardManager.setText(AnnotatedString(prompt))
+                            Toast.makeText(context, "AI 排查提示词 + 日志已复制到剪贴板！", Toast.LENGTH_LONG).show()
+                        },
+                        modifier = Modifier.weight(1.8f)
+                    ) {
+                        Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("复制排查提示词")
+                    }
+                }
+            }
+        }
     }
 }

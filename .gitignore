@@ -57,6 +57,9 @@ release-electron-staging-*/
 .playwright-cli/
 .codex-*.log
 
+# 本地打包产物
+release-app/
+
 # ========== 工具本地环境 ==========
 .claude/
 .codex/
@@ -77,7 +80,7 @@ android_app/shell/gradle.properties
 
 # ========== 本地大文件目录 ==========
 winlator-main/
-mtool/
+其他/
 
 # Temporary upstream source inspection clones
 .references/

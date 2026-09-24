@@ -78,6 +78,7 @@ object WinlatorBridge {
         val intent = Intent(context, WineDisplayActivity::class.java).apply {
             putExtra(WineDisplayActivity.EXTRA_GAME_URI, game.executablePath)
             putExtra(WineDisplayActivity.EXTRA_GAME_TITLE, game.title)
+            putExtra(WineDisplayActivity.EXTRA_GAME_ENGINE, game.engine.name)
             putExtra(WineDisplayActivity.EXTRA_CONTAINER_ID, 1)
             putExtra(WineDisplayActivity.EXTRA_BOX64_PRESET, containerConfig?.box64Preset ?: game.box64Preset)
             putExtra(WineDisplayActivity.EXTRA_GRAPHICS_DRIVER, containerConfig?.graphicsDriver ?: game.graphicsDriver)

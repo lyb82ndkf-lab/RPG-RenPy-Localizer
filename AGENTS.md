@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Windows monorepo for **RPGRenPyLocalizer** (PC desktop v3.4.0 + Android shell). Prefer executable sources (`package.json`, build scripts, `toolkit/`) over README prose when they disagree.
+Windows monorepo for **RPGRenPyLocalizer** (PC desktop v3.4.1 + Android shell). Prefer executable sources (`package.json`, build scripts, `toolkit/`) over README prose when they disagree.
 
 ## Architecture (what an agent would miss)
 

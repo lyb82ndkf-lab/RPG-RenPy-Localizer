@@ -74,8 +74,8 @@
             <el-button size="small" type="primary" :loading="busy.translation">选择译文启动<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="current">完成翻译并启动当前译文</el-dropdown-item>
-                <el-dropdown-item command="original">原文（不替换）</el-dropdown-item>
+                <el-dropdown-item command="current">启动并载入当前译文（支持实时热重载）</el-dropdown-item>
+                <el-dropdown-item command="original">启动原版（不载入译文）</el-dropdown-item>
                 <el-dropdown-item v-for="version in translationVersions" :key="version.id" :command="version.id" :disabled="!version.available">
                   {{ version.label }}{{ version.reason ? ` · ${version.reason}` : '' }}（{{ version.count || 0 }} 条）
                 </el-dropdown-item>
@@ -2014,12 +2014,17 @@ async function buildRpgMakerRuntimeAndLaunch(versionId = 'current', hotSwitch = 
     return true;
   }
   if (!data.launcher) {
-    toast('已准备翻译副本，但没有找到可启动文件，请手动打开副本目录。', 'warning');
+    toast('已准备游戏运行环境，但没有找到可启动文件，请手动打开目录。', 'warning');
     if (data.path) await window.rpgrtl.openPath(data.path);
     return false;
   }
   const launch = await api('/project/launch', { body: { launcherPath: data.launcher } });
-  toast(`RPGMaker 译文副本已启动 PID ${launch.pid}`);
+  const count = data.liveApplied || 0;
+  if (count > 0) {
+    toast(`RPGMaker 游戏已启动（已载入 ${count} 条译文，支持边玩边翻译/热重载）PID ${launch.pid}`);
+  } else {
+    toast(`RPGMaker 游戏已启动（已开启实时热重载，可边玩边翻译）PID ${launch.pid}`);
+  }
   await loadGameStatus();
   return true;
 }
@@ -2037,7 +2042,6 @@ async function buildRenpyRuntimeAndLaunch() {
 }
 async function launchTranslationVersion(versionId) {
   if (!requireGameSelected()) return;
-  if (versionId === 'current') return startTranslation();
   busy.translation = true;
   try {
     await buildRpgMakerRuntimeAndLaunch(versionId, gameRunning.value);
@@ -2046,11 +2050,8 @@ async function launchTranslationVersion(versionId) {
 }
 async function ensureRpgMakerReadyBeforeLaunch() {
   if (!isRpgMakerSelected.value) return true;
-  if (!translations.value.length) await loadTranslations(true);
-  if (rpgMakerMissingTranslations.value > 0) {
-    currentView.value = 'translations';
-    toast(`RPGMaker 请先完成翻译：还有 ${rpgMakerMissingTranslations.value} 条未译。完成后点击“开始翻译”，工具会生成运行时副本并启动。`, 'warning');
-    return false;
+  if (!translations.value.length) {
+    try { await loadTranslations(true); } catch (_) {}
   }
   return true;
 }
@@ -2514,12 +2515,12 @@ async function startTranslation() {
     }
     const remaining = translations.value.filter((item) => needsTranslationRepair(item)).length;
     if (isRpgMakerSelected.value) {
-      if (remaining) {
-        toast(`RPGMaker 仍有 ${remaining} 条未译，未启动游戏。请检查 AI 设置或手动补译后再点开始翻译。`, 'warning');
-        return;
-      }
       await buildRpgMakerRuntimeAndLaunch();
-      toast('RPGMaker 翻译完成，已生成运行时副本并启动游戏。');
+      if (remaining) {
+        toast(`RPGMaker 本轮翻译完成（尚有 ${remaining} 条待译，已启动游戏并开启实时热重载，可边玩边翻译）。`);
+      } else {
+        toast('RPGMaker 翻译完成，已启动游戏并载入全部译文。');
+      }
       return;
     }
     if (isUnknownSelected.value) {

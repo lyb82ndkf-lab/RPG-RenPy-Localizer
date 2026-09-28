@@ -166,7 +166,7 @@ fun SettingsScreen(
                 pInfo.versionCode.toLong()
             }
             "v${pInfo.versionName} (Build $code)"
-        }.getOrNull() ?: "v3.4.0"
+        }.getOrNull() ?: "v3.4.1"
     }
 
     Scaffold(

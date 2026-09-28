@@ -1167,6 +1167,7 @@ class ToolkitApi:
                     service.merge_live_translations({entry.source: entry.target}, kind="mode_switch")
             path, changed = service.build_runtime_translation_patch(translations)
             return {"ok": True, "path": str(path), "runtimeRoot": str(runtime_root), "launcher": str(launcher) if launcher else "", "changed": changed}
+        service = self._service()
         if isinstance(service, UnknownGameService):
             runtime_root, launcher, changed = service.build_runtime_copy(translations, version_id=version_id)
             return {

@@ -71,6 +71,33 @@ def _rpgmaker_live_candidates(source: str) -> list[str]:
     # De-quoted
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ('"', "'"):
         candidates.append(stripped[1:-1])
+
+    de_escaped = source.replace("\x1b", "\\")
+    if de_escaped not in candidates:
+        candidates.append(de_escaped)
+
+    # Upper/lower escape variants
+    upper_esc = re.sub(r"\\([a-zA-Z])", lambda m: "\\" + m.group(1).upper(), de_escaped)
+    if upper_esc not in candidates:
+        candidates.append(upper_esc)
+    lower_esc = re.sub(r"\\([a-zA-Z])", lambda m: "\\" + m.group(1).lower(), de_escaped)
+    if lower_esc not in candidates:
+        candidates.append(lower_esc)
+
+    # Control code and speaker tag prefix/suffix stripping
+    peeled = re.sub(
+        r"^(?:(?:\\|\x1b)[A-Za-z]+<[^>]*>|(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)(?:fb|fi|FB|FI)|(?:\\|\x1b)[><.!|^${}\\]|【[^】]+】|\[[^\]]+\]|<[^>]+>|[\s\u3000]+)+",
+        "",
+        de_escaped,
+    )
+    peeled = re.sub(
+        r"(?:(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)[><.!|^${}\\]|[\s\u3000]+)+$",
+        "",
+        peeled,
+    ).strip()
+    if peeled and peeled not in candidates:
+        candidates.append(peeled)
+
     return candidates
 
 
@@ -78,9 +105,35 @@ def _rpgmaker_lookup_translation(source: str) -> str:
     """Look up translation for a source text, trying multiple candidate keys."""
     with _RPGRM_LIVE_SERVER_LOCK:
         translations = _RPGRM_LIVE_SERVER_STATE["translations"]
+        de_escaped = source.replace("\x1b", "\\")
+        peeled = re.sub(
+            r"^(?:(?:\\|\x1b)[A-Za-z]+<[^>]*>|(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)(?:fb|fi|FB|FI)|(?:\\|\x1b)[><.!|^${}\\]|【[^】]+】|\[[^\]]+\]|<[^>]+>|[\s\u3000]+)+",
+            "",
+            de_escaped,
+        )
+        peeled = re.sub(
+            r"(?:(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)[><.!|^${}\\]|[\s\u3000]+)+$",
+            "",
+            peeled,
+        ).strip()
+
         for key in _rpgmaker_live_candidates(source):
             target = translations.get(key, "")
             if target:
+                if key == peeled:
+                    prefix_match = re.match(
+                        r"^(?:(?:\\|\x1b)[A-Za-z]+<[^>]*>|(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)(?:fb|fi|FB|FI)|(?:\\|\x1b)[><.!|^${}\\]|【[^】]+】|\[[^\]]+\]|<[^>]+>|[\s\u3000]+)+",
+                        source,
+                    )
+                    suffix_match = re.search(
+                        r"(?:(?:\\|\x1b)[A-Za-z]+\[[^\]]*\]|(?:\\|\x1b)[><.!|^${}\\]|[\s\u3000]+)+$",
+                        source,
+                    )
+                    prefix = prefix_match.group(0) if prefix_match else ""
+                    suffix = suffix_match.group(0) if suffix_match else ""
+                    if prefix or suffix:
+                        return f"{prefix}{target}{suffix}"
+
                 return target
     return ""
 
@@ -95,9 +148,20 @@ class _RPGRMLiveBridgeHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _read_body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
@@ -150,6 +214,10 @@ class _RPGRMLiveBridgeHandler(BaseHTTPRequestHandler):
             items = payload.get("items", [])
             targets = []
             with _RPGRM_LIVE_SERVER_LOCK:
+                _RPGRM_LIVE_SERVER_STATE["last_heartbeat"] = time.time()
+                pid = int(payload.get("pid") or 0)
+                if pid:
+                    _RPGRM_LIVE_SERVER_STATE["game_pid"] = pid
                 for item in items:
                     text = str(item.get("text", "")).strip()
                     if text and text not in _RPGRM_LIVE_SERVER_STATE["seen"]:
@@ -206,6 +274,7 @@ class _RPGRMLiveBridgeHandler(BaseHTTPRequestHandler):
             known = {}
             queued = []
             with _RPGRM_LIVE_SERVER_LOCK:
+                _RPGRM_LIVE_SERVER_STATE["last_heartbeat"] = time.time()
                 for t in texts:
                     t_str = str(t).strip()
                     if not t_str:
@@ -226,6 +295,7 @@ class _RPGRMLiveBridgeHandler(BaseHTTPRequestHandler):
             texts = payload.get("texts", [])
             result = {}
             with _RPGRM_LIVE_SERVER_LOCK:
+                _RPGRM_LIVE_SERVER_STATE["last_heartbeat"] = time.time()
                 for t in texts:
                     t_str = str(t).strip()
                     if not t_str:
@@ -334,17 +404,43 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
 (() => {
   "use strict";
   if (window.RPGRenPyBridge && window.RPGRenPyBridge.started) return;
-  if (typeof require !== "function") return;
 
-  const http = require("http");
-  const fs = require("fs");
-  const path = require("path");
+  var req = null;
+  try {
+    if (typeof require === "function") req = require;
+    else if (typeof nw !== "undefined" && typeof nw.require === "function") req = nw.require;
+    else if (typeof window !== "undefined" && typeof window.require === "function") req = window.require;
+    else if (typeof global !== "undefined" && typeof global.require === "function") req = global.require;
+  } catch (_re) {}
+
+  var http = null;
+  var fs = null;
+  var path = null;
+  if (req) {
+    try { http = req("http"); } catch (_e) {}
+    try { fs = req("fs"); } catch (_e) {}
+    try { path = req("path"); } catch (_e) {}
+  }
+
   const PORT = 32179;
   const HOST = "127.0.0.1";
   const bridge = window.RPGRenPyBridge = window.RPGRenPyBridge || {};
-  bridge.started = true;
+  bridge.started = false;
   bridge.enabled = true;
-  bridge.root = process.cwd ? process.cwd() : "";
+
+  var bridgeRoot = "";
+  try {
+    if (typeof __dirname !== "undefined" && path) {
+      bridgeRoot = path.resolve(__dirname, "../..");
+    } else if (typeof process !== "undefined" && process.cwd) {
+      bridgeRoot = process.cwd();
+    } else if (typeof window !== "undefined" && window.location && window.location.pathname) {
+      var p = decodeURIComponent(window.location.pathname);
+      if (p.startsWith("/")) p = p.slice(1);
+      bridgeRoot = p.replace(/\/[^/]+$/, "");
+    }
+  } catch (_e) {}
+  bridge.root = bridgeRoot;
   bridge.translationEnabled = false;
   bridge.translations = bridge.translations || {};
   // A language switch must always start from the game's original string.
@@ -439,12 +535,15 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
         configured = String(PluginManager.parameters("RPGRenPyBridge").translationFile || "");
       }
     } catch (_e) {}
-    var roots = [
-      bridge.root,
-      path.resolve(__dirname, ".."),
-      path.resolve(__dirname, "../.."),
-      path.resolve(__dirname, "../../..")
-    ];
+    var roots = [];
+    if (bridge.root) roots.push(bridge.root);
+    try {
+      if (path && typeof __dirname !== "undefined") {
+        roots.push(path.resolve(__dirname, ".."));
+        roots.push(path.resolve(__dirname, "../.."));
+        roots.push(path.resolve(__dirname, "../../.."));
+      }
+    } catch (_e) {}
     var candidates = [];
     if (configured) candidates.push(configured);
     try {
@@ -467,12 +566,15 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       candidates.push(path.join(rootDir, "www", "data", "翻译文件.json"));
       candidates.push(path.join(rootDir, "www", "data", "ManualTransFile.json"));
     }
-    for (var j = 0; j < candidates.length; j++) {
+    var mergedTable = {};
+    var primaryPath = "";
+    var primaryMtime = 0;
+    for (var j = candidates.length - 1; j >= 0; j--) {
       try {
         var cPath = candidates[j];
-        if (!cPath || !fs.existsSync(cPath)) continue;
+        if (!cPath || !fs || !fs.existsSync || !fs.existsSync(cPath)) continue;
         var stat = fs.statSync(cPath);
-        if (!stat.isFile()) continue;
+        if (!stat.isFile() || stat.size < 2) continue;
         var rawText = fs.readFileSync(cPath, "utf8");
         if (rawText.charCodeAt(0) === 0xFEFF) rawText = rawText.slice(1);
         var payload = JSON.parse(rawText);
@@ -487,31 +589,53 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
             if (item && item.source && item.target) table[String(item.source)] = String(item.target);
           }
         }
-        var flatTable = {};
         for (var k in table) {
           if (!Object.prototype.hasOwnProperty.call(table, k)) continue;
           var val = table[k];
           if (typeof val === "string") {
-            flatTable[k] = val;
+            mergedTable[k] = val;
           } else if (val && typeof val === "object") {
             for (var subKey in val) {
-              if (typeof val[subKey] === "string") flatTable[subKey] = val[subKey];
+              if (typeof val[subKey] === "string") mergedTable[subKey] = val[subKey];
             }
           }
         }
-        if (Object.keys(flatTable).length === 0) continue;
-        bridge.translations = flatTable;
-        bridge.translationCount = Object.keys(flatTable).length;
-        bridge.translationEnabled = bridge.translationCount > 0;
-        bridge.translationFile = cPath;
-        bridge.lastFileMtime = stat.mtimeMs || (stat.mtime ? stat.mtime.getTime() : Date.now());
-        try {
-          if (typeof localStorage !== "undefined") {
-            localStorage.setItem("RPGRenPyLocalizer_lastTransFile", cPath);
-          }
-        } catch (_e) {}
-        return bridge.translationCount;
+        primaryPath = cPath;
+        primaryMtime = stat.mtimeMs || (stat.mtime ? stat.mtime.getTime() : Date.now());
       } catch (e) { bridge.lastError = "Unable to load translation table from " + candidates[j] + ": " + String(e); }
+    }
+    // Also expand multiline items line-by-line if line counts match
+    var multilineAdditions = {};
+    for (var mk in mergedTable) {
+      if (mk.indexOf("\n") !== -1 && typeof mergedTable[mk] === "string" && mergedTable[mk].indexOf("\n") !== -1) {
+        var srcLines = mk.split("\n");
+        var tgtLines = mergedTable[mk].split("\n");
+        if (srcLines.length === tgtLines.length) {
+          for (var li = 0; li < srcLines.length; li++) {
+            var sl = srcLines[li].trim();
+            var tl = tgtLines[li].trim();
+            if (sl && tl && mergedTable[sl] === undefined) {
+              multilineAdditions[sl] = tl;
+            }
+          }
+        }
+      }
+    }
+    for (var ak in multilineAdditions) {
+      if (mergedTable[ak] === undefined) mergedTable[ak] = multilineAdditions[ak];
+    }
+    if (Object.keys(mergedTable).length > 0) {
+      bridge.translations = mergedTable;
+      bridge.translationCount = Object.keys(mergedTable).length;
+      bridge.translationEnabled = bridge.translationCount > 0;
+      bridge.translationFile = primaryPath;
+      bridge.lastFileMtime = primaryMtime;
+      try {
+        if (typeof localStorage !== "undefined" && primaryPath) {
+          localStorage.setItem("RPGRenPyLocalizer_lastTransFile", primaryPath);
+        }
+      } catch (_e) {}
+      return bridge.translationCount;
     }
     return 0;
   }
@@ -527,9 +651,9 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     const body = JSON.stringify(payload);
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "http://127.0.0.1",
+      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
+      "Access-Control-Allow-Headers": "*"
     });
     res.end(body);
   }
@@ -566,7 +690,8 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       var arr = Array.from(bridge.seenDedup);
       bridge.seenDedup = new Set(arr.slice(-1000));
     }
-    var target = bridge.translations[text] || bridge.translations[text.trim()] || "";
+    var target = translate(text);
+    if (target === text) target = "";
     bridge.seenBatch.push({
       text: text,
       displayed: displayed || text,
@@ -586,16 +711,111 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     bridge.notifySeq++;
   }
 
-  function translate(text) {
-    if (!bridge.translationEnabled || text == null) return text;
-    const raw = String(text);
-    var target = bridge.translations[raw] || bridge.translations[raw.trim()];
-    if (target) return target;
+  // RPG Maker control codes and speaker name tags tokens for prefix and suffix peeling
+  var PREFIX_TOKEN_RE = /^(?:(?:\x1b|\\)[A-Za-z]+<[^>]*>|(?:\x1b|\\)[A-Za-z]+\[[^\]]*\]|(?:\x1b|\\)(?:fb|fi|FB|FI)|(?:\x1b|\\)[><.!|^${}\\]|【[^】]+】|\[[^\]]+\]|<[^>]+>|[\s\u3000]+)/;
+
+  var SUFFIX_TOKEN_RE = /(?:(?:\x1b|\\)[A-Za-z]+\[[^\]]*\]|(?:\x1b|\\)[><.!|^${}\\]|[\s\u3000]+)$/;
+
+  function directLookup(map, key) {
+    if (!map || key == null) return null;
+    var k = String(key);
+    if (map[k] !== undefined && map[k] !== "") return map[k];
+    var kt = k.trim();
+    if (kt && map[kt] !== undefined && map[kt] !== "") return map[kt];
+    return null;
+  }
+
+  function lookupWithVariants(map, str) {
+    if (!map || str == null) return null;
+    var raw = String(str);
+    var hit = directLookup(map, raw);
+    if (hit != null) return hit;
+
     var cleaned = cleanRuby(raw);
     if (cleaned !== raw) {
-      target = bridge.translations[cleaned] || bridge.translations[cleaned.trim()];
-      if (target) return target;
+      hit = directLookup(map, cleaned);
+      if (hit != null) return hit;
     }
+
+    var deEscaped = raw.replace(/\x1b/g, "\\");
+    if (deEscaped !== raw) {
+      hit = directLookup(map, deEscaped);
+      if (hit != null) return hit;
+    }
+
+    var upperCode = deEscaped.replace(/\\([a-zA-Z])/g, function(_, c) { return "\\" + c.toUpperCase(); });
+    if (upperCode !== deEscaped) {
+      hit = directLookup(map, upperCode);
+      if (hit != null) return hit;
+    }
+
+    var lowerCode = deEscaped.replace(/\\([a-zA-Z])/g, function(_, c) { return "\\" + c.toLowerCase(); });
+    if (lowerCode !== deEscaped && lowerCode !== upperCode) {
+      hit = directLookup(map, lowerCode);
+      if (hit != null) return hit;
+    }
+
+    return null;
+  }
+
+  function translate(text) {
+    if (!bridge.translationEnabled || text == null) return text;
+    var raw = String(text);
+    if (!raw.trim()) return text;
+
+    var map = bridge.translations;
+    if (!map) return text;
+
+    // 1. Direct match with variants
+    var hit = lookupWithVariants(map, raw);
+    if (hit != null) return hit;
+
+    // 2. Multiline handling
+    if (raw.indexOf("\n") !== -1) {
+      var lines = raw.split("\n");
+      var anyChanged = false;
+      var translatedLines = lines.map(function(line) {
+        var t = translate(line);
+        if (t !== line) anyChanged = true;
+        return t;
+      });
+      if (anyChanged) return translatedLines.join("\n");
+    }
+
+    // 3. Control code & speaker tag prefix/suffix peeling
+    var prefix = "";
+    var suffix = "";
+    var core = raw;
+
+    var m;
+    while ((m = PREFIX_TOKEN_RE.exec(core)) !== null) {
+      if (m[0].length === 0) break;
+      prefix += m[0];
+      core = core.slice(m[0].length);
+    }
+
+    while ((m = SUFFIX_TOKEN_RE.exec(core)) !== null) {
+      if (m[0].length === 0) break;
+      suffix = m[0] + suffix;
+      core = core.slice(0, core.length - m[0].length);
+    }
+
+    if ((prefix || suffix) && core.trim()) {
+      var coreHit = lookupWithVariants(map, core);
+      if (coreHit != null) {
+        var translatedPrefix = prefix.replace(/(?:\x1b|\\)n<([^>]+)>/gi, function(match, name) {
+          var tn = lookupWithVariants(map, name);
+          return tn ? match.charAt(0) + match.charAt(1) + "<" + tn + ">" : match;
+        }).replace(/【([^】]+)】/g, function(match, name) {
+
+          var tn = lookupWithVariants(map, name);
+          return tn ? "【" + tn + "】" : match;
+        });
+
+        return translatedPrefix + coreHit + suffix;
+      }
+    }
+
     return raw;
   }
 
@@ -905,66 +1125,85 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   }
 
   function state() {
-    const mapId = window.$gameMap ? $gameMap.mapId() : 0;
-    const mapInfo = window.$dataMapInfos && $dataMapInfos[mapId] ? $dataMapInfos[mapId] : null;
-    const party = window.$gameParty;
-    const actors = [];
-    if (window.$gameActors && $gameActors._data) {
-      for (let i = 1; i < $gameActors._data.length; i++) {
-        const actor = $gameActors._data[i];
-        if (actor) actors.push({
-          id: i,
-          name: actor.name ? actor.name() : actor._name,
-          level: actor._level,
-          hp: actor._hp,
-          mhp: actor.mhp || 0,
-          mp: actor._mp,
-          mmp: actor.mmp || 0,
-          tp: actor._tp || 0,
-          atk: actor.atk || 0,
-          def: actor.def || 0,
-          mat: actor.mat || 0,
-          mdf: actor.mdf || 0,
-          agi: actor.agi || 0,
-          luk: actor.luk || 0,
-          exp: actor.currentExp ? actor.currentExp() : null
-        });
+    try {
+      const mapId = window.$gameMap && typeof $gameMap.mapId === "function" ? $gameMap.mapId() : 0;
+      const mapInfo = window.$dataMapInfos && $dataMapInfos[mapId] ? $dataMapInfos[mapId] : null;
+      const party = window.$gameParty;
+      const actors = [];
+      if (window.$gameActors && $gameActors._data) {
+        for (let i = 1; i < $gameActors._data.length; i++) {
+          const actor = $gameActors._data[i];
+          if (actor) actors.push({
+            id: i,
+            name: typeof actor.name === "function" ? actor.name() : (actor.name || actor._name || ""),
+            level: actor._level || 1,
+            hp: actor._hp || 0,
+            mhp: actor.mhp || 0,
+            mp: actor._mp || 0,
+            mmp: actor.mmp || 0,
+            tp: actor._tp || 0,
+            atk: actor.atk || 0,
+            def: actor.def || 0,
+            mat: actor.mat || 0,
+            mdf: actor.mdf || 0,
+            agi: actor.agi || 0,
+            luk: actor.luk || 0,
+            exp: typeof actor.currentExp === "function" ? actor.currentExp() : (actor.currentExp || null)
+          });
+        }
       }
-    }
-    const switches = [];
-    if (window.$dataSystem && window.$gameSwitches) {
-      for (let i = 1; i < ($dataSystem.switches || []).length; i++) {
-        switches.push({ id: i, name: $dataSystem.switches[i] || "", value: !!$gameSwitches.value(i) });
+      const switches = [];
+      if (window.$dataSystem && window.$gameSwitches && typeof $gameSwitches.value === "function") {
+        for (let i = 1; i < ($dataSystem.switches || []).length; i++) {
+          switches.push({ id: i, name: $dataSystem.switches[i] || "", value: !!$gameSwitches.value(i) });
+        }
       }
-    }
-    const variables = [];
-    if (window.$dataSystem && window.$gameVariables) {
-      for (let i = 1; i < ($dataSystem.variables || []).length; i++) {
-        variables.push({ id: i, name: $dataSystem.variables[i] || "", value: $gameVariables.value(i) });
+      const variables = [];
+      if (window.$dataSystem && window.$gameVariables && typeof $gameVariables.value === "function") {
+        for (let i = 1; i < ($dataSystem.variables || []).length; i++) {
+          variables.push({ id: i, name: $dataSystem.variables[i] || "", value: $gameVariables.value(i) });
+        }
       }
+      return {
+        ok: true,
+        gold: party ? (typeof party.gold === "function" ? party.gold() : Number(party._gold || 0)) : 0,
+        steps: party ? (typeof party.steps === "function" ? party.steps() : Number(party._steps || 0)) : 0,
+        items: party ? collectContainer(party._items, window.$dataItems) : [],
+        weapons: party ? collectContainer(party._weapons, window.$dataWeapons) : [],
+        armors: party ? collectContainer(party._armors, window.$dataArmors) : [],
+        actors,
+        switches,
+        variables,
+        map: {
+          id: mapId,
+          name: mapInfo ? mapInfo.name : "",
+          displayName: window.$dataMap ? ($dataMap.displayName || "") : "",
+          x: window.$gamePlayer ? Number($gamePlayer.x || 0) : 0,
+          y: window.$gamePlayer ? Number($gamePlayer.y || 0) : 0,
+          through: !!(bridge.options.through || (window.$gamePlayer && typeof $gamePlayer.isThrough === "function" && $gamePlayer.isThrough()))
+        },
+        locks: bridge.locks || {},
+        options: bridge.options || {},
+        translationEnabled: bridge.translationEnabled
+      };
+    } catch (e) {
+      return {
+        ok: true,
+        gold: 0,
+        steps: 0,
+        items: [],
+        weapons: [],
+        armors: [],
+        actors: [],
+        switches: [],
+        variables: [],
+        map: { id: 0, name: "", displayName: "", x: 0, y: 0, through: false },
+        locks: bridge.locks || {},
+        options: bridge.options || {},
+        translationEnabled: bridge.translationEnabled,
+        initPending: true
+      };
     }
-    return {
-      ok: true,
-      gold: party ? party.gold() : 0,
-      steps: party ? party.steps() : 0,
-      items: party ? collectContainer(party._items, window.$dataItems) : [],
-      weapons: party ? collectContainer(party._weapons, window.$dataWeapons) : [],
-      armors: party ? collectContainer(party._armors, window.$dataArmors) : [],
-      actors,
-      switches,
-      variables,
-      map: {
-        id: mapId,
-        name: mapInfo ? mapInfo.name : "",
-        displayName: window.$dataMap ? ($dataMap.displayName || "") : "",
-        x: window.$gamePlayer ? $gamePlayer.x : 0,
-        y: window.$gamePlayer ? $gamePlayer.y : 0,
-        through: !!(bridge.options.through || (window.$gamePlayer && $gamePlayer.isThrough && $gamePlayer.isThrough()))
-      },
-      locks: bridge.locks,
-      options: bridge.options,
-      translationEnabled: bridge.translationEnabled
-    };
   }
 
   function apply(payload) {
@@ -1517,8 +1756,26 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     const _startMessage = Window_Message.prototype.startMessage;
     Window_Message.prototype.startMessage = function() {
       try {
-        if (window.$gameMessage && Array.isArray($gameMessage._texts)) {
-          $gameMessage._texts = $gameMessage._texts.map(function(line) { return translate(line); });
+        if (window.$gameMessage) {
+          if (typeof $gameMessage.speakerName === "function" && typeof $gameMessage.setSpeakerName === "function") {
+            var spk = $gameMessage.speakerName();
+            if (spk) {
+              var transSpk = translate(spk);
+              if (transSpk !== spk) $gameMessage.setSpeakerName(transSpk);
+            }
+          }
+          if (Array.isArray($gameMessage._texts) && $gameMessage._texts.length > 0) {
+            var joined = $gameMessage._texts.join("\n");
+            var transJoined = translate(joined);
+            if (transJoined !== joined) {
+              $gameMessage._texts = transJoined.split("\n");
+            } else {
+              $gameMessage._texts = $gameMessage._texts.map(function(line) { return translate(line); });
+            }
+          }
+          if (Array.isArray($gameMessage._choices)) {
+            $gameMessage._choices = $gameMessage._choices.map(function(choice) { return translate(choice); });
+          }
         }
       } catch (_e) {}
       return _startMessage.call(this);
@@ -1554,6 +1811,17 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
       _origAdd.call(this, translated);
       if (typeof original === "string" && original.trim()) {
         reportSeen(original, translated || original, "game_message_add");
+      }
+    };
+  }
+
+  if (typeof Game_Message !== "undefined" && Game_Message.prototype.setSpeakerName) {
+    var _origSetSpeakerName = Game_Message.prototype.setSpeakerName;
+    Game_Message.prototype.setSpeakerName = function(name) {
+      var translated = typeof name === "string" ? translate(name) : name;
+      _origSetSpeakerName.call(this, translated);
+      if (typeof name === "string" && name.trim()) {
+        reportSeen(name, translated || name, "game_message_setSpeakerName");
       }
     };
   }
@@ -1708,43 +1976,80 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     } catch (_e) {}
   }
 
+  function sendToolRequest(urlPath, payload, callback) {
+    var body = JSON.stringify(payload);
+    if (http && typeof http.request === "function") {
+      var byteLen = typeof Buffer !== "undefined" && Buffer.byteLength ? Buffer.byteLength(body) : (new TextEncoder().encode(body).length);
+      var options = {
+        hostname: "127.0.0.1",
+        port: bridge.toolPort,
+        path: urlPath,
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": byteLen },
+        timeout: 3000
+      };
+      var completed = false;
+      var req2 = http.request(options, function(res2) {
+        var data = "";
+        res2.on("data", function(chunk) { data += chunk; });
+        res2.on("end", function() {
+          completed = true;
+          try {
+            var parsed = JSON.parse(data);
+            if (callback) callback(null, parsed);
+          } catch (e) {
+            if (callback) callback(e);
+          }
+        });
+      });
+      req2.on("error", function(err) {
+        if (!completed && typeof fetch === "function") {
+          fetch("http://127.0.0.1:" + bridge.toolPort + urlPath, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: body
+          }).then(function(r) { return r.json(); }).then(function(data) {
+            if (callback) callback(null, data);
+          }).catch(function(e) { if (callback) callback(e); });
+        } else if (callback) {
+          callback(err);
+        }
+      });
+      req2.write(body);
+      req2.end();
+    } else if (typeof fetch === "function") {
+      fetch("http://127.0.0.1:" + bridge.toolPort + urlPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (callback) callback(null, data);
+      }).catch(function(e) { if (callback) callback(e); });
+    }
+  }
+
   // Background: poll tool server for translations
   function pollToolForTranslations() {
     if (!bridge.toolPort) return;
-    var body = JSON.stringify({pid: process.pid});
-    var options = {
-      hostname: "127.0.0.1",
-      port: bridge.toolPort,
-      path: "/pull",
-      method: "POST",
-      headers: {"Content-Type": "application/json", "Content-Length": Buffer.byteLength(body)},
-      timeout: 3000
-    };
-    var req = http.request(options, function(res2) {
-      var data = "";
-      res2.on("data", function(chunk) { data += chunk; });
-      res2.on("end", function() {
-        try {
-          var payload = JSON.parse(data);
-          if (payload && payload.ok && payload.translations) {
-            if (payload.seq !== undefined && Number(payload.seq) === Number(bridge.lastPullSeq)) return;
-            if (payload.seq !== undefined) bridge.lastPullSeq = Number(payload.seq);
-            var keys = Object.keys(payload.translations);
-            if (keys.length > 0 || payload.replace) {
-              for (var k = 0; k < keys.length; k++) bridge.translations[keys[k]] = payload.translations[keys[k]];
-              if (payload.replace) bridge.translations = Object.assign({}, payload.translations);
-              bridge.translationCount = Object.keys(bridge.translations).length;
-              bridge.translationEnabled = true;
-              var applied = applyTranslationsToLoadedData();
-              refreshVisibleText(applied > 0);
-            }
+    var myPid = (typeof process !== "undefined" && process.pid) ? process.pid : 0;
+    sendToolRequest("/pull", { pid: myPid }, function(err, payload) {
+      if (err || !payload) return;
+      try {
+        if (payload.ok && payload.translations) {
+          if (payload.seq !== undefined && Number(payload.seq) === Number(bridge.lastPullSeq)) return;
+          if (payload.seq !== undefined) bridge.lastPullSeq = Number(payload.seq);
+          var keys = Object.keys(payload.translations);
+          if (keys.length > 0 || payload.replace) {
+            for (var k = 0; k < keys.length; k++) bridge.translations[keys[k]] = payload.translations[keys[k]];
+            if (payload.replace) bridge.translations = Object.assign({}, payload.translations);
+            bridge.translationCount = Object.keys(bridge.translations).length;
+            bridge.translationEnabled = true;
+            var applied = applyTranslationsToLoadedData();
+            refreshVisibleText(applied > 0);
           }
-        } catch (_e) {}
-      });
+        }
+      } catch (_e) {}
     });
-    req.on("error", function() {});
-    req.write(body);
-    req.end();
   }
 
   // Background: send seen batch to tool
@@ -1755,39 +2060,21 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
   function sendSeenBatchToTool() {
     if (bridge.seenBatch.length === 0 || !bridge.toolPort) return;
     var batch = bridge.seenBatch.splice(0, 200);
-    var body = JSON.stringify({items: batch});
-    var options = {
-      hostname: "127.0.0.1",
-      port: bridge.toolPort,
-      path: "/seen_batch",
-      method: "POST",
-      headers: {"Content-Type": "application/json", "Content-Length": Buffer.byteLength(body)},
-      timeout: 3000
-    };
-    var completed = false;
-    var req = http.request(options, function(res2) {
-      var data = "";
-      res2.on("data", function(chunk) { data += chunk; });
-      res2.on("end", function() {
-        completed = true;
-        var accepted = false;
-        try {
-          var payload = JSON.parse(data);
-            if (payload && payload.ok && payload.targets) {
-              accepted = true;
-              for (var i = 0; i < batch.length && i < payload.targets.length; i++) {
-                if (payload.targets[i]) bridge.translations[batch[i].text] = payload.targets[i];
-              }
-              var applied = applyTranslationsToLoadedData();
-              refreshVisibleText(applied > 0);
-            }
-        } catch (_e) {}
-        if (!accepted) requeueSeenBatch(batch);
-      });
+    sendToolRequest("/seen_batch", { items: batch }, function(err, payload) {
+      if (err || !payload || !payload.ok) {
+        requeueSeenBatch(batch);
+        return;
+      }
+      try {
+        if (payload.targets) {
+          for (var i = 0; i < batch.length && i < payload.targets.length; i++) {
+            if (payload.targets[i]) bridge.translations[batch[i].text] = payload.targets[i];
+          }
+          var applied = applyTranslationsToLoadedData();
+          refreshVisibleText(applied > 0);
+        }
+      } catch (_e) {}
     });
-    req.on("error", function() { if (!completed) requeueSeenBatch(batch); });
-    req.write(body);
-    req.end();
   }
 
   // Start background polling and hot-reload watcher
@@ -1800,112 +2087,129 @@ RUNTIME_BRIDGE_SOURCE = r"""/*:
     }, 500);
   }
 
-  bridge.server = http.createServer(async (req, res) => {
-    if (req.method === "OPTIONS") return json(res, 200, { ok: true });
-    try {
-      if (req.url === "/ping") return json(res, 200, { ok: true, name: "RPGRenPyBridge", root: bridge.root, pid: process.pid });
-      if (req.url === "/state") return json(res, 200, state());
-      if (req.url === "/set" && req.method === "POST") {
-        apply(await readBody(req));
-        return json(res, 200, state());
-      }
-      if (req.url === "/translation" && req.method === "POST") {
-        const payload = await readBody(req);
-        bridge.translations = payload.dict || {};
-        bridge.translationEnabled = payload.enabled !== false;
-        bridge.translationCount = Object.keys(bridge.translations).length;
-        const applied = applyTranslationsToLoadedData();
-        refreshVisibleText(applied > 0);
-        return json(res, 200, { ok: true, count: bridge.translationCount, applied });
-      }
-      if (req.url === "/seen_batch" && req.method === "POST") {
-        const payload = await readBody(req);
-        var items = payload.items || [];
-        var targets = [];
-        for (var i = 0; i < items.length; i++) {
-          var item = items[i];
-          var text = (item.text || "").trim();
-          var target = "";
-          if (text) {
-            target = bridge.translations[text] || bridge.translations[text.trim()] || "";
-            if (!target && item.target) target = item.target;
-            if (target) bridge.translations[text] = target;
+  if (http && typeof http.createServer === "function") {
+    bridge.server = http.createServer(async (req, res) => {
+      if (req.method === "OPTIONS") return json(res, 200, { ok: true });
+      try {
+        if (req.url === "/ping") return json(res, 200, { ok: true, name: "RPGRenPyBridge", root: bridge.root, pid: (typeof process !== "undefined" ? process.pid : 0) });
+        if (req.url === "/state") return json(res, 200, state());
+        if (req.url === "/set" && req.method === "POST") {
+          apply(await readBody(req));
+          return json(res, 200, state());
+        }
+        if (req.url === "/translation" && req.method === "POST") {
+          const payload = await readBody(req);
+          bridge.translations = payload.dict || {};
+          bridge.translationEnabled = payload.enabled !== false;
+          bridge.translationCount = Object.keys(bridge.translations).length;
+          const applied = applyTranslationsToLoadedData();
+          refreshVisibleText(applied > 0);
+          return json(res, 200, { ok: true, count: bridge.translationCount, applied });
+        }
+        if (req.url === "/seen_batch" && req.method === "POST") {
+          const payload = await readBody(req);
+          var items = payload.items || [];
+          var targets = [];
+          for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var text = (item.text || "").trim();
+            var target = "";
+            if (text) {
+              target = bridge.translations[text] || bridge.translations[text.trim()] || "";
+              if (!target && item.target) target = item.target;
+              if (target) bridge.translations[text] = target;
+            }
+            targets.push(target);
           }
-          targets.push(target);
+          return json(res, 200, { ok: true, targets: targets });
         }
-        return json(res, 200, { ok: true, targets: targets });
-      }
-      if (req.url === "/seen_batch" && req.method === "GET") {
-        var batch = bridge.seenBatch.splice(0, 200);
-        return json(res, 200, { ok: true, items: batch });
-      }
-      if (req.url === "/pull" && req.method === "POST") {
-        return json(res, 200, { ok: true, translations: bridge.translations });
-      }
-      if (req.url === "/notify") {
-        return json(res, 200, { ok: true, seq: bridge.notifySeq, translationCount: bridge.translationCount });
-      }
-      if (req.url && req.url.indexOf("/debug") === 0) {
-        var limit = 200;
-        var parts = req.url.split("?");
-        if (parts.length > 1) {
-          var params = parts[1].split("&");
-          for (var p = 0; p < params.length; p++) {
-            var kv = params[p].split("=");
-            if (kv[0] === "limit") limit = parseInt(kv[1]) || 200;
+        if (req.url === "/seen_batch" && req.method === "GET") {
+          var batch = bridge.seenBatch.splice(0, 200);
+          return json(res, 200, { ok: true, items: batch });
+        }
+        if (req.url === "/pull" && req.method === "POST") {
+          return json(res, 200, { ok: true, translations: bridge.translations });
+        }
+        if (req.url === "/notify") {
+          return json(res, 200, { ok: true, seq: bridge.notifySeq, translationCount: bridge.translationCount });
+        }
+        if (req.url && req.url.indexOf("/debug") === 0) {
+          var limit = 200;
+          var parts = req.url.split("?");
+          if (parts.length > 1) {
+            var params = parts[1].split("&");
+            for (var p = 0; p < params.length; p++) {
+              var kv = params[p].split("=");
+              if (kv[0] === "limit") limit = parseInt(kv[1]) || 200;
+            }
           }
+          var events = bridge.debugEvents.slice(-limit);
+          return json(res, 200, { ok: true, events: events, translationCount: bridge.translationCount });
         }
-        var events = bridge.debugEvents.slice(-limit);
-        return json(res, 200, { ok: true, events: events, translationCount: bridge.translationCount });
-      }
-      if (req.url === "/pre_translate" && req.method === "POST") {
-        const payload = await readBody(req);
-        var texts = payload.texts || [];
-        var known = {};
-        var queued = [];
-        for (var i = 0; i < texts.length; i++) {
-          var t = texts[i];
-          var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
-          if (tr) { known[t] = tr; } else { queued.push(t); }
+        if (req.url === "/pre_translate" && req.method === "POST") {
+          const payload = await readBody(req);
+          var texts = payload.texts || [];
+          var known = {};
+          var queued = [];
+          for (var i = 0; i < texts.length; i++) {
+            var t = texts[i];
+            var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
+            if (tr) { known[t] = tr; } else { queued.push(t); }
+          }
+          for (var q = 0; q < queued.length; q++) bridge.preTranslateQueue.push(queued[q]);
+          return json(res, 200, { ok: true, translations: known, queued: queued.length });
         }
-        for (var q = 0; q < queued.length; q++) bridge.preTranslateQueue.push(queued[q]);
-        return json(res, 200, { ok: true, translations: known, queued: queued.length });
-      }
-      if (req.url === "/translation_batch" && req.method === "POST") {
-        const payload = await readBody(req);
-        var texts = payload.texts || [];
-        var result = {};
-        for (var i = 0; i < texts.length; i++) {
-          var t = texts[i];
-          var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
-          if (tr) result[t] = tr;
+        if (req.url === "/translation_batch" && req.method === "POST") {
+          const payload = await readBody(req);
+          var texts = payload.texts || [];
+          var result = {};
+          for (var i = 0; i < texts.length; i++) {
+            var t = texts[i];
+            var tr = bridge.translations[t] || bridge.translations[t.trim()] || "";
+            if (tr) result[t] = tr;
+          }
+          return json(res, 200, { ok: true, translations: result });
         }
-        return json(res, 200, { ok: true, translations: result });
+        if (req.url === "/set_tool_port" && req.method === "POST") {
+          const payload = await readBody(req);
+          if (payload.port) bridge.toolPort = Number(payload.port) || 32181;
+          return json(res, 200, { ok: true, toolPort: bridge.toolPort });
+        }
+        json(res, 404, { ok: false, error: "not found" });
+      } catch (e) {
+        json(res, 500, { ok: false, error: String(e && e.stack || e) });
       }
-      if (req.url === "/set_tool_port" && req.method === "POST") {
-        const payload = await readBody(req);
-        if (payload.port) bridge.toolPort = Number(payload.port) || 32181;
-        return json(res, 200, { ok: true, toolPort: bridge.toolPort });
-      }
-      json(res, 404, { ok: false, error: "not found" });
-    } catch (e) {
-      json(res, 500, { ok: false, error: String(e && e.stack || e) });
+    });
+
+    var listenRetries = 10;
+    function tryListen() {
+      bridge.server.once("error", function(e) {
+        bridge.lastError = String(e && e.stack || e);
+        bridge.started = false;
+        if (e && e.code === "EADDRINUSE" && listenRetries > 0) {
+          listenRetries--;
+          setTimeout(tryListen, 1200);
+        }
+      });
+      try {
+        bridge.server.listen(PORT, HOST, function() {
+          bridge.started = true;
+          bridge.lastError = "";
+          var applied = applyTranslationsToLoadedData();
+          refreshVisibleText(applied > 0);
+          if (bridge.translationCount > 0) {
+            showToast("RPGRenPyLocalizer: 翻译已自动生效 (" + bridge.translationCount + " 条) [F9 切换]", "#059669");
+          }
+        });
+      } catch (_err) {}
     }
-  });
-  bridge.server.on("error", e => {
-    bridge.lastError = String(e && e.stack || e);
-    bridge.started = false;
-  });
-  bridge.server.listen(PORT, HOST, () => {
+    tryListen();
+  } else {
     bridge.started = true;
-    bridge.lastError = "";
-    const applied = applyTranslationsToLoadedData();
+    var applied = applyTranslationsToLoadedData();
     refreshVisibleText(applied > 0);
-    startBackgroundPolling();
-    if (bridge.translationCount > 0) {
-      showToast("RPGRenPyLocalizer: 翻译已自动生效 (" + bridge.translationCount + " 条) [F9 切换]", "#059669");
-    }
-  });
+  }
+  startBackgroundPolling();
 })();
 """
 
@@ -2135,19 +2439,28 @@ class RPGMakerService:
         save_json(json_path, data)
 
     def install_runtime_bridge(self) -> Path:
-        # Deployed MV/MZ projects may keep the playable web app under www/.
-        # Always install beside the data directory's runtime, otherwise the
-        # tool can edit the project successfully while the launched game never
-        # loads the bridge plugin.
-        runtime_root = self.project.game_dir
-        plugins_dir = runtime_root / "js" / "plugins"
-        if not plugins_dir.is_dir():
+        primary_bridge: Path | None = None
+        target_roots = [self.project.game_dir]
+        if (self.project.root / "www").is_dir() and (self.project.root / "www") not in target_roots:
+            target_roots.append(self.project.root / "www")
+        if self.project.root not in target_roots:
+            target_roots.append(self.project.root)
+
+        installed_any = False
+        for root_dir in target_roots:
+            plugins_dir = root_dir / "js" / "plugins"
+            if plugins_dir.is_dir():
+                bridge_path = plugins_dir / f"{RUNTIME_BRIDGE_NAME}.js"
+                bridge_path.write_text(RUNTIME_BRIDGE_SOURCE, encoding="utf-8", newline="\n")
+                plugins_js = root_dir / "js" / "plugins.js"
+                self._enable_plugin(plugins_js, RUNTIME_BRIDGE_NAME, {"translationFile": str(self.live_translation_path())})
+                installed_any = True
+                if primary_bridge is None:
+                    primary_bridge = bridge_path
+
+        if not installed_any:
             raise RuntimeError("未找到 js/plugins 目录，当前项目可能不是标准 RPG Maker MV/MZ 结构。")
-        bridge_path = plugins_dir / f"{RUNTIME_BRIDGE_NAME}.js"
-        bridge_path.write_text(RUNTIME_BRIDGE_SOURCE, encoding="utf-8", newline="\n")
-        plugins_js = runtime_root / "js" / "plugins.js"
-        self._enable_plugin(plugins_js, RUNTIME_BRIDGE_NAME, {"translationFile": str(self.live_translation_path())})
-        return bridge_path
+        return primary_bridge  # type: ignore[return-value]
 
     def uninstall_runtime_bridge(self) -> int:
         """Remove only files and configuration entries owned by this tool.
@@ -2157,30 +2470,36 @@ class RPGMakerService:
         directory.
         """
         removed = 0
-        runtime_root = self.project.game_dir
-        plugins_js = runtime_root / "js" / "plugins.js"
-        if plugins_js.is_file():
-            plugins = self._load_plugins_js(plugins_js)
-            filtered = [plugin for plugin in plugins if plugin.get("name") != RUNTIME_BRIDGE_NAME]
-            if len(filtered) != len(plugins):
-                self._save_plugins_js(plugins_js, filtered)
-                removed += len(plugins) - len(filtered)
-        bridge_path = runtime_root / "js" / "plugins" / f"{RUNTIME_BRIDGE_NAME}.js"
-        try:
-            if bridge_path.is_file():
-                bridge_path.unlink()
-                removed += 1
-        except OSError:
-            pass
-        # These names are exclusively generated by RPGRenPyLocalizer's bridge.
-        for suffix in (".ttf", ".ttc", ".otf"):
-            font_path = runtime_root / "fonts" / f"{RUNTIME_CJK_FONT_BASENAME}{suffix}"
+        target_roots = [self.project.game_dir]
+        if (self.project.root / "www").is_dir() and (self.project.root / "www") not in target_roots:
+            target_roots.append(self.project.root / "www")
+        if self.project.root not in target_roots:
+            target_roots.append(self.project.root)
+
+        for root_dir in target_roots:
+            plugins_js = root_dir / "js" / "plugins.js"
+            if plugins_js.is_file():
+                plugins = self._load_plugins_js(plugins_js)
+                filtered = [plugin for plugin in plugins if plugin.get("name") != RUNTIME_BRIDGE_NAME]
+                if len(filtered) != len(plugins):
+                    self._save_plugins_js(plugins_js, filtered)
+                    removed += len(plugins) - len(filtered)
+            bridge_path = root_dir / "js" / "plugins" / f"{RUNTIME_BRIDGE_NAME}.js"
             try:
-                if font_path.is_file():
-                    font_path.unlink()
+                if bridge_path.is_file():
+                    bridge_path.unlink()
                     removed += 1
             except OSError:
                 pass
+            # These names are exclusively generated by RPGRenPyLocalizer's bridge.
+            for suffix in (".ttf", ".ttc", ".otf"):
+                font_path = root_dir / "fonts" / f"{RUNTIME_CJK_FONT_BASENAME}{suffix}"
+                try:
+                    if font_path.is_file():
+                        font_path.unlink()
+                        removed += 1
+                except OSError:
+                    pass
         return removed
 
     # --- Real-time translation server methods ---
@@ -2223,9 +2542,10 @@ class RPGMakerService:
                 if text and text not in existing:
                     _RPGRM_LIVE_SERVER_STATE["pre_translate_queue"].append({"text": text, "priority": "urgent", "event": "retry"})
 
-    def seed_live_translation_queue(self, entries: list[Any]) -> int:
+    def seed_live_translation_queue(self, entries: list[Any], anchor: str = "", window_size: int = 100) -> int:
         """Queue untranslated safe database/dialogue entries before play reaches them."""
         added = 0
+        limit = max(1, int(window_size or 100))
         with _RPGRM_LIVE_SERVER_LOCK:
             existing = {
                 str(item.get("text") if isinstance(item, dict) else item)
@@ -2233,6 +2553,8 @@ class RPGMakerService:
             }
             known = set(_RPGRM_LIVE_SERVER_STATE["translations"])
             for entry in entries:
+                if added >= limit:
+                    break
                 source = str(getattr(entry, "source", "") or "").strip()
                 target = str(getattr(entry, "target", "") or "").strip()
                 category = str(getattr(entry, "category", "") or "")
@@ -2266,24 +2588,49 @@ class RPGMakerService:
             if len(_RPGRM_LIVE_SERVER_STATE["events"]) > 2000:
                 _RPGRM_LIVE_SERVER_STATE["events"] = _RPGRM_LIVE_SERVER_STATE["events"][-1500:]
 
-    def merge_live_translation(self, source: str, target: str, kind: str = "realtime_translated") -> None:
-        source = str(source or "").strip()
-        target = str(target or "").strip()
-        if not source or not target or source == target:
-            return
+    def merge_live_translations(self, values: dict[str, str], kind: str = "realtime_translated") -> int:
+        from .core.control_codes import repair_control_codes
+        sanitized: dict[str, str] = {}
+        for raw_source, raw_target in values.items():
+            source = str(raw_source or "").strip()
+            target = str(raw_target or "").strip()
+            if source and target and source != target:
+                sanitized[source] = repair_control_codes(source, target)
+        if not sanitized:
+            with _RPGRM_LIVE_SERVER_LOCK:
+                return int(_RPGRM_LIVE_SERVER_STATE.get("notify_seq", 0))
         with _RPGRM_LIVE_SERVER_LOCK:
-            _RPGRM_LIVE_SERVER_STATE["translations"][source] = target
-            # Also set common variants
-            stripped = source.strip()
-            if stripped != source:
-                _RPGRM_LIVE_SERVER_STATE["translations"][stripped] = target
-            normalized = re.sub(r"\s+", " ", stripped)
-            if normalized != source and normalized != stripped:
-                _RPGRM_LIVE_SERVER_STATE["translations"][normalized] = target
+            translations = _RPGRM_LIVE_SERVER_STATE["translations"]
+            seen = _RPGRM_LIVE_SERVER_STATE.get("seen", {})
+            events = _RPGRM_LIVE_SERVER_STATE["events"]
+            for source, target in sanitized.items():
+                translations[source] = target
+                stripped = source.strip()
+                if stripped != source:
+                    translations[stripped] = target
+                normalized = re.sub(r"\s+", " ", stripped)
+                if normalized != source and normalized != stripped:
+                    translations[normalized] = target
+                if source in seen:
+                    seen[source] = target
+                events.append({
+                    "time": time.time(),
+                    "kind": kind,
+                    "source": source,
+                    "displayed": source,
+                    "target": target,
+                    "matched": True,
+                })
+            if len(events) > 2000:
+                _RPGRM_LIVE_SERVER_STATE["events"] = events[-1500:]
             _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
-            table = dict(_RPGRM_LIVE_SERVER_STATE["translations"])
+            seq = int(_RPGRM_LIVE_SERVER_STATE["notify_seq"])
+            table = dict(translations)
         self.write_live_translation_table(table)
-        self.append_live_debug_event(kind, source, source, target, True)
+        return seq
+
+    def merge_live_translation(self, source: str, target: str, kind: str = "realtime_translated") -> None:
+        self.merge_live_translations({source: target}, kind=kind)
 
     @staticmethod
     def _normalized_live_translations(translations: dict[str, str]) -> dict[str, str]:
@@ -2307,9 +2654,10 @@ class RPGMakerService:
         self.write_live_translation_table(raw)
         return len(normalized)
 
-    def notify_game_refresh(self) -> None:
+    def notify_game_refresh(self) -> int:
         with _RPGRM_LIVE_SERVER_LOCK:
             _RPGRM_LIVE_SERVER_STATE["notify_seq"] += 1
+            return int(_RPGRM_LIVE_SERVER_STATE["notify_seq"])
 
     def write_live_translation_table(self, translations: dict[str, str]) -> tuple[Path, int]:
         """Atomically replace the small disk table consumed by the JS bridge."""
@@ -2327,12 +2675,13 @@ class RPGMakerService:
             heartbeat = float(_RPGRM_LIVE_SERVER_STATE.get("last_heartbeat") or 0.0)
             return {
                 "running": _RPGRM_LIVE_SERVER is not None,
-                "connected": bool(heartbeat and time.time() - heartbeat < 3.0),
+                "connected": bool(heartbeat and time.time() - heartbeat < 5.0),
                 "game_pid": int(_RPGRM_LIVE_SERVER_STATE.get("game_pid") or 0),
                 "last_heartbeat": heartbeat,
                 "translation_count": len(_RPGRM_LIVE_SERVER_STATE["translations"]),
                 "event_count": len(_RPGRM_LIVE_SERVER_STATE["events"]),
                 "seen_count": len(_RPGRM_LIVE_SERVER_STATE["seen"]),
+                "seen": len(_RPGRM_LIVE_SERVER_STATE["seen"]),
                 "queue_count": len(_RPGRM_LIVE_SERVER_STATE["pre_translate_queue"]),
             }
 
@@ -2363,9 +2712,28 @@ class RPGMakerService:
         raw = text[start : end + 1]
         try:
             payload = json.loads(raw)
+            return [item for item in payload if isinstance(item, dict)]
         except json.JSONDecodeError:
-            return []
-        return [item for item in payload if isinstance(item, dict)]
+            pass
+
+        # Robust handling: remove line/block comments and trailing commas before closing brackets
+        cleaned = re.sub(r"//[^\r\n]*", "", raw)
+        cleaned = re.sub(r"/\*[\s\S]*?\*/", "", cleaned)
+        cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
+        try:
+            payload = json.loads(cleaned)
+            return [item for item in payload if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            results = []
+            for m in re.finditer(r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*\}', raw):
+                try:
+                    obj_str = re.sub(r",\s*([\]}])", r"\1", m.group(0))
+                    obj = json.loads(obj_str)
+                    if isinstance(obj, dict):
+                        results.append(obj)
+                except Exception:
+                    continue
+            return results
 
     @staticmethod
     def _save_plugins_js(plugins_js: Path, plugins: list[dict[str, Any]]) -> None:

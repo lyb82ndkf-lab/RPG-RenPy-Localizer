@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +32,15 @@ from toolkit.memory_editor import LocalMemoryScanner, MemoryScanError, MemorySca
 from toolkit.renpy import RenPyService
 from toolkit.rpgmaker import RPGMakerService, load_json
 from toolkit.unknown_game import UnknownGameService
-from toolkit.storage import export_translation_pack, export_translation_snapshot, import_translation_pack, save_json, translation_pack_signature
+from toolkit.storage import (
+    export_translation_pack,
+    export_translation_snapshot,
+    extract_translation_entries_from_payload,
+    import_translation_pack,
+    parse_lenient_json,
+    save_json,
+    translation_pack_signature,
+)
 from toolkit.workspace import LibraryEntry, Workspace
 from toolkit.core.control_codes import repair_control_codes
 
@@ -188,9 +197,10 @@ class ToolkitApi:
             use_legacy = name == provider and legacy_provider not in {"openai", "anthropic", "ollama", "accountbridge", "localagent"}
             source_name = legacy_provider if use_legacy else name
             available = saved.get("models") if isinstance(saved.get("models"), list) else []
+            raw_base_url = str(saved.get("baseUrl") or urls.get(source_name) or self._default_base_url(source_name) or self._default_base_url(name))
             return {
                 "apiKey": str(saved.get("apiKey") or keys.get(source_name) or ""),
-                "baseUrl": str(saved.get("baseUrl") or urls.get(source_name) or self._default_base_url(source_name) or self._default_base_url(name)),
+                "baseUrl": self._clean_base_url(raw_base_url),
                 "model": str(saved.get("model") or models.get(source_name) or ""),
                 "models": [str(item) for item in available if item],
                 "localAgentPath": str(saved.get("localAgentPath") or raw_ai.get("localAgentPath") or ""),
@@ -202,10 +212,11 @@ class ToolkitApi:
         named_configs = settings.get("ai_named_configs") if isinstance(settings.get("ai_named_configs"), dict) else {}
         settings["ai_named_configs"] = named_configs
         settings["ai_profiles"] = profiles
+        clean_current_url = self._clean_base_url(str((raw_ai.get("baseUrl") if legacy_provider == provider else "") or current["baseUrl"]))
         settings["ai"] = {
             "provider": provider,
             "apiKey": "" if provider in {"ollama", "accountbridge"} else str(raw_ai.get("apiKey") or current["apiKey"] or settings.get("openai_api_key") or ""),
-            "baseUrl": str((raw_ai.get("baseUrl") if legacy_provider == provider else "") or current["baseUrl"]),
+            "baseUrl": clean_current_url,
             "model": str((raw_ai.get("model") if legacy_provider == provider else "") or current["model"]),
             "availableModels": current["models"],
             "targetLang": str(raw_ai.get("targetLang") or settings.get("ai_target_lang") or "简体中文"),
@@ -229,12 +240,14 @@ class ToolkitApi:
             ai["provider"] = provider
             if provider in {"ollama", "accountbridge"}:
                 ai["apiKey"] = ""
+            clean_url = self._clean_base_url(str(ai.get("baseUrl") or ""))
+            ai["baseUrl"] = clean_url
             settings["ai"] = ai
             keys = settings.get("ai_api_keys") if isinstance(settings.get("ai_api_keys"), dict) else {}
             urls = settings.get("ai_base_urls") if isinstance(settings.get("ai_base_urls"), dict) else {}
             models = settings.get("ai_models") if isinstance(settings.get("ai_models"), dict) else {}
             keys[provider] = str(ai.get("apiKey") or "")
-            urls[provider] = str(ai.get("baseUrl") or "")
+            urls[provider] = clean_url
             models[provider] = str(ai.get("model") or "")
             ai["batchSize"] = _clamp_int(ai.get("batchSize"), 20, 1, 200)
             ai["concurrency"] = _clamp_int(ai.get("concurrency") or ai.get("threads"), 1, 1, 8)
@@ -484,6 +497,24 @@ class ToolkitApi:
                 self.game_processes.pop(path, None)
         return {"running": bool(running), "games": running, "activePath": running[0]["path"] if running else ""}
 
+    def project_stop(self, body: JsonDict | None = None) -> JsonDict:
+        body = body or {}
+        raw_path = str(body.get("path") or "").strip()
+        stopped = 0
+        for path_key, proc in list(self.game_processes.items()):
+            if not raw_path or os.path.normcase(path_key) == os.path.normcase(raw_path):
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                self.game_processes.pop(path_key, None)
+                stopped += 1
+        return {"ok": True, "stopped": stopped}
+
     def _active_game_path(self) -> str:
         self.game_status()
         return next(iter(self.game_processes), "")
@@ -642,15 +673,73 @@ class ToolkitApi:
             headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
         elif api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        url = base_url + "/models" if base_url.endswith("/v1") else base_url + "/v1/models"
-        raw = self._http_get_json(url, headers, timeout=30)
-        values = raw.get("data") or raw.get("models") or []
-        models = []
-        for item in values if isinstance(values, list) else []:
-            model_id = item.get("id") if isinstance(item, dict) else item
-            if model_id:
-                models.append(str(model_id))
+        url = self._models_url(base_url, provider)
+        try:
+            raw = self._http_get_json(url, headers, timeout=30)
+            values = raw.get("data") or raw.get("models") or []
+            models = []
+            for item in values if isinstance(values, list) else []:
+                model_id = item.get("id") if isinstance(item, dict) else item
+                if model_id:
+                    models.append(str(model_id))
+            if models:
+                return {"models": sorted(set(models))}
+        except Exception:
+            lowered_url = base_url.lower()
+            if "bigmodel" in lowered_url or "zhipu" in lowered_url:
+                return {"models": ["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4-plus", "glm-4-flash", "glm-4-long", "glm-4"], "fallback": True}
+            if "deepseek" in lowered_url:
+                return {"models": ["deepseek-chat", "deepseek-reasoner"], "fallback": True}
+            raise
+        lowered_url = base_url.lower()
+        if "bigmodel" in lowered_url or "zhipu" in lowered_url:
+            return {"models": ["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4-plus", "glm-4-flash", "glm-4-long", "glm-4"], "fallback": True}
         return {"models": sorted(set(models))}
+
+    @staticmethod
+    def _clean_base_url(base_url: str) -> str:
+        url = str(base_url or "").strip().rstrip("/")
+        if not url:
+            return ""
+        # Strip common endpoint suffixes if user pasted a full endpoint
+        url = re.sub(r"/(chat/completions|completions|messages|models)$", "", url)
+        # Fix duplicated version segments like /v4/v1 -> /v4, /v3/v1 -> /v3
+        url = re.sub(r"/(v\d+)/v1$", r"/\1", url)
+        return url
+
+    @classmethod
+    def _chat_completions_url(cls, base_url: str) -> str:
+        url = cls._clean_base_url(base_url)
+        if not url:
+            return ""
+        if re.search(r"/v\d+[a-zA-Z0-9_-]*$", url) or re.search(r"/v\d+[a-zA-Z0-9_-]*/", url):
+            return url + "/chat/completions"
+        return url + "/v1/chat/completions"
+
+    @classmethod
+    def _models_url(cls, base_url: str, provider: str = "openai") -> str:
+        url = cls._clean_base_url(base_url)
+        if not url:
+            return ""
+        if provider == "ollama":
+            native_base = url[:-3] if url.endswith("/v1") else url
+            return native_base + "/api/tags"
+        if provider == "anthropic":
+            if url.endswith("/v1") or re.search(r"/v\d+[a-zA-Z0-9_-]*$", url):
+                return url + "/models"
+            return url + "/v1/models"
+        if re.search(r"/v\d+[a-zA-Z0-9_-]*$", url) or re.search(r"/v\d+[a-zA-Z0-9_-]*/", url):
+            return url + "/models"
+        return url + "/v1/models"
+
+    @classmethod
+    def _anthropic_messages_url(cls, base_url: str) -> str:
+        url = cls._clean_base_url(base_url)
+        if not url:
+            return ""
+        if url.endswith("/v1") or re.search(r"/v\d+[a-zA-Z0-9_-]*$", url):
+            return url + "/messages"
+        return url + "/v1/messages"
 
     @staticmethod
     def _normalize_ai_provider(provider: str) -> str:
@@ -684,7 +773,7 @@ class ToolkitApi:
         # item ceiling meant that any later dialogue was silently absent from
         # both AI translation and the generated RPG Maker runtime copy.
         load_all = str(query.get("all", "0")).lower() in {"1", "true", "yes"}
-        limit = len(entries) if load_all else max(1, min(int(query.get("limit") or 500), 5000))
+        limit = len(entries) if load_all else max(1, min(int(query.get("limit") or 500), 100000))
         offset = max(0, int(query.get("offset") or 0))
         categories = sorted({e.category or e.file for e in safe_entries if e.category or e.file})
         return {"count": len(entries), "total": len(safe_entries), "categories": categories, "entries": _plain(entries[offset: offset + limit])}
@@ -789,6 +878,51 @@ class ToolkitApi:
         except (OSError, ValueError, TypeError):
             return []
 
+    def _prune_superseded_snapshots(self, versions: list[JsonDict] | None = None) -> list[JsonDict]:
+        """Prune older and smaller translation snapshots.
+
+        Keeps only the snapshot with the maximum translated-entry count
+        (e.g., if history had 5000 entries and now has 6000, delete the 5000
+        entry versions from disk and manifest, keeping only the 6000 entry version).
+        If multiple versions share the maximum count, keeps only the latest one.
+        """
+        if versions is None:
+            versions = self._load_translation_version_manifest()
+        if not versions:
+            return []
+        version_dir = self._translation_versions_dir()
+        max_count = max((int(item.get("count") or 0) for item in versions), default=0)
+
+        kept: list[JsonDict] = []
+        for item in versions:
+            count = int(item.get("count") or 0)
+            filename = str(item.get("file") or "")
+            filepath = version_dir / filename if filename else None
+            if count < max_count:
+                if filepath and filepath.is_file():
+                    try:
+                        filepath.unlink()
+                    except OSError:
+                        pass
+            else:
+                if filepath and filepath.is_file():
+                    kept.append(item)
+
+        # If multiple snapshots have the same maximum count, keep only the latest one
+        if len(kept) > 1:
+            for old in kept[:-1]:
+                filename = str(old.get("file") or "")
+                filepath = version_dir / filename if filename else None
+                if filepath and filepath.is_file():
+                    try:
+                        filepath.unlink()
+                    except OSError:
+                        pass
+            kept = [kept[-1]]
+
+        save_json(self._translation_version_manifest_path(), {"version": 1, "versions": kept})
+        return kept
+
     def _create_translation_snapshot(self, reason: str, force: bool = False) -> JsonDict | None:
         """Keep immutable, loadable translation revisions inside the project."""
         entries = self._filter_safe_translation_entries(self.translation_entries)
@@ -804,18 +938,19 @@ class ToolkitApi:
         version_dir = self._translation_versions_dir()
         version_dir.mkdir(parents=True, exist_ok=True)
         export_translation_snapshot(version_dir / filename, self._project().engine, entries, translation_pack_signature(self._project().engine, entries))
+        new_count = sum(1 for entry in entries if entry.target.strip())
         record: JsonDict = {
             "id": version_id,
             "label": now.strftime("%Y-%m-%d %H:%M:%S"),
             "created_at": now.isoformat(timespec="seconds"),
             "reason": reason,
             "file": filename,
-            "count": sum(1 for entry in entries if entry.target.strip()),
+            "count": new_count,
             "content_signature": signature,
         }
         versions.append(record)
-        save_json(self._translation_version_manifest_path(), {"version": 1, "versions": versions[-200:]})
-        return record
+        pruned = self._prune_superseded_snapshots(versions)
+        return pruned[-1] if pruned else record
 
     def translations_versions(self) -> JsonDict:
         if not self.translation_entries:
@@ -831,7 +966,7 @@ class ToolkitApi:
             "count": 0,
             "available": original.exists(),
         }]
-        for item in reversed(self._load_translation_version_manifest()):
+        for item in reversed(self._prune_superseded_snapshots()):
             filename = str(item.get("file") or "")
             if filename and (self._translation_versions_dir() / filename).is_file():
                 versions.append({**item, "available": True})
@@ -883,6 +1018,8 @@ class ToolkitApi:
             root,
             root / "data",
             root / "www" / "data",
+            root / "www",
+            root / "game",
         ]
         names = (
             "翻译文件.json",
@@ -906,37 +1043,16 @@ class ToolkitApi:
 
     def _external_source_targets(self) -> dict[str, str]:
         mapping: dict[str, str] = {}
-
-        def put(source: Any, target: Any) -> None:
-            if isinstance(source, (dict, list)) or isinstance(target, (dict, list)):
-                return
-            src = str(source)
-            tgt = str(target)
-            if src and tgt and src not in mapping:
-                mapping[src] = tgt
-
         for path in self._external_translation_candidates():
             try:
-                payload = load_json(path)
-            except (OSError, ValueError, TypeError, UnicodeDecodeError):
+                entries = import_translation_pack(path)
+                for entry in entries.values():
+                    src = entry.source
+                    tgt = entry.target
+                    if src and tgt and src not in mapping:
+                        mapping[src] = tgt
+            except Exception:
                 continue
-            if not isinstance(payload, dict):
-                continue
-            translations = payload.get("translations")
-            if isinstance(translations, dict):
-                for source, target in translations.items():
-                    put(source, target)
-                continue
-            entries = payload.get("entries")
-            if isinstance(entries, list):
-                for item in entries:
-                    if isinstance(item, dict):
-                        put(item.get("source"), item.get("target"))
-                continue
-            for source, target in payload.items():
-                if source in {"version", "updated_at", "engine", "signature"}:
-                    continue
-                put(source, target)
         return mapping
 
     def _merge_external_translation_dicts(self) -> int:
@@ -945,17 +1061,19 @@ class ToolkitApi:
         mapping = self._external_source_targets()
         if not mapping:
             return 0
-        by_stripped = {source.strip(): target for source, target in mapping.items()}
+        from ..core.control_codes import build_expanded_translation_index, match_source_translation
+        exact_map, stripped_map = build_expanded_translation_index(mapping)
         filled = 0
         for entry in self.translation_entries:
             if str(entry.target or "").strip():
                 continue
             source = str(entry.source or "")
-            target = mapping.get(source) or by_stripped.get(source.strip(), "")
+            target = match_source_translation(source, exact_map, stripped_map)
             if target:
                 entry.target = target
                 filled += 1
         return filled
+
 
     def _persist_translation_cache(self) -> None:
         path = self._translation_cache_path()
@@ -1107,30 +1225,87 @@ class ToolkitApi:
         return {"ok": True, "path": str(path), "count": len(translations), "version": snapshot}
 
     def translations_import(self, body: JsonDict) -> JsonDict:
-        path = Path(str(body.get("path") or "")).expanduser()
+        raw_path = str(body.get("path") or body.get("file_path") or body.get("filePath") or "").strip()
+        if not raw_path:
+            raise ApiError("请提供翻译文件路径。")
+        path = Path(raw_path).expanduser()
         if not path.exists():
-            raise ApiError("翻译包不存在。")
+            raise ApiError(f"翻译包文件不存在：{raw_path}")
         imported = import_translation_pack(path)
+        if not imported:
+            raise ApiError("未能从文件中解析到有效翻译条目。")
         if not self.translation_entries:
             self.translation_entries = self._service().extract_translations()
-        index = {e.entry_id: e for e in self._filter_safe_translation_entries(self.translation_entries)}
+        safe_entries = self._filter_safe_translation_entries(self.translation_entries)
+        index = {e.entry_id: e for e in safe_entries}
+
+        # Build index lookups for fast, flexible matching
+        by_exact: dict[str, list[TranslationEntry]] = defaultdict(list)
+        by_stripped: dict[str, list[TranslationEntry]] = defaultdict(list)
+        for entry in safe_entries:
+            by_exact[entry.source].append(entry)
+            s = entry.source.strip()
+            if s:
+                by_stripped[s].append(entry)
+
         matched = 0
+        touched_ids: set[str] = set()
+
         for entry_id, imported_entry in imported.items():
-            if imported_entry.entry_id and entry_id in index:
-                self._validate_translation_target(index[entry_id].source, imported_entry.target)
-                index[entry_id].target = imported_entry.target
-                matched += 1
+            tgt = imported_entry.target
+            if not tgt:
                 continue
-            # Public source->target packs apply to every matching occurrence
-            # (the same UI/choice line can appear in multiple map files).
-            for entry in index.values():
-                if entry.source == imported_entry.source:
-                    self._validate_translation_target(entry.source, imported_entry.target)
-                    entry.target = imported_entry.target
+
+            # 1. Direct ID match (for internal snapshots)
+            if imported_entry.entry_id and imported_entry.entry_id in index:
+                entry = index[imported_entry.entry_id]
+                self._validate_translation_target(entry.source, tgt)
+                entry.target = tgt
+                if entry.entry_id not in touched_ids:
+                    touched_ids.add(entry.entry_id)
                     matched += 1
+                continue
+
+            # 2. Match exact source
+            src = imported_entry.source
+            matched_this = False
+            if src in by_exact:
+                for entry in by_exact[src]:
+                    self._validate_translation_target(entry.source, tgt)
+                    entry.target = tgt
+                    if entry.entry_id not in touched_ids:
+                        touched_ids.add(entry.entry_id)
+                        matched += 1
+                    matched_this = True
+
+            # 3. Fallback: match stripped source (handling MTool whitespace/newline differences)
+            src_stripped = src.strip()
+            if not matched_this and src_stripped and src_stripped in by_stripped:
+                for entry in by_stripped[src_stripped]:
+                    self._validate_translation_target(entry.source, tgt)
+                    entry.target = tgt
+                    if entry.entry_id not in touched_ids:
+                        touched_ids.add(entry.entry_id)
+                        matched += 1
+
+        # 4. Multi-stage peeling and expansion match for remaining unmatched entries
+        from ..core.control_codes import build_expanded_translation_index, match_source_translation
+        raw_imported_map = {e.source: e.target for e in imported.values() if e.source and e.target}
+        exact_map, stripped_map = build_expanded_translation_index(raw_imported_map)
+        for entry in safe_entries:
+            if entry.entry_id in touched_ids:
+                continue
+            peeled_tgt = match_source_translation(entry.source, exact_map, stripped_map)
+            if peeled_tgt:
+                self._validate_translation_target(entry.source, peeled_tgt)
+                entry.target = peeled_tgt
+                touched_ids.add(entry.entry_id)
+                matched += 1
+
         self._persist_translation_cache()
         snapshot = self._create_translation_snapshot("导入翻译包") if matched else None
         return {"ok": True, "matched": matched, "imported": len(imported), "version": snapshot}
+
 
     def translations_runtime(self, body: JsonDict) -> JsonDict:
         project = self._project()
@@ -1769,7 +1944,7 @@ class ToolkitApi:
             self._require_rpgmaker_runtime()
             state = self._runtime_request("GET", "/state")
         except ApiError as exc:
-            if exc.status == 503:
+            if exc.status in (409, 503):
                 return {"connected": False, "error": str(exc)}
             raise
         state["connected"] = True
@@ -1802,12 +1977,20 @@ class ToolkitApi:
             candidates = {project.root.resolve(), project.game_dir.resolve()}
             if project.data_dir:
                 candidates.add(project.data_dir.resolve().parent)
+            workspace_runs = (project.root / ".rpgrtl_workspace").resolve()
+            candidates.add(workspace_runs)
+
             bridge_text = os.path.normcase(str(resolved_bridge))
-            if any(
-                bridge_text == os.path.normcase(str(candidate))
-                or bridge_text.startswith(os.path.normcase(str(candidate)) + os.sep)
-                for candidate in candidates
-            ):
+            for candidate in candidates:
+                c_text = os.path.normcase(str(candidate))
+                if (
+                    bridge_text == c_text
+                    or bridge_text.startswith(c_text + os.sep)
+                    or c_text.startswith(bridge_text + os.sep)
+                ):
+                    return
+
+            if resolved_bridge.name.lower() == project.root.resolve().name.lower():
                 return
         except OSError:
             return
@@ -1898,12 +2081,56 @@ class ToolkitApi:
             full.update({"ok": True, "engine": self.project.engine, "hint": "UE 当前为 Localization archive 启动前预热；PAK/locres 仍需先用 FModel 或 UnrealPak 导出，未声明已实现运行时 Hook。"})
             return full
         if self.project.engine == "RPG Maker MV/MZ":
-            raise ApiError("RPG Maker 实时桥接仅在“选择译文启动”创建的独立运行副本中可用，原游戏不会被安装插件。")
+            return self._start_rpgmaker_live(body)
         if hasattr(service, "start_live_bridge_server"):
             status = service.start_live_bridge_server(clear_events=bool(body.get("clearEvents")))
             if isinstance(status, dict):
                 return {"ok": True, **status}
         return self.live_status()
+
+    def _start_rpgmaker_live(self, body: JsonDict) -> JsonDict:
+        """Start RPG Maker real-time translation server, seed translations, and start worker."""
+        service = self._service()
+        if hasattr(service, "install_runtime_bridge"):
+            try:
+                service.install_runtime_bridge()
+            except Exception as exc:  # noqa: BLE001
+                raise ApiError(f"RPG Maker 实时桥接插件准备失败：{exc}") from exc
+
+        pairs = {
+            str(entry.source): str(entry.target)
+            for entry in self._filter_safe_translation_entries(self.translation_entries)
+            if str(entry.source or "").strip() and str(entry.target or "").strip()
+        }
+        if pairs and hasattr(service, "set_live_translations"):
+            service.set_live_translations(pairs)
+
+        if hasattr(service, "start_live_bridge_server"):
+            try:
+                service.start_live_bridge_server(clear_events=bool(body.get("clearEvents")))
+            except Exception as exc:  # noqa: BLE001
+                raise ApiError(f"RPG Maker 实时服务启动失败：{exc}") from exc
+
+        prefetched = 0
+        first = next((entry.source for entry in self._filter_safe_translation_entries(self.translation_entries) if entry.source.strip() and not entry.target.strip()), "")
+        if first and hasattr(service, "requeue_live_translation_candidates"):
+            service.requeue_live_translation_candidates([first])
+        if hasattr(service, "seed_live_translation_queue"):
+            try:
+                prefetched = service.seed_live_translation_queue(self.translation_entries, first, self._live_ai_config()["windowSize"])
+            except TypeError:
+                prefetched = service.seed_live_translation_queue(self.translation_entries)
+
+        if body.get("autoTranslate", True):
+            self._start_live_worker(service)
+
+        full = self.live_status()
+        full["ok"] = True
+        full["engine"] = "RPG Maker MV/MZ"
+        full["seeding"] = len(pairs)
+        full["prefetched"] = prefetched
+        full["hint"] = "RPG Maker 实时翻译已启动，在游戏中对话或触发事件时将实时同步翻译。"
+        return full
 
     def _start_unity_live(self, body: JsonDict) -> JsonDict:
         """Install XUA CustomTranslate endpoint and seed existing translations."""
@@ -2046,13 +2273,111 @@ class ToolkitApi:
         return {"ok": True, "seq": seq, "text": text}
 
     def live_merge(self, body: JsonDict) -> JsonDict:
+        pairs = body.get("pairs")
+        kind = str(body.get("kind") or "manual")
+        service = self._service()
+        if isinstance(pairs, dict) and pairs:
+            if hasattr(service, "merge_live_translations"):
+                seq = service.merge_live_translations(pairs, kind=kind)
+            else:
+                for s, t in pairs.items():
+                    service.merge_live_translation(str(s), str(t), kind)
+                seq = service.notify_game_refresh() if hasattr(service, "notify_game_refresh") else 0
+            if self.translation_entries:
+                for entry in self.translation_entries:
+                    if entry.source in pairs:
+                        entry.target = str(pairs[entry.source])
+                self._persist_translation_cache()
+            return {"ok": True, "count": len(pairs), "seq": seq}
         source = str(body.get("source") or "")
         target = str(body.get("target") or "")
-        kind = str(body.get("kind") or "manual")
         if not source or not target:
             raise ApiError("source 和 target 不能为空。")
-        self._service().merge_live_translation(source, target, kind)
+        service.merge_live_translation(source, target, kind)
+        if self.translation_entries:
+            for entry in self.translation_entries:
+                if entry.source == source:
+                    entry.target = target
+            self._persist_translation_cache()
         return {"ok": True}
+
+    def live_import(self, body: JsonDict) -> JsonDict:
+        """Import translation JSON directly into running game with live hot-reload."""
+        pairs: dict[str, str] = {}
+        raw_path = str(body.get("path") or body.get("file_path") or body.get("filePath") or "").strip()
+        raw_content = str(body.get("content") or "").strip()
+        raw_pairs = body.get("pairs") if body.get("pairs") is not None else body.get("translations")
+
+        if raw_path:
+            file_path = Path(raw_path).expanduser()
+            if not file_path.is_file():
+                raise ApiError(f"文件不存在：{raw_path}")
+            imported = import_translation_pack(file_path)
+            for entry in imported.values():
+                if entry.source and entry.target:
+                    pairs[entry.source] = entry.target
+                    s = entry.source.strip()
+                    if s:
+                        pairs[s] = entry.target
+        elif raw_content:
+            payload = parse_lenient_json(raw_content)
+            imported = extract_translation_entries_from_payload(payload)
+            for entry in imported.values():
+                if entry.source and entry.target:
+                    pairs[entry.source] = entry.target
+                    s = entry.source.strip()
+                    if s:
+                        pairs[s] = entry.target
+        elif raw_pairs is not None:
+            imported = extract_translation_entries_from_payload(raw_pairs)
+            for entry in imported.values():
+                if entry.source and entry.target:
+                    pairs[entry.source] = entry.target
+                    s = entry.source.strip()
+                    if s:
+                        pairs[s] = entry.target
+        else:
+            raise ApiError("请提供翻译 JSON 文件路径或内容。")
+
+        if not pairs:
+            raise ApiError("未能从文件中解析到有效翻译条目（需要键值对或包含 source/target 的 JSON 数组）。")
+
+        from ..core.control_codes import build_expanded_translation_index, match_source_translation
+        exact_map, stripped_map = build_expanded_translation_index(pairs)
+
+        if self.translation_entries:
+            for entry in self.translation_entries:
+                t = match_source_translation(entry.source, exact_map, stripped_map)
+                if t:
+                    entry.target = t
+                    if entry.source not in pairs:
+                        pairs[entry.source] = t
+            self._persist_translation_cache()
+
+        service = self._service()
+        applied_count = 0
+        seq = 0
+        if hasattr(service, "merge_live_translations"):
+            seq = service.merge_live_translations(pairs, kind="imported_pack")
+            applied_count = len(pairs)
+        elif hasattr(service, "set_live_translations"):
+            applied_count = service.set_live_translations(pairs)
+            if hasattr(service, "notify_game_refresh"):
+                seq = service.notify_game_refresh()
+        else:
+            raise ApiError("当前引擎不支持实时热重载。")
+
+
+        self._record_live_debug("import", "live_import_success", {"count": len(pairs), "seq": seq, "path": raw_path})
+        return {
+            "ok": True,
+            "count": len(pairs),
+            "imported": len(pairs),
+            "seq": seq,
+            "applied": applied_count,
+            "liveApplied": applied_count,
+            "path": raw_path,
+        }
 
     def live_refresh(self) -> JsonDict:
         count = self._service().notify_game_refresh()
@@ -2112,7 +2437,7 @@ class ToolkitApi:
     @staticmethod
     def _is_safe_rpgmaker_capture(event: str) -> bool:
         return str(event or "") in {
-            "game_message_setText", "game_message_setChoice", "choice_drawItem",
+            "game_message_add", "game_message_setText", "game_message_setChoice", "choice_drawItem",
             "cmd_401_dialogue", "cmd_102_choice", "cmd_405_scroll",
             "map_event_dialogue", "map_event_choice", "map_event_scroll",
             "common_event_dialogue", "showText", "scrollText", "dialogue_block",
@@ -2577,7 +2902,7 @@ class ToolkitApi:
         )
         user_payload = json.dumps({"source_files": source_files, "entries": compact_entries}, ensure_ascii=False)
         if provider == "anthropic":
-            url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
+            url = self._anthropic_messages_url(base_url)
             payload = {
                 "model": model,
                 "max_tokens": int(body.get("maxTokens") or 4096),
@@ -2589,9 +2914,7 @@ class ToolkitApi:
             blocks = raw.get("content") or []
             content = "".join(str(item.get("text") or "") for item in blocks if isinstance(item, dict))
         else:
-            url = base_url
-            if not url.endswith("/chat/completions"):
-                url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
+            url = self._chat_completions_url(base_url)
             payload = {
                 "model": model,
                 "max_tokens": int(body.get("maxTokens") or 8192),
@@ -3365,7 +3688,7 @@ class ToolkitApi:
             "translations 数组长度必须等于输入长度，按原顺序对应；不要 Markdown、不要解释、不要把原文作为 JSON 的键。"
         )
         if provider == "anthropic":
-            url = base_url + "/messages" if base_url.endswith("/v1") else base_url + "/v1/messages"
+            url = self._anthropic_messages_url(base_url)
             payload = {
                 "model": model,
                 "max_tokens": int(body.get("maxTokens") or 4096),
@@ -3384,9 +3707,7 @@ class ToolkitApi:
             if body.get("_debugLive"):
                 self._record_live_debug("api", "response_content", {"content": content, "translations": result})
             return result
-        url = base_url
-        if not url.endswith("/chat/completions"):
-            url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
+        url = self._chat_completions_url(base_url)
         payload = {
             "model": model,
             "max_tokens": int(body.get("maxTokens") or 8192),
@@ -3497,9 +3818,14 @@ class ToolkitApi:
     @staticmethod
     def _json_from_model_content(content: str) -> Any:
         text = str(content or "").strip()
-        fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-        if fence:
-            text = fence.group(1).strip()
+        # Look for markdown code block with JSON
+        fence_search = re.search(r"```(?:json)?\s*([\{\[].*?[\}\]])\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        if fence_search:
+            text = fence_search.group(1).strip()
+        else:
+            fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+            if fence:
+                text = fence.group(1).strip()
         candidates = [text]
         for open_char, close_char in (("{", "}"), ("[", "]")):
             start = text.find(open_char)
@@ -3518,45 +3844,87 @@ class ToolkitApi:
 
     def _parse_translation_map(self, content: str, entry_ids: list[str], sources: dict[str, str] | None = None) -> dict[str, str]:
         normalized = self._native_agent_response_text(content)
+        parsed = None
         try:
             parsed = self._json_from_model_content(normalized)
         except Exception:
-            fallback = normalized.strip()
-            if len(entry_ids) == 1 and fallback:
-                res = {entry_ids[0]: fallback}
-                if sources and entry_ids[0] in sources:
-                    res[entry_ids[0]] = repair_control_codes(sources[entry_ids[0]], fallback)
-                return res
-            return {}
+            pass
+
         values: dict[str, str] = {}
-        raw_translations = parsed.get("translations") if isinstance(parsed, dict) else parsed
-        if isinstance(raw_translations, dict):
-            for entry_id in entry_ids:
-                if entry_id in raw_translations:
-                    values[entry_id] = str(raw_translations.get(entry_id) or "")
-            if not values and len(entry_ids) == 1:
-                for key in ("text", "translation", "target", "result", "content", "response", "output"):
-                    if key in raw_translations and isinstance(raw_translations[key], (str, int, float)):
-                        values[entry_ids[0]] = str(raw_translations[key])
-                        break
-        elif isinstance(raw_translations, list):
-            expected = set(entry_ids)
-            for index, item in enumerate(raw_translations[:len(entry_ids)]):
-                entry_id = entry_ids[index]
-                if isinstance(item, dict):
-                    raw_id = str(item.get("entry_id") or item.get("id") or "")
-                    if raw_id in expected:
-                        entry_id = raw_id
-                    values[entry_id] = str(item.get("target") or item.get("translation") or item.get("text") or "")
+        if parsed is not None:
+            raw_translations = None
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("translations"), (dict, list)):
+                    raw_translations = parsed["translations"]
+                elif isinstance(parsed.get("entries"), (dict, list)):
+                    raw_translations = parsed["entries"]
+                elif isinstance(parsed.get("data"), (dict, list)):
+                    raw_translations = parsed["data"]
+                elif any(eid in parsed for eid in entry_ids):
+                    raw_translations = parsed
+                elif "translations" in parsed:
+                    raw_translations = parsed.get("translations")
                 else:
-                    values[entry_id] = str(item or "")
-        elif isinstance(raw_translations, (str, int, float)) and len(entry_ids) == 1:
-            values[entry_ids[0]] = str(raw_translations)
-        if not values and isinstance(parsed, dict) and len(entry_ids) == 1:
-            for key in ("text", "translation", "target", "result", "content", "response", "output"):
-                if key in parsed and isinstance(parsed[key], (str, int, float)):
-                    values[entry_ids[0]] = str(parsed[key])
-                    break
+                    raw_translations = parsed
+            else:
+                raw_translations = parsed
+
+            if isinstance(raw_translations, dict):
+                for entry_id in entry_ids:
+                    if entry_id in raw_translations:
+                        values[entry_id] = str(raw_translations.get(entry_id) or "")
+                # Fallback: check integer index keys "0", "1", ...
+                if not values:
+                    for index, entry_id in enumerate(entry_ids):
+                        s_idx = str(index)
+                        if s_idx in raw_translations:
+                            values[entry_id] = str(raw_translations.get(s_idx) or "")
+                if not values and len(entry_ids) == 1:
+                    for key in ("text", "translation", "target", "result", "content", "response", "output"):
+                        if key in raw_translations and isinstance(raw_translations[key], (str, int, float)):
+                            values[entry_ids[0]] = str(raw_translations[key])
+                            break
+            elif isinstance(raw_translations, list):
+                expected = set(entry_ids)
+                for index, item in enumerate(raw_translations[:len(entry_ids)]):
+                    entry_id = entry_ids[index]
+                    if isinstance(item, dict):
+                        raw_id = str(item.get("entry_id") or item.get("id") or "")
+                        if raw_id in expected:
+                            entry_id = raw_id
+                        values[entry_id] = str(item.get("target") or item.get("translation") or item.get("text") or "")
+                    else:
+                        values[entry_id] = str(item or "")
+            elif isinstance(raw_translations, (str, int, float)) and len(entry_ids) == 1:
+                values[entry_ids[0]] = str(raw_translations)
+            if not values and isinstance(parsed, dict) and len(entry_ids) == 1:
+                for key in ("text", "translation", "target", "result", "content", "response", "output"):
+                    if key in parsed and isinstance(parsed[key], (str, int, float)):
+                        values[entry_ids[0]] = str(parsed[key])
+                        break
+
+        # If JSON parsing failed or was truncated, salvage remaining entry_ids via regex
+        if len(values) < len(entry_ids):
+            for entry_id in entry_ids:
+                if entry_id in values and values[entry_id]:
+                    continue
+                pattern = rf'"{re.escape(entry_id)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+                m = re.search(pattern, normalized)
+                if m:
+                    try:
+                        extracted = json.loads(f'"{m.group(1)}"')
+                    except Exception:
+                        extracted = m.group(1).encode().decode('unicode_escape', errors='replace')
+                    values[entry_id] = extracted
+
+        # If still empty and single entry, fallback to plain text
+        if not values and len(entry_ids) == 1 and normalized.strip():
+            fallback = normalized.strip()
+            fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", fallback, flags=re.DOTALL)
+            if fence:
+                fallback = fence.group(1).strip()
+            values[entry_ids[0]] = fallback
+
         if sources:
             for entry_id in list(values.keys()):
                 src = sources.get(entry_id)
@@ -3702,6 +4070,7 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "POST" and path == "/project/load": return api.load_project(body)
     if method == "GET" and path == "/project/summary": return api.project_summary()
     if method == "POST" and path == "/project/launch": return api.launch_project(body)
+    if method == "POST" and path == "/project/stop": return api.project_stop(body)
     if method == "GET" and path == "/translations": return api.translations(query)
     if method == "GET" and path == "/translations/versions": return api.translations_versions()
     if method == "POST" and path == "/translations/preflight": return api.translations_preflight(body)
@@ -3755,6 +4124,7 @@ def route(api: ToolkitApi, method: str, path: str, query: JsonDict, body: JsonDi
     if method == "GET" and path == "/live/status": return api.live_status()
     if method == "GET" and path == "/live/debug": return api.live_debug(query)
     if method == "POST" and path == "/live/merge": return api.live_merge(body)
+    if method == "POST" and path == "/live/import": return api.live_import(body)
     if method == "POST" and path == "/live/refresh": return api.live_refresh()
     if method == "POST" and path == "/live/force-text": return api.live_force_text(body)
     if method == "POST" and path == "/ai/translate": return api.ai_translate(body)

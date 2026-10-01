@@ -169,7 +169,10 @@ ipcMain.handle('dialog:openPack', async (_event, payload = {}) => {
     title: '导入翻译包',
     defaultPath: translationPackDefaultDirectory(payload),
     properties: ['openFile'],
-    filters: [{ name: '翻译包', extensions: ['json', 'csv'] }]
+    filters: [
+      { name: '翻译文件 (*.json;*.csv)', extensions: ['json', 'csv'] },
+      { name: '所有文件 (*.*)', extensions: ['*'] }
+    ]
   });
   return result.canceled ? null : result.filePaths[0];
 });

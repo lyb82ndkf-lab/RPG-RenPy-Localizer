@@ -622,5 +622,141 @@ class AiApiTests(unittest.TestCase):
         self.assertEqual(result["entries"], [])
 
 
+    def test_url_helpers_resolve_versions_and_repair_duplicates(self) -> None:
+        # Zhipu AI (/v4)
+        zhipu_base = "https://open.bigmodel.cn/api/paas/v4"
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base), "https://open.bigmodel.cn/api/paas/v4")
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base + "/"), "https://open.bigmodel.cn/api/paas/v4")
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base + "/chat/completions"), "https://open.bigmodel.cn/api/paas/v4")
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base + "/v1/chat/completions"), "https://open.bigmodel.cn/api/paas/v4")
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base + "/v1"), "https://open.bigmodel.cn/api/paas/v4")
+        self.assertEqual(ToolkitApi._clean_base_url(zhipu_base + "/models"), "https://open.bigmodel.cn/api/paas/v4")
+
+        self.assertEqual(ToolkitApi._chat_completions_url(zhipu_base), "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        self.assertEqual(ToolkitApi._chat_completions_url(zhipu_base + "/v1/chat/completions"), "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        self.assertEqual(ToolkitApi._chat_completions_url(zhipu_base + "/chat/completions"), "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        self.assertEqual(ToolkitApi._models_url(zhipu_base), "https://open.bigmodel.cn/api/paas/v4/models")
+        self.assertEqual(ToolkitApi._models_url(zhipu_base + "/v1/chat/completions"), "https://open.bigmodel.cn/api/paas/v4/models")
+
+        # Doubao (/v3)
+        doubao_base = "https://ark.cn-beijing.volces.com/api/v3"
+        self.assertEqual(ToolkitApi._chat_completions_url(doubao_base), "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+        self.assertEqual(ToolkitApi._models_url(doubao_base), "https://ark.cn-beijing.volces.com/api/v3/models")
+
+        # OpenAI standard (/v1 or naked host)
+        self.assertEqual(ToolkitApi._chat_completions_url("https://api.openai.com/v1"), "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(ToolkitApi._chat_completions_url("https://api.openai.com"), "https://api.openai.com/v1/chat/completions")
+        self.assertEqual(ToolkitApi._models_url("https://api.openai.com/v1"), "https://api.openai.com/v1/models")
+        self.assertEqual(ToolkitApi._models_url("https://api.openai.com"), "https://api.openai.com/v1/models")
+
+        # Google Gemini OpenAI-compatible (/v1beta/openai)
+        gemini_base = "https://generativelanguage.googleapis.com/v1beta/openai"
+        self.assertEqual(ToolkitApi._chat_completions_url(gemini_base), "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+        self.assertEqual(ToolkitApi._models_url(gemini_base), "https://generativelanguage.googleapis.com/v1beta/openai/models")
+
+        # Ollama
+        self.assertEqual(ToolkitApi._chat_completions_url("http://127.0.0.1:11434"), "http://127.0.0.1:11434/v1/chat/completions")
+        self.assertEqual(ToolkitApi._models_url("http://127.0.0.1:11434", provider="ollama"), "http://127.0.0.1:11434/api/tags")
+
+        # Anthropic
+        self.assertEqual(ToolkitApi._anthropic_messages_url("https://api.anthropic.com"), "https://api.anthropic.com/v1/messages")
+        self.assertEqual(ToolkitApi._anthropic_messages_url("https://api.anthropic.com/v1"), "https://api.anthropic.com/v1/messages")
+        self.assertEqual(ToolkitApi._models_url("https://api.anthropic.com", provider="anthropic"), "https://api.anthropic.com/v1/models")
+
+    def test_zhipu_models_and_translate_use_v4_without_v1_injection(self) -> None:
+        requested = {}
+
+        def fake_get(url: str, headers: dict, timeout: int = 30) -> dict:
+            requested["get_url"] = url
+            requested["headers"] = headers
+            return {"data": [{"id": "glm-4-plus"}, {"id": "glm-4-flash"}]}
+
+        def fake_post(url: str, payload: dict, headers: dict, timeout: int = 120) -> dict:
+            requested["post_url"] = url
+            requested["post_payload"] = payload
+            return {"choices": [{"message": {"content": json.dumps({"translations": {"t1": "你好"}}, ensure_ascii=False)}}]}
+
+        self.api._http_get_json = fake_get
+        self.api._http_json = fake_post
+
+        # Test models endpoint
+        models_result = self.api.ai_models({
+            "provider": "openai",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+            "apiKey": "test-key",
+        })
+        self.assertEqual(requested["get_url"], "https://open.bigmodel.cn/api/paas/v4/models")
+        self.assertEqual(models_result["models"], ["glm-4-flash", "glm-4-plus"])
+
+        # Test translate endpoint with /v4 and verify no /v4/v1/chat/completions occurs
+        trans_result = self.api.ai_translate({
+            "provider": "openai",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+            "apiKey": "test-key",
+            "model": "glm-4-flash",
+            "entries": [{"entry_id": "t1", "source": "Hello"}],
+        })
+        self.assertEqual(requested["post_url"], "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        self.assertEqual(trans_result["translations"][0]["entry_id"], "t1")
+        self.assertEqual(trans_result["translations"][0]["target"], "你好")
+
+    def test_zhipu_models_fallback_on_network_or_api_error(self) -> None:
+        def fake_get_error(url: str, headers: dict, timeout: int = 30) -> dict:
+            raise ApiError("401 Unauthorized")
+
+        self.api._http_get_json = fake_get_error
+        result = self.api.ai_models({
+            "provider": "openai",
+            "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+            "apiKey": "",
+        })
+        self.assertTrue(result.get("fallback"))
+        self.assertIn("glm-4.5-flash", result["models"])
+
+
+    def test_superseded_translation_snapshots_are_pruned(self) -> None:
+        game_root = Path(self.temp_dir.name) / "snapshot_game"
+        game_root.mkdir()
+        (game_root / "Game.exe").write_bytes(b"MZ")
+        (game_root / "data").mkdir()
+        (game_root / "data" / "System.json").write_text('{"gameTitle":"Test"}', encoding="utf-8")
+        self.api.load_project({"path": str(game_root)})
+
+        # Simulate initial 5000 entries (or 2 entries)
+        self.api.translation_entries = [
+            TranslationEntry("1", "Hello", "你好", "Map001.json", category="dialogue"),
+            TranslationEntry("2", "World", "", "Map001.json", category="dialogue"),
+        ]
+        s1 = self.api._create_translation_snapshot("首批翻译")
+        self.assertIsNotNone(s1)
+        self.assertEqual(s1["count"], 1)
+
+        manifest = self.api._load_translation_version_manifest()
+        self.assertEqual(len(manifest), 1)
+        v1_file = self.api._translation_versions_dir() / s1["file"]
+        self.assertTrue(v1_file.is_file())
+
+        # Now simulate repairing the untranslated entry (count becomes 2)
+        self.api.translation_entries[1].target = "世界"
+        s2 = self.api._create_translation_snapshot("修复未翻译")
+        self.assertIsNotNone(s2)
+        self.assertEqual(s2["count"], 2)
+
+        # Manifest should now ONLY keep the version with count=2, and old count=1 file is purged
+        manifest2 = self.api._load_translation_version_manifest()
+        self.assertEqual(len(manifest2), 1)
+        self.assertEqual(manifest2[0]["count"], 2)
+        self.assertFalse(v1_file.exists())  # Old 1-count file was deleted!
+        v2_file = self.api._translation_versions_dir() / s2["file"]
+        self.assertTrue(v2_file.is_file())
+
+        # Check translations_versions endpoint only shows original and the 2-count version
+        versions_res = self.api.translations_versions()
+        items = versions_res["versions"]
+        self.assertEqual(len(items), 2)  # "original" + the max 2-count snapshot
+        self.assertEqual(items[0]["id"], "original")
+        self.assertEqual(items[1]["count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -135,3 +135,97 @@ def test_preflight_counts_external_merged_targets(tmp_path: Path) -> None:
     assert summary["total"] >= 2
     assert summary["translated"] >= 2
     assert summary["missing"] == summary["total"] - summary["translated"]
+
+
+def test_translations_import_mtool_flat_with_bom(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    make_rpgmaker_game(game)
+    mtool_pack = tmp_path / "mtool_export.json"
+    # Write UTF-8 with BOM
+    content = "\ufeff" + json.dumps({"Hello": "你好", "AlreadyDone": "已完成"}, ensure_ascii=False)
+    mtool_pack.write_text(content, encoding="utf-8")
+
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.load_project({"path": str(game)})
+    res = api.translations_import({"path": str(mtool_pack)})
+    assert res["ok"] is True
+    assert res["matched"] >= 2
+    by_src = {e.source: e.target for e in api.translation_entries}
+    assert by_src["Hello"] == "你好"
+    assert by_src["AlreadyDone"] == "已完成"
+
+
+def test_translations_import_mtool_nested_translations(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    make_rpgmaker_game(game)
+    mtool_pack = tmp_path / "mtool_nested.json"
+    payload = {
+        "version": 1,
+        "engine": "RPGMaker",
+        "translations": {
+            "Hello": "你好（嵌套）",
+            "AlreadyDone": "完成（嵌套）"
+        }
+    }
+    mtool_pack.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.load_project({"path": str(game)})
+    res = api.translations_import({"path": str(mtool_pack)})
+    assert res["ok"] is True
+    assert res["matched"] >= 2
+    by_src = {e.source: e.target for e in api.translation_entries}
+    assert by_src["Hello"] == "你好（嵌套）"
+
+
+def test_translations_import_mtool_array_format(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    make_rpgmaker_game(game)
+    mtool_pack = tmp_path / "mtool_array.json"
+    payload = [
+        {"src": "Hello", "dst": "你好（数组）"},
+        {"src": "AlreadyDone", "dst": "完成（数组）"}
+    ]
+    mtool_pack.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.load_project({"path": str(game)})
+    res = api.translations_import({"file_path": str(mtool_pack)})
+    assert res["ok"] is True
+    assert res["matched"] >= 2
+    by_src = {e.source: e.target for e in api.translation_entries}
+    assert by_src["Hello"] == "你好（数组）"
+
+
+def test_translations_import_whitespace_tolerance(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    make_rpgmaker_game(game)
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.load_project({"path": str(game)})
+    # Simulate an entry that has trailing newline or whitespace
+    api.translation_entries = [
+        TranslationEntry("e1", "Hello \n", "", "Map001.json", category="dialogue")
+    ]
+    mtool_pack = tmp_path / "mtool_trimmed.json"
+    mtool_pack.write_text(json.dumps({"Hello": "你好（去空格）"}, ensure_ascii=False), encoding="utf-8")
+
+    res = api.translations_import({"path": str(mtool_pack)})
+    assert res["ok"] is True
+    assert res["matched"] == 1
+    assert api.translation_entries[0].target == "你好（去空格）"
+
+
+def test_live_import_mtool_payload(tmp_path: Path) -> None:
+    game = tmp_path / "game"
+    make_rpgmaker_game(game)
+    api = ToolkitApi(tmp_path / "workspace", config_dir=tmp_path / "config")
+    api.load_project({"path": str(game)})
+    api.translation_entries = [
+        TranslationEntry("e1", "Hello", "", "Map001.json", category="dialogue")
+    ]
+    # Test live_import with "pairs" parameter as sent by App.vue
+    res = api.live_import({"pairs": [{"src": "Hello", "dst": "你好（实时）"}]})
+    assert res["ok"] is True
+    assert res["count"] >= 1
+    assert api.translation_entries[0].target == "你好（实时）"
+

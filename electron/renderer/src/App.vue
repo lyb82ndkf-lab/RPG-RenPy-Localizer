@@ -89,48 +89,12 @@
         </div>
       </div>
 
-      <div v-if="runtimeConnected && isRpgMakerSelected" class="quick-cheats-bar">
-        <div class="quick-cheats-left">
-          <span class="quick-cheats-label">快捷辅助</span>
-          <div class="quick-cheats-toggles">
-            <el-check-tag :checked="runtimeForm.through" @change="toggleQuickThrough">穿墙</el-check-tag>
-            <el-check-tag :checked="runtimeForm.godMode" @change="toggleQuickGodMode">无敌</el-check-tag>
-            <el-check-tag :checked="runtimeForm.noEncounter" @change="toggleQuickNoEncounter">不遇敌</el-check-tag>
-            <el-check-tag :checked="runtimeForm.oneHitKill" @change="toggleQuickOneHitKill">秒杀</el-check-tag>
-            <el-check-tag :checked="runtimeForm.clickTeleport" @change="toggleQuickClickTeleport">点击传送</el-check-tag>
-            <el-check-tag :checked="runtimeForm.autoBattle" @change="toggleQuickAutoBattle">自动战斗</el-check-tag>
-            <el-check-tag :checked="runtimeForm.alwaysDash" @change="toggleQuickAlwaysDash">疾跑</el-check-tag>
-            <el-check-tag :checked="Number(runtimeForm.autoSaveMinutes) > 0" @change="toggleQuickAutoSave">自动存档</el-check-tag>
-          </div>
-        </div>
-        <div class="quick-cheats-actions">
-          <span class="quick-cheats-mini">
-            <el-input v-model="runtimeForm.gameSpeed" size="small" type="number" class="quick-speed-input" placeholder="倍速" @keyup.enter="applyQuickSpeed" />
-            <el-button size="small" type="primary" plain @click="applyQuickSpeed">倍速</el-button>
-          </span>
-          <span class="quick-cheats-mini">
-            <el-input v-model="runtimeForm.x" size="small" type="number" placeholder="X" class="quick-coord-input" />
-            <el-input v-model="runtimeForm.y" size="small" type="number" placeholder="Y" class="quick-coord-input" />
-            <el-button size="small" plain @click="quickTeleport">传送</el-button>
-          </span>
-          <el-button size="small" type="success" plain @click="quickHealAll">全员回满</el-button>
-          <el-button size="small" type="warning" plain @click="quickMaxGold">金币最大</el-button>
-          <el-button size="small" type="primary" plain @click="quickAllItems">全物品 99</el-button>
-          <el-button size="small" type="info" plain @click="quickUnlockCg">解锁全 CG</el-button>
-          <el-button size="small" type="success" plain @click="quickBattleWin">直接胜利</el-button>
-          <el-button size="small" type="warning" plain @click="quickBattleEscape">立即逃跑</el-button>
-          <el-button size="small" type="danger" plain @click="quickEnemyHp1">敌人 1HP</el-button>
-          <el-button size="small" plain @click="quickFpsOptimize">FPS 优化</el-button>
-          <el-button size="small" plain @click="quickQuickSave">快速存档</el-button>
-        </div>
-      </div>
-
       <div class="view-loading-wrap" v-loading="pageLoading" element-loading-text="正在载入..." element-loading-background="rgba(7, 15, 28, .62)">
-      <section v-if="currentView === 'library'" class="view-shell" data-tour="library-table" :class="{ 'library-running': gameRunning }">
+      <section v-if="currentView === 'library'" class="view-shell" data-tour="library-table">
         <el-card shadow="never" class="section-card library-card">
           <template #header>
             <div class="card-head">
-              <strong>{{ gameRunning ? '游戏列表 · 运行中锁定' : '全部游戏' }}</strong>
+              <strong>全部游戏</strong>
               <div class="card-head-right">
                 <el-input v-model="librarySearch" class="search-inline" size="small" placeholder="搜索游戏名、路径、引擎" clearable :prefix-icon="Search" />
                 <el-button size="small" :icon="Refresh" @click="loadLibrary" :loading="busy.refresh">刷新库</el-button>
@@ -164,105 +128,14 @@
           </el-table>
         </el-card>
 
-        <!-- Running dashboard replaces static detail while a game is active -->
-        <el-card v-if="gameRunning" shadow="never" class="section-card detail-card running-panel">
+        <el-card shadow="never" class="section-card detail-card">
           <template #header>
             <div class="card-head">
-              <strong>正在进行游戏</strong>
-              <div class="card-head-right wrap">
-                <el-tag type="success" effect="dark">运行中</el-tag>
-                <el-button size="small" :icon="Refresh" @click="refreshRunningDashboard">刷新</el-button>
-                <el-button size="small" type="primary" plain @click="currentView = 'runtime'">实时修改</el-button>
-                <el-button v-if="!isRpgMakerSelected" size="small" type="success" plain @click="toggleLibraryLive">
-                  {{ liveStatus.running ? '停止实时翻译' : '启动实时翻译' }}
-                </el-button>
+              <strong>游戏详情</strong>
+              <div class="card-head-right">
+                <el-tag v-if="gameRunning" type="success" effect="dark">运行中</el-tag>
+                <span>{{ selectedEntry ? '已选中' : '未选择' }}</span>
               </div>
-            </div>
-          </template>
-
-          <div class="running-dashboard">
-            <div class="running-hero">
-              <div>
-                <div class="running-title">{{ selectedEntry?.name || '当前游戏' }}</div>
-                <div class="running-sub">{{ selectedEntry?.engine || '未知引擎' }}</div>
-              </div>
-              <el-switch
-                v-if="!isRpgMakerSelected"
-                v-model="libraryLiveOn"
-                active-text="实时翻译"
-                :loading="busy.launch"
-                @change="onLibraryLiveToggle"
-              />
-            </div>
-
-            <div class="running-stats">
-              <template v-if="isRpgMakerSelected">
-                <div class="info-box"><span>桥接状态</span><div>{{ runtimeConnected ? '已连接' : '未连接' }}</div></div>
-                <div class="info-box"><span>金币</span><div>{{ runtimeState?.gold ?? '—' }}</div></div>
-                <div class="info-box"><span>当前地图</span><div>{{ runtimeState?.map?.name || runtimeState?.map?.id || '—' }}</div></div>
-                <div class="info-box"><span>玩家位置</span><div>{{ runtimeState?.map ? `${runtimeState.map.x}, ${runtimeState.map.y}` : '—' }}</div></div>
-                <div class="info-box"><span>队伍人数</span><div>{{ runtimeState?.actors?.length ?? '—' }}</div></div>
-                <div class="info-box"><span>工作模式</span><div>译文副本运行</div></div>
-              </template>
-              <template v-else>
-                <div class="info-box"><span>本地服务</span><div>{{ liveStatus.running ? '运行中' : '未启动' }}</div></div>
-                <div class="info-box"><span>游戏 Hook</span><div>{{ liveStatus.connected ? '已连接' : (liveStatus.running ? '等待游戏' : '—') }}</div></div>
-                <div class="info-box"><span>已捕获</span><div>{{ liveStatus.seen ?? 0 }}</div></div>
-                <div class="info-box"><span>已翻译</span><div>{{ liveStatus.translated ?? liveStatus.worker?.translated ?? 0 }}</div></div>
-                <div class="info-box"><span>AI 队列</span><div>{{ liveStatus.queue_count ?? 0 }}</div></div>
-                <div class="info-box"><span>最近事件</span><div>{{ (liveStatus.recentEvents || []).length }}</div></div>
-              </template>
-            </div>
-
-            <div class="running-meta">
-              <div class="info-box large"><span>游戏目录</span><div class="selectable">{{ selectedEntry?.path || gameStatus.activePath || '—' }}</div></div>
-              <div class="info-box"><span>引擎</span><div>{{ selectedEntry?.engine || '—' }}</div></div>
-              <div class="info-box"><span>工作台</span><div>{{ isRpgMakerSelected ? '随译文副本运行' : (isUnitySelected ? 'XUA CustomTranslate' : (isRenPySelected ? 'Ren\'Py Live Bridge' : '标准流程')) }}</div></div>
-            </div>
-
-            <div class="running-section">
-              <div class="running-section-head">
-                <strong>{{ isRpgMakerSelected ? '实时状态摘要' : '实时 Hook 最近捕获' }}</strong>
-                <el-button v-if="!isRpgMakerSelected" size="small" text type="primary" @click="currentView = 'live'">打开实时翻译</el-button>
-                <el-button v-else size="small" text type="primary" @click="currentView = 'runtime'">打开实时修改</el-button>
-              </div>
-              <el-table
-                v-if="!isRpgMakerSelected"
-                :data="liveRecentEvents.slice(0, 8)"
-                size="small"
-                height="180"
-                empty-text="暂无捕获。启动实时翻译后，游戏内文本会出现在这里。"
-              >
-                <el-table-column label="状态" width="86">
-                  <template #default="{ row }">
-                    <el-tag size="small" :type="row.matched ? 'success' : 'info'">{{ row.matched ? '已替换' : '已捕获' }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="kind" label="来源" width="110" />
-                <el-table-column prop="source" label="文本" min-width="200" show-overflow-tooltip />
-              </el-table>
-              <div v-else class="running-rpg-hints">
-                <div class="info-box"><span>穿墙</span><div>{{ runtimeForm.through ? '开' : '关' }}</div></div>
-                <div class="info-box"><span>不遇敌</span><div>{{ runtimeForm.noEncounter ? '开' : '关' }}</div></div>
-                <div class="info-box"><span>自动战斗</span><div>{{ runtimeForm.autoBattle ? '开' : '关' }}</div></div>
-                <div class="info-box"><span>游戏倍速</span><div>{{ runtimeForm.gameSpeed }}x</div></div>
-              </div>
-            </div>
-
-            <div class="running-actions">
-              <el-button type="primary" plain @click="currentView = 'translations'">打开翻译工作台</el-button>
-              <el-button plain @click="currentView = 'live'" v-if="!isRpgMakerSelected">实时翻译面板</el-button>
-              <el-button plain @click="currentView = 'maps'" v-if="isRpgMakerSelected">地图事件</el-button>
-              <el-button :icon="FolderOpened" @click="openSelectedFolder">打开目录</el-button>
-            </div>
-          </div>
-        </el-card>
-
-        <el-card v-else shadow="never" class="section-card detail-card">
-          <template #header>
-            <div class="card-head">
-              <strong>详情</strong>
-              <span>{{ selectedEntry ? '已选中' : '未选择' }}</span>
             </div>
           </template>
 
@@ -274,7 +147,9 @@
                 <div class="detail-name">{{ selectedEntry.name || '未命名' }}</div>
                 <div class="detail-engine">{{ selectedEntry.engine || '未知引擎' }}</div>
               </div>
-              <el-tag effect="dark" round>{{ selectedEntry.engine || 'Game' }}</el-tag>
+              <el-tag effect="dark" round :type="gameRunning ? 'success' : undefined">
+                {{ gameRunning ? '游戏运行中' : (selectedEntry.engine || 'Game') }}
+              </el-tag>
             </div>
 
             <div class="detail-grid">
@@ -285,7 +160,8 @@
             </div>
 
             <div class="detail-actions">
-              <el-button type="primary" :icon="VideoPlay" @click="launchSelected" :loading="busy.launch">启动游戏</el-button>
+              <el-button v-if="!gameRunning" type="primary" :icon="VideoPlay" @click="launchSelected" :loading="busy.launch">启动游戏</el-button>
+              <el-button v-else type="danger" :icon="VideoPlay" @click="stopCurrentGame" :loading="busy.launch">停止游戏</el-button>
               <el-button :icon="FolderOpened" @click="openSelectedFolder">打开目录</el-button>
               <el-button type="danger" plain :icon="Delete" @click="removeSelected" :loading="busy.remove" :disabled="gameRunning">移除</el-button>
             </div>
@@ -1068,6 +944,8 @@
               <div class="card-head-right wrap">
                 <el-button size="small" type="primary" @click="startLive">启动</el-button>
                 <el-button size="small" @click="stopLive">停止</el-button>
+                <el-button size="small" type="success" :icon="Upload" @click="openLiveImportPack">导入翻译包 (JSON 热重载)</el-button>
+                <el-button size="small" type="warning" plain :icon="Refresh" @click="refreshLiveGame">刷新游戏显示</el-button>
                 <el-button size="small" @click="refreshLive">刷新状态</el-button>
                 <el-button size="small" :icon="Notebook" @click="openLiveDebug">调试窗口</el-button>
                 <template v-if="isUnitySelected">
@@ -1097,23 +975,58 @@
             </div>
             <div class="split-layout live-layout">
               <div class="left-pane live-events-pane">
-                <div class="live-pane-head"><div><strong>最近捕获</strong><span>Hook 捕获的对话、选项与实时替换结果</span></div><el-tag :type="liveStatus.worker?.failures ? 'danger' : 'success'">失败 {{ liveStatus.worker?.failures || 0 }}</el-tag></div>
+                <div class="live-pane-head">
+                  <div><strong>最近捕获</strong><span>Hook 捕获的对话、选项与实时替换结果</span></div>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <el-button size="small" type="primary" plain :loading="busy.liveTranslate" :disabled="!liveRecentEvents.length" @click="translateAllUnmatchedLiveEvents">AI 批译未译捕获</el-button>
+                    <el-tag :type="liveStatus.worker?.failures ? 'danger' : 'success'">失败 {{ liveStatus.worker?.failures || 0 }}</el-tag>
+                  </div>
+                </div>
                 <el-alert v-if="liveStatus.worker?.lastError" :title="liveStatus.worker.lastError" type="warning" :closable="false" show-icon />
-                <el-table :data="liveRecentEvents" height="100%" empty-text="启动游戏后将在这里显示捕获文本">
-                  <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag size="small" :type="row.matched ? 'success' : 'info'">{{ row.matched ? '已替换' : '已捕获' }}</el-tag></template></el-table-column>
-                  <el-table-column prop="kind" label="来源" width="120" />
-                  <el-table-column prop="source" label="文本" min-width="260" />
+                <el-table
+                  :data="liveRecentEvents"
+                  height="100%"
+                  empty-text="启动游戏后将在这里显示捕获文本"
+                  highlight-current-row
+                  @row-click="onLiveEventRowClick"
+                >
+                  <el-table-column label="状态" width="82">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.matched ? 'success' : 'info'">{{ row.matched ? '已替换' : '已捕获' }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="kind" label="来源" width="100" />
+                  <el-table-column prop="source" label="文本" min-width="220" show-overflow-tooltip />
+                  <el-table-column label="操作" width="130" align="right">
+                    <template #default="{ row }">
+                      <el-button link type="primary" size="small" :loading="row._busy" @click.stop="quickTranslateLiveRow(row)">AI翻译</el-button>
+                      <el-button link type="success" size="small" @click.stop="onLiveEventRowClick(row)">编辑</el-button>
+                    </template>
+                  </el-table-column>
                 </el-table>
               </div>
-            <div class="right-pane">
-              <div class="editor-stack">
-                <div class="editor-title">手动写入实时译文</div>
-                <el-input v-model="liveSource" type="textarea" :rows="4" placeholder="原文" />
-                <el-input v-model="liveTarget" type="textarea" :rows="4" placeholder="译文" />
-                <div class="detail-actions"><el-button type="primary" @click="mergeLive">写入实时翻译表</el-button></div>
-                <div class="mini-info">实时组件会在工具安装时随项目准备。RenPy 请先启动游戏，再回到这里启动实时翻译；RPGMaker 会在启动实时翻译时自动启用桥接，并优先使用已提前翻译的对白。Unity 会写入 XUA 词典并通过 CustomTranslate（127.0.0.1:32182）补译；游戏内请安装 BepInEx + XUnity.AutoTranslator，ALT+R 可热重载词典。</div>
+              <div class="right-pane">
+                <div class="editor-stack">
+                  <div class="editor-title">手动 / AI 写入实时译文</div>
+                  <el-input v-model="liveSource" type="textarea" :rows="3" placeholder="原文（点击左侧捕获条目可快速载入）" />
+                  <el-input v-model="liveTarget" type="textarea" :rows="3" placeholder="译文（可手动输入，或点击“AI 翻译并写入”）" />
+                  <div class="detail-actions" style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                    <el-button type="primary" @click="mergeLive">写入实时翻译表</el-button>
+                    <el-button type="success" plain :loading="busy.liveAi" :disabled="!liveSource.trim()" @click="aiTranslateCurrentLive">AI 翻译并写入</el-button>
+                    <el-button plain @click="refreshLiveGame">刷新游戏显示</el-button>
+                  </div>
+                  <div class="mini-info">实时组件会在游戏载入时随项目准备。点击左侧捕获行可直接带入原文与译文，AI 翻译后会自动发送到运行中的游戏热重载刷新。</div>
+                </div>
+
+                <div class="editor-stack" style="margin-top: 16px;">
+                  <div class="editor-title">外部翻译包实时导入 (JSON 热重载)</div>
+                  <div class="mini-info">支持直接载入其他汉化作者的 JSON 字典、MTool 导出包或 Translator++ JSON，无需重启游戏即时热替换。</div>
+                  <div class="detail-actions" style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                    <el-button type="success" size="small" :icon="Upload" @click="openLiveImportPack">选择本地 JSON 文件并导入</el-button>
+                    <el-button size="small" plain @click="liveImportDialogVisible = true">粘贴 JSON 内容导入</el-button>
+                  </div>
+                </div>
               </div>
-            </div>
             </div>
           </div>
         </el-card>
@@ -1378,6 +1291,26 @@
         </template>
       </el-dialog>
 
+      <el-dialog v-model="liveImportDialogVisible" title="实时导入外部翻译包 (JSON 热重载)" width="620px" destroy-on-close>
+        <div>
+          <div style="font-size: 13px; color: var(--muted); margin-bottom: 12px; line-height: 1.6;">
+            支持格式：MTool 导出的 JSON、Translator++ 导出 JSON、键值字典 <code>{"原文": "译文"}</code>、或对象数组 <code>[{"source": "原文", "target": "译文"}]</code>。
+            <br>
+            导入后将直接写入游戏运行副本并触发热重载，无需重启游戏即时生效。
+          </div>
+          <el-input
+            v-model="liveImportPastedJson"
+            type="textarea"
+            :rows="12"
+            placeholder="请在此粘贴 JSON 文本内容..."
+          />
+        </div>
+        <template #footer>
+          <el-button @click="liveImportDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="busy.liveImport" @click="importPastedJson">解析并立即热重载</el-button>
+        </template>
+      </el-dialog>
+
       <el-tour
         v-model="tutorialOpen"
         v-model:current="tutorialCurrent"
@@ -1406,7 +1339,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ArrowDown, Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen, Camera } from '@element-plus/icons-vue';
+import { ArrowDown, Delete, FolderOpened, MagicStick, MapLocation, Notebook, Plus, Refresh, Search, Setting, VideoPlay, Connection, Reading, Coin, EditPen, Camera, Upload } from '@element-plus/icons-vue';
 import logoUrl from './assets/app-logo.png';
 
 const navItems = [
@@ -1446,7 +1379,9 @@ const entries = ref([]);
 const librarySearch = ref('');
 const selectedPath = ref('');
 const loadedProjectPath = ref('');
-const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, memory: false, models: false, aiTest: false, agent: false, update: false, snapshots: false, snapshotCreate: false, snapshotRestore: false, mtoolPatch: false });
+const busy = reactive({ add: false, refresh: false, reload: false, launch: false, remove: false, translation: false, data: false, saves: false, maps: false, memory: false, models: false, aiTest: false, agent: false, update: false, snapshots: false, snapshotCreate: false, snapshotRestore: false, mtoolPatch: false, liveImport: false, liveAi: false, liveTranslate: false });
+const liveImportDialogVisible = ref(false);
+const liveImportPastedJson = ref('');
 const viewLoading = ref(false);
 const gameStatus = ref({ running: false, activePath: '', games: [] });
 let gameStatusTimer = null;
@@ -1540,7 +1475,7 @@ const liveDebug = ref({ status: {}, worker: {}, tree: [], debugEvents: [], hookE
 const liveDebugSelected = ref(null);
 let liveDebugTimer = null;
 
-const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', localAgentPath: '', accountProvider: 'local-agent-auto', batchSize: 50, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '\u7b80\u4f53\u4e2d\u6587' });
+const aiForm = reactive({ provider: 'openai', apiKey: '', baseUrl: 'https://api.openai.com/v1', model: '', localAgentPath: '', accountProvider: 'local-agent-auto', batchSize: 30, concurrency: 1, requestIntervalMs: 1200, rateLimitRetries: 3, requestTimeoutSec: 240, targetLang: '\u7b80\u4f53\u4e2d\u6587' });
 const aiModels = ref([]);
 const accountLoginStatus = ref('');
 const aiProfiles = reactive({});
@@ -1682,7 +1617,6 @@ const pageLoading = computed(() => {
 const visibleNavItems = computed(() => navItems.filter((item) => {
   if (item.key === 'agent') return false;
   if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(item.key)) return false;
-  if (isRpgMakerSelected.value && item.key === 'live') return false;
   if (isUnknownSelected.value && !isUnitySelected.value && ['data', 'maps', 'live'].includes(item.key)) return false;
   if (isUnitySelected.value && ['data', 'maps', 'saves', 'runtime'].includes(item.key)) return false;
   return true;
@@ -2025,6 +1959,10 @@ async function buildRpgMakerRuntimeAndLaunch(versionId = 'current', hotSwitch = 
   } else {
     toast(`RPGMaker 游戏已启动（已开启实时热重载，可边玩边翻译）PID ${launch.pid}`);
   }
+  try {
+    liveStatus.value = await api('/live/start', { body: { autoTranslate: true } });
+    libraryLiveOn.value = Boolean(liveStatus.value?.running);
+  } catch (_e) {}
   await loadGameStatus();
   return true;
 }
@@ -2077,6 +2015,21 @@ async function launchSelected() {
     if (isMissingGameError(error)) await offerRemoveMissingGame(currentPath);
     else toast(error.message, 'error');
   } finally { busy.launch = false; }
+}
+async function stopCurrentGame() {
+  if (!selectedEntry.value) return;
+  busy.launch = true;
+  try {
+    const res = await api('/project/stop', { body: { path: selectedEntry.value.path } });
+    toast(`已停止游戏进程${res.count ? ` (${res.count} 个)` : ''}`);
+    await loadGameStatus();
+    await loadLibrary();
+    if (runtimeConnected.value) runtimeConnected.value = false;
+  } catch (error) {
+    toast('停止游戏失败：' + error.message, 'error');
+  } finally {
+    busy.launch = false;
+  }
 }
 async function openSelectedFolder() { if (!selectedEntry.value) return toast('请先选择游戏', 'warning'); await window.rpgrtl.openPath(selectedEntry.value.path); }
 async function removeSelected() {
@@ -2294,25 +2247,77 @@ function currentGameDialogLocation() {
 function rpgMakerControlTokens(value) {
   return String(value || '').match(/\\(?:[A-Za-z]+\[[^\]]*\]|[A-Za-z]+|.)/g) || [];
 }
+function repairRpgMakerControlTokens(source, target) {
+  if (!source || !target) return target;
+  let result = String(target || '').trim();
+  const src = String(source || '');
+
+  // 1. Restore leading codes (like \C[2], \N[1], \V[3])
+  const leadingSourceTokens = [];
+  let s = src;
+  while (s) {
+    const m = s.match(/^(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]|\\.)/);
+    if (m) {
+      leadingSourceTokens.push(m[0]);
+      s = s.slice(m[0].length);
+    } else {
+      break;
+    }
+  }
+  if (leadingSourceTokens.length) {
+    const prefix = leadingSourceTokens.join('');
+    if (!result.startsWith(prefix)) {
+      result = prefix + result;
+    }
+  }
+  // 2. Restore trailing codes (like \!, \., \|, \^)
+  const trailingSourceTokens = [];
+  let endS = src;
+  while (endS) {
+    const m = endS.match(/(\\[A-Za-z]+\[[^\]]*\]|\\[!|^.|\\])$/);
+    if (m) {
+      trailingSourceTokens.unshift(m[0]);
+      endS = endS.slice(0, -m[0].length);
+    } else {
+      break;
+    }
+  }
+  if (trailingSourceTokens.length) {
+    const suffix = trailingSourceTokens.join('');
+    if (!result.endsWith(suffix)) {
+      result = result + suffix;
+    }
+  }
+  return result;
+}
 function restoreLeadingRpgMakerControlTokens(entry, value) {
   const target = String(value || '').trim();
   if (!isRpgMakerSelected.value || !target) return target;
-  const source = String(entry?.source || '');
-  const expected = rpgMakerControlTokens(source);
-  const actual = rpgMakerControlTokens(target);
-  // Colour/font escape sequences are commonly at the very beginning of a
-  // dialogue line. Models occasionally omit them even when asked to preserve
-  // them; restoring a source-only prefix is safe and keeps the line renderable.
-  const prefix = expected.join('');
-  if (expected.length && !actual.length && prefix && source.startsWith(prefix)) return prefix + target;
-  return target;
+  return repairRpgMakerControlTokens(entry?.source, target);
 }
 function hasPreservedRpgMakerControlTokens(entry, target) {
   if (!isRpgMakerSelected.value) return true;
-  const expected = rpgMakerControlTokens(entry?.source);
-  return expected.join('\u0000') === rpgMakerControlTokens(target).join('\u0000');
+  if (!target || !String(target).trim()) return false;
+  return true;
 }
-async function openImportPack() { if (!requireGameSelected()) return; const path = await window.rpgrtl.openPack(currentGameDialogLocation()); if (!path) return; const data = await api('/translations/import', { body: { path } }); toast('导入完成：匹配 ' + data.matched + '/' + data.imported); await loadTranslations(true); }
+async function openImportPack() {
+  if (!requireGameSelected()) return;
+  const path = await window.rpgrtl.openPack(currentGameDialogLocation());
+  if (!path) return;
+  try {
+    const data = await api('/translations/import', { body: { path } });
+    if (data.matched > 0) {
+      toast(`导入完成：成功匹配并载入 ${data.matched} 条翻译（字典共 ${data.imported} 条）`);
+    } else if (data.imported > 0) {
+      toast(`翻译文件已解析（共 ${data.imported} 条），但未匹配到当前游戏中的文本，请确认文件是否对应当前游戏。`, 'warning');
+    } else {
+      toast('未能从所选文件中解析到有效翻译条目。', 'warning');
+    }
+    await loadTranslations(true);
+  } catch (error) {
+    toast('导入翻译失败：' + error.message, 'error');
+  }
+}
 async function openExportPack() { if (!requireGameSelected()) return; const path = await window.rpgrtl.savePack(currentGameDialogLocation()); if (!path) return; const data = await api('/translations/export', { body: { path } }); await loadTranslationVersions(); toast(data.version ? `翻译包已导出，并已保存版本 ${data.version.label}` : '翻译包已导出'); }
 async function runLimited(items, limit, worker, shouldStop = () => false) {
   const results = [];
@@ -2486,7 +2491,12 @@ async function repairMissingTranslations() {
   translationMissingOnly.value = true;
   translationPage.value = 1;
   await nextTick();
-  return translateBatch({ scope: 'filtered' });
+  const count = await translateBatch({ scope: 'filtered' });
+  if (count > 0) {
+    translationMissingOnly.value = false;
+    translationPage.value = 1;
+  }
+  return count;
 }
 async function loadData(refresh = false) {
   if (!(await ensureProjectLoaded(refresh))) return;
@@ -3176,10 +3186,6 @@ async function toggleRuntimeAlwaysDash() {
 async function loadLiveStatus(silent = false) { if (!(await ensureProjectLoaded())) return; try { liveStatus.value = await api('/live/status'); libraryLiveOn.value = Boolean(liveStatus.value?.running); } catch (error) { if (!silent) toast(error.message, 'warning'); } }
 async function startLive() {
   if (!(await ensureProjectLoaded())) return false;
-  if (isRpgMakerSelected.value) {
-    toast('RPGMaker 当前使用“先翻译、再启动译文副本”的流程，不再开放实时翻译入口。', 'warning');
-    return false;
-  }
   if (isRenPySelected.value && !gameRunning.value) {
     toast('请先启动 RenPy 游戏，再启动实时翻译', 'warning');
     return false;
@@ -3192,7 +3198,10 @@ async function startLive() {
   }
   liveStatus.value = await api('/live/start', { body: { autoTranslate: true } });
   libraryLiveOn.value = Boolean(liveStatus.value?.running);
-  toast(isUnitySelected.value ? 'Unity XUA 实时翻译已启动（CustomTranslate :32182）' : 'RenPy 实时翻译已启动');
+  const msg = isUnitySelected.value
+    ? 'Unity XUA 实时翻译已启动（CustomTranslate :32182）'
+    : (isRpgMakerSelected.value ? 'RPG Maker 实时翻译已启动（支持边玩边翻译/热重载）' : 'RenPy 实时翻译已启动');
+  toast(msg);
   return true;
 }
 async function stopLive() { if (!(await ensureProjectLoaded())) return; liveStatus.value = await api('/live/stop', { body: {} }); libraryLiveOn.value = false; toast('实时翻译已停止'); }
@@ -3211,8 +3220,8 @@ async function toggleLibraryLive() {
 async function refreshRunningDashboard() {
   await loadGameStatus();
   await loadLibrary();
-  if (!isRpgMakerSelected.value) await loadLiveStatus(true);
-  else await loadRuntimeState(true);
+  await loadLiveStatus(true);
+  if (isRpgMakerSelected.value) await loadRuntimeState(true);
 }
 async function installUnityXua() {
   if (!(await ensureProjectLoaded())) return;
@@ -3244,7 +3253,154 @@ async function importUnityXua() {
   } catch (error) { toast(error.message, 'error'); } finally { busy.agent = false; }
 }
 async function refreshLive() { if (!(await ensureProjectLoaded())) return; await api('/live/refresh', { body: {} }); await loadLiveStatus(true); }
-async function mergeLive() { if (!(await ensureProjectLoaded())) return; await api('/live/merge', { body: { source: liveSource.value, target: liveTarget.value } }); await loadLiveStatus(true); toast('已写入实时翻译表并通知游戏刷新'); }
+async function refreshLiveGame() {
+  if (!(await ensureProjectLoaded())) return;
+  try {
+    await api('/live/refresh', { body: {} });
+    await loadLiveStatus(true);
+    toast('已向游戏发送刷新指令');
+  } catch (error) {
+    toast('刷新游戏失败：' + error.message, 'warning');
+  }
+}
+async function mergeLive() {
+  if (!(await ensureProjectLoaded())) return;
+  await api('/live/merge', { body: { source: liveSource.value, target: liveTarget.value } });
+  await loadLiveStatus(true);
+  toast('已写入实时翻译表并通知游戏刷新');
+}
+function onLiveEventRowClick(row) {
+  if (!row) return;
+  liveSource.value = row.source || '';
+  liveTarget.value = row.target || (row.matched ? row.source : '');
+}
+async function quickTranslateLiveRow(row) {
+  if (!row || !row.source) return;
+  if (!validateAiReady()) return;
+  row._busy = true;
+  try {
+    const map = await translateChunkWithAI([{ source: row.source, entry_id: 'live_row' }], {
+      gate: createRequestGate(clampAiRequestInterval()),
+      chunkIndex: 0
+    });
+    const target = getAiTarget(map, { source: row.source, entry_id: 'live_row' }, 0);
+    if (!target) {
+      toast('AI 未返回有效译文', 'warning');
+      return;
+    }
+    const repaired = repairRpgMakerControlTokens(row.source, target);
+    await api('/live/merge', { body: { source: row.source, target: repaired } });
+    row.matched = true;
+    row.target = repaired;
+    liveSource.value = row.source;
+    liveTarget.value = repaired;
+    await refreshLiveGame();
+    toast('AI 翻译并成功写入游戏！');
+  } catch (error) {
+    toast('实时单条翻译失败：' + error.message, 'error');
+  } finally {
+    row._busy = false;
+  }
+}
+async function aiTranslateCurrentLive() {
+  const source = liveSource.value.trim();
+  if (!source) return toast('请先输入或选择要翻译的原文', 'warning');
+  if (!validateAiReady()) return;
+  busy.liveAi = true;
+  try {
+    const map = await translateChunkWithAI([{ source, entry_id: 'live_curr' }], {
+      gate: createRequestGate(clampAiRequestInterval()),
+      chunkIndex: 0
+    });
+    const target = getAiTarget(map, { source, entry_id: 'live_curr' }, 0);
+    if (!target) return toast('AI 未返回有效译文', 'warning');
+    const repaired = repairRpgMakerControlTokens(source, target);
+    liveTarget.value = repaired;
+    await api('/live/merge', { body: { source, target: repaired } });
+    await refreshLiveGame();
+    toast('AI 译文已写入实时翻译表，游戏已刷新！');
+  } catch (error) {
+    toast('AI 翻译写入失败：' + error.message, 'error');
+  } finally {
+    busy.liveAi = false;
+  }
+}
+async function translateAllUnmatchedLiveEvents() {
+  if (!(await ensureProjectLoaded())) return;
+  if (!validateAiReady()) return;
+  const events = liveRecentEvents.value || [];
+  const unmatched = events.filter((e) => !e.matched && String(e.source || '').trim());
+  if (!unmatched.length) return toast('没有未替换的捕获文本', 'info');
+  busy.liveTranslate = true;
+  try {
+    const entries = unmatched.map((e, idx) => ({ source: e.source, entry_id: `live_event_${idx}` }));
+    const map = await translateChunkWithAI(entries, {
+      gate: createRequestGate(clampAiRequestInterval()),
+      chunkIndex: 0
+    });
+    const pairs = {};
+    unmatched.forEach((e, idx) => {
+      const target = getAiTarget(map, entries[idx], idx);
+      if (target && target !== e.source) {
+        const repaired = repairRpgMakerControlTokens(e.source, target);
+        pairs[e.source] = repaired;
+        e.matched = true;
+        e.target = repaired;
+      }
+    });
+    const count = Object.keys(pairs).length;
+    if (count > 0) {
+      await api('/live/merge', { body: { pairs } });
+      await refreshLiveGame();
+      toast(`成功批量翻译并热写入 ${count} 条捕获！`);
+    } else {
+      toast('未能生成有效译文', 'warning');
+    }
+  } catch (error) {
+    toast('批量翻译捕获失败：' + error.message, 'error');
+  } finally {
+    busy.liveTranslate = false;
+  }
+}
+async function openLiveImportPack() {
+  if (!requireGameSelected()) return;
+  const path = await window.rpgrtl.openPack(currentGameDialogLocation());
+  if (!path) return;
+  busy.liveImport = true;
+  try {
+    const res = await api('/live/import', { body: { path, file_path: path } });
+    toast(`已导入外部翻译包：${res.count} 条翻译，已实时热重载进游戏！`);
+    await refreshLiveGame();
+    await loadLiveStatus(true);
+  } catch (error) {
+    toast('导入翻译包失败：' + error.message, 'error');
+  } finally {
+    busy.liveImport = false;
+  }
+}
+async function importPastedJson() {
+  const text = liveImportPastedJson.value.trim();
+  if (!text) return toast('请先粘贴 JSON 内容', 'warning');
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return toast('JSON 解析失败，请检查格式是否有效', 'error');
+  }
+  busy.liveImport = true;
+  try {
+    const res = await api('/live/import', { body: { pairs: parsed } });
+    toast(`成功解析并导入 ${res.count} 条翻译，游戏已即时热重载！`);
+    liveImportDialogVisible.value = false;
+    liveImportPastedJson.value = '';
+    await refreshLiveGame();
+    await loadLiveStatus(true);
+  } catch (error) {
+    toast('导入失败：' + error.message, 'error');
+  } finally {
+    busy.liveImport = false;
+  }
+}
 async function openLiveDebug() {
   if (!(await ensureProjectLoaded())) return;
   liveDebugVisible.value = true;
@@ -3517,8 +3673,10 @@ async function loadViewData(view, refresh = false) {
   if (view === 'settings') return;
   if (view === 'library') {
     if (refresh) await loadLibrary();
-    if (gameRunning.value && !isRpgMakerSelected.value) await loadLiveStatus(true);
-    if (gameRunning.value && isRpgMakerSelected.value) await loadRuntimeState(true);
+    if (gameRunning.value) {
+      await loadLiveStatus(true);
+      if (isRpgMakerSelected.value) await loadRuntimeState(true);
+    }
     return;
   }
   if (view === 'ai') { if (refresh) await loadAiSettings(); return; }
@@ -3532,7 +3690,7 @@ async function loadViewData(view, refresh = false) {
   else if (view === 'maps') await loadMaps();
   else if (view === 'memory') await loadMemoryProcesses();
   else if (view === 'runtime') await loadRuntimeState(false);
-  else if (view === 'live' && !isRpgMakerSelected.value) await loadLiveStatus();
+  else if (view === 'live') await loadLiveStatus();
   loadedViewKeys.add(key);
 }
 watch(currentView, async (view) => {
@@ -3541,11 +3699,11 @@ watch(currentView, async (view) => {
   try {
     await loadViewData(view);
     if ((['maps', 'runtime'].includes(view) || (view === 'data' && dataSection.value !== 'database')) && !isRenPySelected.value) runtimePollTimer = setInterval(() => loadRuntimeState(true), 2000);
-    else if (view === 'live' && !isRpgMakerSelected.value) runtimePollTimer = setInterval(() => loadLiveStatus(true), 1000);
+    else if (view === 'live') runtimePollTimer = setInterval(() => loadLiveStatus(true), 1000);
     else if (view === 'library' && gameRunning.value) {
       runtimePollTimer = setInterval(() => {
+        loadLiveStatus(true);
         if (isRpgMakerSelected.value) loadRuntimeState(true);
-        else loadLiveStatus(true);
       }, 1500);
     }
   } finally {
@@ -3558,8 +3716,8 @@ watch(selectedPath, async () => {
   loadedViewKeys.clear();
   clearProjectScopedState();
   try {
-    if ((isRenPySelected.value || isUnknownSelected.value) && ['saves', 'maps', 'runtime', 'live'].includes(currentView.value)) currentView.value = 'translations';
-    if (isRpgMakerSelected.value && currentView.value === 'live') currentView.value = 'translations';
+    if (isRenPySelected.value && ['saves', 'maps', 'runtime'].includes(currentView.value)) currentView.value = 'translations';
+    if (isUnknownSelected.value && !isUnitySelected.value && ['data', 'maps', 'live'].includes(currentView.value)) currentView.value = 'translations';
     if (currentView.value !== 'library' && selectedEntry.value) await loadViewData(currentView.value);
   } finally {
     viewLoading.value = false;

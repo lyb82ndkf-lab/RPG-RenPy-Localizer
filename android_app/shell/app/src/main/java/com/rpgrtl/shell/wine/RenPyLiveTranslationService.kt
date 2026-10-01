@@ -4,6 +4,7 @@ import android.content.Context
 import com.rpgrtl.shell.AndroidAiTranslationService
 import com.rpgrtl.shell.MainActivity
 import com.rpgrtl.shell.ShellLog
+import com.rpgrtl.shell.data.TranslationManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -825,30 +826,14 @@ class RenPyLiveTranslationService(
     private fun loadFileIntoCache(file: File) {
         if (!file.isFile) return
         runCatching {
-            val content = file.readText(Charsets.UTF_8).trim()
-            if (content.startsWith("{")) {
-                val obj = JSONObject(content)
-                val mapObj = obj.optJSONObject("translations") ?: obj
-                val keys = mapObj.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val value = when (val opt = mapObj.opt(key)) {
-                        is String -> opt
-                        is JSONObject -> opt.optString("target", opt.optString("text", ""))
-                        else -> null
-                    }
-                    if (!key.isNullOrBlank() && !value.isNullOrBlank() && key != "translations" && key != "version" && key != "updated_at") {
-                        storeTranslation(key, value.trim())
-                    }
-                }
-            } else if (content.startsWith("[")) {
-                val array = JSONArray(content)
-                for (i in 0 until array.length()) {
-                    val item = array.optJSONObject(i) ?: continue
-                    val src = item.optString("src", item.optString("source", item.optString("original", "")))
-                    val dst = item.optString("dst", item.optString("target", item.optString("translation", "")))
-                    if (src.isNotBlank() && dst.isNotBlank()) {
-                        storeTranslation(src, dst.trim())
+            val items = TranslationManager.loadTranslations(file)
+            for (item in items) {
+                if (item.source.isNotBlank() && item.target.isNotBlank()) {
+                    val tgt = item.target.trim()
+                    storeTranslation(item.source, tgt)
+                    val trimmed = item.source.trim()
+                    if (trimmed != item.source) {
+                        storeTranslation(trimmed, tgt)
                     }
                 }
             }

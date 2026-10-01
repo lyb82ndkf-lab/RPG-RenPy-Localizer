@@ -211,14 +211,27 @@ fun MainScreen(incomingIntent: Intent? = null) {
     ) { uri: Uri? ->
         if (uri != null && activeGame != null) {
             try {
-                val content = context.contentResolver.openInputStream(uri)?.use { stream ->
-                    stream.bufferedReader(Charsets.UTF_8).readText()
+                val rawContent = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val bytes = stream.readBytes()
+                    val offset = if (bytes.size >= 3 &&
+                        bytes[0] == 0xEF.toByte() &&
+                        bytes[1] == 0xBB.toByte() &&
+                        bytes[2] == 0xBF.toByte()
+                    ) 3 else 0
+                    String(bytes, offset, bytes.size - offset, Charsets.UTF_8).trim()
                 }
-                if (!content.isNullOrBlank()) {
+                if (!rawContent.isNullOrBlank()) {
                     val gameDir = File(activeGame!!.folderPath)
                     val targetFile = TranslationManager.getDefaultTranslationFile(gameDir)
-                    targetFile.writeText(content, Charsets.UTF_8)
-                    Toast.makeText(context, "翻译文件已成功导入并覆盖", Toast.LENGTH_SHORT).show()
+                    val items = TranslationManager.parseTranslations(rawContent)
+                    if (items.isNotEmpty()) {
+                        TranslationManager.saveTranslations(targetFile, items)
+                        val translatedCount = items.count { it.target.isNotBlank() }
+                        Toast.makeText(context, "翻译文件已导入：共 ${items.size} 条（已翻译 $translatedCount 条）", Toast.LENGTH_SHORT).show()
+                    } else {
+                        targetFile.writeText(rawContent, Charsets.UTF_8)
+                        Toast.makeText(context, "翻译文件已导入并覆盖", Toast.LENGTH_SHORT).show()
+                    }
                     translationRefreshTrigger++
                 }
             } catch (e: Exception) {
@@ -236,11 +249,16 @@ fun MainScreen(incomingIntent: Intent? = null) {
                 val gameDir = File(activeGame!!.folderPath)
                 val transFile = TranslationManager.findTranslationFile(gameDir)
                 if (transFile != null && transFile.exists()) {
-                    val content = transFile.readText(Charsets.UTF_8)
-                    context.contentResolver.openOutputStream(uri)?.use { stream ->
-                        stream.bufferedWriter(Charsets.UTF_8).use { it.write(content) }
+                    val items = TranslationManager.loadTranslations(transFile)
+                    val exportText = if (items.isNotEmpty()) {
+                        TranslationManager.exportToJsonString(items)
+                    } else {
+                        TranslationManager.readCleanText(transFile)
                     }
-                    Toast.makeText(context, "翻译文件导出成功", Toast.LENGTH_SHORT).show()
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.bufferedWriter(Charsets.UTF_8).use { it.write(exportText) }
+                    }
+                    Toast.makeText(context, "翻译文件导出成功（共 ${items.size} 条）", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "当前游戏未检测到翻译文件", Toast.LENGTH_SHORT).show()
                 }

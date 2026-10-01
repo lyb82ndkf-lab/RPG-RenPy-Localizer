@@ -396,12 +396,151 @@ class RpgMakerWebViewActivity : AppCompatActivity() {
                     } catch(e) {}
                 };
 
+                function cleanRuby(str) {
+                    if (!str || typeof str !== 'string') return str;
+                    return str.replace(/\x1e?\{([^{}|]+?)\|([^{}]+?)\}/g, '${'$'}1').replace(/\\r\[([^,]+?),[^\]]+?\]/g, '${'$'}1');
+                }
+
+                var PREFIX_TOKEN_RE = /^(?:(?:\x1b|\\)[A-Za-z]+<[^>]*>|(?:\x1b|\\)[A-Za-z]+\[[^\]]*\]|(?:\x1b|\\)(?:fb|fi|FB|FI)|(?:\x1b|\\)[><.!|^${'$'}{}\\]|【[^】]+】|\[[^\]]+\]|<[^>]+>|[\s\u3000]+)/;
+
+                var SUFFIX_TOKEN_RE = /(?:(?:\x1b|\\)[A-Za-z]+\[[^\]]*\]|(?:\x1b|\\)[><.!|^${'$'}{}\\]|[\s\u3000]+)$/;
+
+                function directLookup(map, key) {
+                    if (!map || key == null) return null;
+                    var k = String(key);
+                    if (map[k] !== undefined && map[k] !== '') return map[k];
+                    var kt = k.trim();
+                    if (kt && map[kt] !== undefined && map[kt] !== '') return map[kt];
+                    return null;
+                }
+
+                function lookupWithVariants(map, str) {
+                    if (!map || str == null) return null;
+                    var raw = String(str);
+                    var hit = directLookup(map, raw);
+                    if (hit != null) return hit;
+
+                    var cleaned = cleanRuby(raw);
+                    if (cleaned !== raw) {
+                        hit = directLookup(map, cleaned);
+                        if (hit != null) return hit;
+                    }
+
+                    var deEscaped = raw.replace(/\x1b/g, '\\');
+                    if (deEscaped !== raw) {
+                        hit = directLookup(map, deEscaped);
+                        if (hit != null) return hit;
+                    }
+
+                    var upperCode = deEscaped.replace(/\\([a-zA-Z])/g, function(_, c) { return '\\' + c.toUpperCase(); });
+                    if (upperCode !== deEscaped) {
+                        hit = directLookup(map, upperCode);
+                        if (hit != null) return hit;
+                    }
+
+                    var lowerCode = deEscaped.replace(/\\([a-zA-Z])/g, function(_, c) { return '\\' + c.toLowerCase(); });
+                    if (lowerCode !== deEscaped && lowerCode !== upperCode) {
+                        hit = directLookup(map, lowerCode);
+                        if (hit != null) return hit;
+                    }
+
+                    return null;
+                }
+
                 function translate(text) {
                     if (!text || typeof text !== 'string') return text;
+                    var raw = String(text);
+                    if (!raw.trim()) return text;
                     var map = window.__RPGRTL_TRANS_MAP;
                     if (!map) return text;
-                    var trimmed = text.trim();
-                    return map[trimmed] ? text.replace(trimmed, map[trimmed]) : text;
+
+                    // 1. Direct match with variants
+                    var hit = lookupWithVariants(map, raw);
+                    if (hit != null) return hit;
+
+                    // 2. Multiline handling
+                    if (raw.indexOf('\n') !== -1) {
+                        var lines = raw.split('\n');
+                        var anyChanged = false;
+                        var translatedLines = lines.map(function(line) {
+                            var t = translate(line);
+                            if (t !== line) anyChanged = true;
+                            return t;
+                        });
+                        if (anyChanged) return translatedLines.join('\n');
+                    }
+
+                    // 3. Control code & speaker tag prefix/suffix peeling
+                    var prefix = '';
+                    var suffix = '';
+                    var core = raw;
+
+                    var m;
+                    while ((m = PREFIX_TOKEN_RE.exec(core)) !== null) {
+                        if (m[0].length === 0) break;
+                        prefix += m[0];
+                        core = core.slice(m[0].length);
+                    }
+
+                    while ((m = SUFFIX_TOKEN_RE.exec(core)) !== null) {
+                        if (m[0].length === 0) break;
+                        suffix = m[0] + suffix;
+                        core = core.slice(0, core.length - m[0].length);
+                    }
+
+                    if ((prefix || suffix) && core.trim()) {
+                        var coreHit = lookupWithVariants(map, core);
+                        if (coreHit != null) {
+                            var translatedPrefix = prefix.replace(/(?:\x1b|\\)n<([^>]+)>/gi, function(match, name) {
+                                var tn = lookupWithVariants(map, name);
+                                return tn ? match.charAt(0) + match.charAt(1) + '<' + tn + '>' : match;
+                            }).replace(/【([^】]+)】/g, function(match, name) {
+
+                                var tn = lookupWithVariants(map, name);
+                                return tn ? '【' + tn + '】' : match;
+                            });
+
+                            return translatedPrefix + coreHit + suffix;
+                        }
+                    }
+
+                    return raw;
+                }
+
+                if (typeof Game_Message !== 'undefined' && Game_Message.prototype) {
+                    if (Game_Message.prototype.add) {
+                        var origAdd = Game_Message.prototype.add;
+                        Game_Message.prototype.add = function(text) {
+                            var translated = typeof text === 'string' ? translate(text) : text;
+                            return origAdd.call(this, translated);
+                        };
+                    }
+                    if (Game_Message.prototype.setSpeakerName) {
+                        var origSetSpeakerName = Game_Message.prototype.setSpeakerName;
+                        Game_Message.prototype.setSpeakerName = function(name) {
+                            var translated = typeof name === 'string' ? translate(name) : name;
+                            return origSetSpeakerName.call(this, translated);
+                        };
+                    }
+                }
+
+                if (typeof Window_Base !== 'undefined' && Window_Base.prototype) {
+                    if (Window_Base.prototype.convertEscapeCharacters) {
+                        var origConvert = Window_Base.prototype.convertEscapeCharacters;
+                        Window_Base.prototype.convertEscapeCharacters = function(text) {
+                            try {
+                                return origConvert.call(this, translate(text));
+                            } catch(e) {
+                                return origConvert.call(this, text);
+                            }
+                        };
+                    }
+                    if (Window_Base.prototype.drawTextEx) {
+                        var originalDrawTextEx = Window_Base.prototype.drawTextEx;
+                        Window_Base.prototype.drawTextEx = function(text, x, y) {
+                            return originalDrawTextEx.call(this, translate(text), x, y);
+                        };
+                    }
                 }
 
                 if (typeof Bitmap !== 'undefined' && Bitmap.prototype && Bitmap.prototype.drawText) {
@@ -410,10 +549,34 @@ class RpgMakerWebViewActivity : AppCompatActivity() {
                         return originalDrawText.call(this, translate(text), x, y, maxWidth, lineHeight, align);
                     };
                 }
-                if (typeof Window_Base !== 'undefined' && Window_Base.prototype && Window_Base.prototype.drawTextEx) {
-                    var originalDrawTextEx = Window_Base.prototype.drawTextEx;
-                    Window_Base.prototype.drawTextEx = function(text, x, y) {
-                        return originalDrawTextEx.call(this, translate(text), x, y);
+
+                if (typeof Window_Message !== 'undefined' && Window_Message.prototype && Window_Message.prototype.startMessage) {
+                    var originalStartMessage = Window_Message.prototype.startMessage;
+                    Window_Message.prototype.startMessage = function() {
+                        try {
+                            if (window.${'$'}gameMessage) {
+                                if (typeof window.${'$'}gameMessage.speakerName === 'function' && typeof window.${'$'}gameMessage.setSpeakerName === 'function') {
+                                    var spk = window.${'$'}gameMessage.speakerName();
+                                    if (spk) {
+                                        var transSpk = translate(spk);
+                                        if (transSpk !== spk) window.${'$'}gameMessage.setSpeakerName(transSpk);
+                                    }
+                                }
+                                if (Array.isArray(window.${'$'}gameMessage._texts) && window.${'$'}gameMessage._texts.length > 0) {
+                                    var joined = window.${'$'}gameMessage._texts.join('\n');
+                                    var transJoined = translate(joined);
+                                    if (transJoined !== joined) {
+                                        window.${'$'}gameMessage._texts = transJoined.split('\n');
+                                    } else {
+                                        window.${'$'}gameMessage._texts = window.${'$'}gameMessage._texts.map(function(line) { return translate(line); });
+                                    }
+                                }
+                                if (Array.isArray(window.${'$'}gameMessage._choices)) {
+                                    window.${'$'}gameMessage._choices = window.${'$'}gameMessage._choices.map(function(choice) { return translate(choice); });
+                                }
+                            }
+                        } catch(e) {}
+                        return originalStartMessage.call(this);
                     };
                 }
             })();
